@@ -84,6 +84,8 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
 	for v in preview:
 		if v == '...':
 			out.append('...')
+		elif v is None:
+			out.append('None')
 		elif col._dtype and col._dtype.kind is float:
 			out.append(f"{v:.1f}" if v == int(v) else f"{v:g}")
 		elif col._dtype and col._dtype.kind is int:
