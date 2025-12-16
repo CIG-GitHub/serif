@@ -257,8 +257,10 @@ class Table(Vector):
 				if base is None:
 					# Empty after sanitization, use system name
 					sanitized = f'col{idx}_'
-				if base in seen:
-					sanitized = f"{base}__{idx}"
+				elif base in seen:
+					# dont triple underscore if already ends with _
+					sep = "" if base.endswith("_") else "_"
+					sanitized = f"{base}{sep}_{idx}"
 				else:
 					sanitized = base
 					seen.add(base)

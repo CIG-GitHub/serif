@@ -130,7 +130,8 @@ def _compute_headers(cols, col_indices):
 			if san is None:
 				san = f"col{idx}_"
 			elif san in seen:
-				san = f"{san}__{idx}"
+				sep = "" if san.endswith("_") else "_"
+				san = f"{san}{sep}_{idx}"
 			else:
 				seen.add(san)
 		else:

@@ -49,8 +49,7 @@ def _sanitize_user_name(name) -> str | None:
 	# Lowercase
 	name = name.lower()
 	
-	# Replace runs of invalid characters (including _) with single _
-	# This reserves __ for indexed accessors
+	# Replace runs of invalid characters with _
 	sanitized = re.sub(r'[^a-z0-9_]+', '_', name)
 	
 	# Strip leading/trailing _
@@ -63,6 +62,10 @@ def _sanitize_user_name(name) -> str | None:
 	# Starts with digit → prefix c
 	if sanitized[0].isdigit():
 		sanitized = "c" + sanitized
+	
+	# If name looks like indexed accessor pattern (name__digits), append _ to disambiguate
+	if re.match(r'^.+__\d+$', sanitized):
+		sanitized = sanitized + '_'
 	
 	# Conflicts with reserved name → append _
 	if sanitized in _get_reserved_names():
