@@ -49,7 +49,8 @@ def _sanitize_user_name(name) -> str | None:
 	# Lowercase
 	name = name.lower()
 	
-	# Replace runs of invalid characters with _
+	# Replace runs of invalid characters (including _) with single _
+	# This reserves __ for indexed accessors
 	sanitized = re.sub(r'[^a-z0-9_]+', '_', name)
 	
 	# Strip leading/trailing _
@@ -68,17 +69,4 @@ def _sanitize_user_name(name) -> str | None:
 		sanitized = sanitized + '_'
 	
 	return sanitized
-
-
-def _uniquify(base: str, seen: set[str]) -> str:
-	"""Make a unique name by adding __2, __3, etc if needed."""
-	if base not in seen:
-		return base
-	
-	i = 2
-	while f"{base}__{i}" in seen:
-		i += 1
-	
-	return f"{base}__{i}"
-
 

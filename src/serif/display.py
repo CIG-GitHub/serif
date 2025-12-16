@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import List
 from .naming import _get_reserved_names
+from .naming import _sanitize_user_name
 
 
 # How many rows/columns to show before inserting "..."
@@ -109,7 +110,7 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
 	return [s.ljust(max_len) for s in out]
 
 
-def _compute_headers(cols, col_indices, sanitize_func, uniquify_func):
+def _compute_headers(cols, col_indices):
 	"""Given Table columns and indices, returns display_names, sanitized_names, dtypes."""
 	display_names = []
 	sanitized_names = []
@@ -125,11 +126,12 @@ def _compute_headers(cols, col_indices, sanitize_func, uniquify_func):
 
 		# Sanitized dot name
 		if col._name:
-			san = sanitize_func(col._name)
+			san = _sanitize_user_name(col._name)
 			if san is None:
 				san = f"col{idx}_"
+			elif san in seen:
+				san = f"{san}__{idx}"
 			else:
-				san = uniquify_func(san, seen)
 				seen.add(san)
 		else:
 			san = f"col{idx}_"
@@ -314,7 +316,6 @@ def _repr_vector(v) -> str:
 
 def _repr_table(tbl) -> str:
 	"""Pretty repr for a 2D Table."""
-	from .naming import _sanitize_user_name, _uniquify
 	
 	# Check if table has custom repr_rows setting
 	max_preview = None
@@ -335,9 +336,7 @@ def _repr_table(tbl) -> str:
 		col_indices = list(range(num_cols))
 
 	# Headers + dtypes
-	disp, san, dtypes_displayed = _compute_headers(
-		cols, col_indices, _sanitize_user_name, _uniquify
-	)
+	disp, san, dtypes_displayed = _compute_headers(cols, col_indices)
 
 	# Get all dtypes for footer
 	dtypes_all = []

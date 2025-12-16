@@ -5,7 +5,6 @@ from collections.abc import Iterable
 from .vector import Vector
 
 from .naming import _sanitize_user_name
-from .naming import _uniquify
 
 from .errors import SerifKeyError
 from .errors import SerifValueError
@@ -14,6 +13,33 @@ from .errors import SerifTypeError
 
 def _missing_col_error(name, context="Table"):
 	return SerifKeyError(f"Column '{name}' not found in {context}")
+
+
+def _parse_indexed_attr(attr):
+	"""
+	Parse attribute name for indexed column access pattern.
+	
+	Returns (base_name, column_index) if attr matches 'name__N' pattern,
+	otherwise returns (attr, None).
+	
+	Examples:
+		'total' → ('total', None)
+		'total__5' → ('total', 5)
+		'total__abc' → ('total__abc', None)
+		'__5' → error (no base name)
+	"""
+	base, sep, suffix = attr.rpartition('__')
+	
+	# If sep is empty, no '__' found → regular attribute
+	# If suffix isn't all digits → regular attribute
+	# If base is empty → error (e.g., '__5')
+	if sep and suffix.isdigit():
+		if not base:
+			raise AttributeError(f"Invalid indexed accessor '{attr}': missing base name")
+		# re-sanitize for method collisions
+		return (_sanitize_user_name(base), int(suffix))
+	
+	return (attr, None)
 
 
 def _resolve_binary_name(left_name, right_name):
@@ -231,9 +257,11 @@ class Table(Vector):
 				if base is None:
 					# Empty after sanitization, use system name
 					sanitized = f'col{idx}_'
+				if base in seen:
+					sanitized = f"{base}__{idx}"
 				else:
-					sanitized = _uniquify(base, seen)
-					seen.add(sanitized)
+					sanitized = base
+					seen.add(base)
 			else:
 				# Unnamed column, use system name
 				sanitized = f'col{idx}_'
@@ -269,9 +297,44 @@ class Table(Vector):
 		if any(col._wild for col in self._underlying or []):
 			self._column_map = self._build_column_map()
 
-		col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
+		# Parse for indexed accessor pattern (e.g., 'total__5')
+		base_name, col_idx = _parse_indexed_attr(attr)
+		
 		if col_idx is not None:
-			return self._underlying[col_idx]
+			# Indexed access: validate column index and name match
+			if col_idx < 0 or col_idx >= len(self._underlying):
+				raise AttributeError(
+					f"Column index {col_idx} out of range (table has {len(self._underlying)} columns)"
+				)
+			
+			# Get the actual column at that index
+			col = self._underlying[col_idx]
+			
+			# Validate: does this column's sanitized name match base_name?
+			from .naming import _sanitize_user_name
+			sanitized = _sanitize_user_name(col._name)
+			
+			if sanitized != base_name.lower():
+				raise AttributeError(
+					f"Column {col_idx} is '{col._name}' (sanitizes to '{sanitized}'), not '{base_name}'"
+				)
+			
+			return col
+
+		# Fallback: col<N>_ accessor (e.g., col5_ for column index 5)
+		elif attr.startswith('col') and attr.endswith('_'):
+			middle = attr[3:-1]  # Extract between 'col' and '_'
+			if middle.isdigit():
+				idx = int(middle)
+				if 0 <= idx < len(self._underlying):
+					return self._underlying[idx]
+				raise AttributeError(f"Column index {idx} out of range")
+		
+		else:
+			# Regular access: look up by sanitized name
+			col_idx_lookup = self._column_map.get(attr) or self._column_map.get(attr.lower())
+			if col_idx_lookup is not None:
+				return self._underlying[col_idx_lookup]
 		
 		# Fall back to parent class attributes (e.g., .T for transpose)
 		try:
@@ -319,6 +382,43 @@ class Table(Vector):
 		
 		# After initialization, check if setting an existing column
 		if self._column_map is not None:
+			# Parse for indexed accessor pattern (e.g., 'total__5')
+			base_name, col_idx_indexed = _parse_indexed_attr(attr)
+			
+			if col_idx_indexed is not None:
+				# Indexed assignment: validate column index and name match
+				if col_idx_indexed < 0 or col_idx_indexed >= len(self._underlying):
+					raise AttributeError(
+						f"Column index {col_idx_indexed} out of range (table has {len(self._underlying)} columns)"
+					)
+				
+				# Validate: does this column's sanitized name match base_name?
+				from .naming import _sanitize_user_name
+				sanitized = _sanitize_user_name(self._underlying[col_idx_indexed]._name)
+				
+				if sanitized != base_name.lower():
+					raise AttributeError(
+						f"Column {col_idx_indexed} is '{self._underlying[col_idx_indexed]._name}' "
+						f"(sanitizes to '{sanitized}'), not '{base_name}'"
+					)
+				
+				# Replace the column at validated index
+				if not isinstance(value, Vector):
+					value = Vector(value)
+				
+				if self._underlying and len(value) != self._length:
+					raise ValueError(
+						f"Cannot assign column '{attr}': length {len(value)} != table length {self._length}"
+					)
+				
+				cols = list(self._underlying)
+				value._name = self._underlying[col_idx_indexed]._name  # Preserve original name
+				cols[col_idx_indexed] = value
+				object.__setattr__(self, '_underlying', tuple(cols))
+				object.__setattr__(self, '_column_map', self._build_column_map())
+				return
+			
+			# Regular column lookup by name
 			col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
 			if col_idx is not None:
 				# Replace the column in _underlying
@@ -424,8 +524,10 @@ class Table(Vector):
 					if base is None:
 						if f'col{idx}_' == key_lower:
 							return col
+					elif base == key_lower:
+						return col
 					else:
-						unique_name = _uniquify(base, seen)
+						unique_name = f"{base}__{idx}"
 						seen.add(unique_name)
 						if unique_name == key_lower:
 							return col
@@ -462,7 +564,7 @@ class Table(Vector):
 									found = True
 									break
 							else:
-								unique_name = _uniquify(base, seen)
+								unique_name = f"{base }__{idx}"
 								seen.add(unique_name)
 								if unique_name == col_name_lower:
 									selected_cols.append(col.copy())

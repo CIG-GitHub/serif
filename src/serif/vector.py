@@ -14,7 +14,6 @@ from .errors import SerifValueError
 from .errors import SerifKeyError
 from .display import _printr
 from .naming import _sanitize_user_name
-from .naming import _uniquify
 from .typing import DataType
 from .typing import infer_dtype
 from .typing import validate_scalar
