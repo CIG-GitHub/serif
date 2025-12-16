@@ -250,25 +250,35 @@ class Table(Vector):
 		PyRow for O(1) attribute lookups during iteration.
 		"""
 		column_map = {}
-		seen = set()
+		seen = {}
 		for idx, col in enumerate(self._underlying):
 			if col._name is not None:
 				base = _sanitize_user_name(col._name)
 				if base is None:
-					# Empty after sanitization, use system name
 					sanitized = f'col{idx}_'
 				elif base in seen:
+					# Warn only if ambiguity involves a wild column
+					other = seen[base]
+					if col._wild or other._wild:
+						warnings.warn(
+							f"Duplicate column name '{base}' detected. "
+							"Dot access will be disambiguated with indexed suffixes.",
+							UserWarning,
+							stacklevel=2
+						)
+					
 					# dont triple underscore if already ends with _
 					sep = "" if base.endswith("_") else "_"
 					sanitized = f"{base}{sep}_{idx}"
 				else:
 					sanitized = base
-					seen.add(base)
+					seen[base] = col
 			else:
-				# Unnamed column, use system name
 				sanitized = f'col{idx}_'
+
 			column_map[sanitized] = idx
 			col._mark_tame()
+
 		return column_map
 	
 	def __dir__(self):
@@ -842,6 +852,9 @@ class Table(Vector):
 				
 				# Set name
 				col._name = col_name
+
+				if _sanitize_user_name(col_name) in self._column_map:
+					warnings.warn(f"Adding column with name '{col_name}' which already exists in the table. Consider renaming to avoid confusion.", UserWarning, stacklevel=2)
 				named_cols.append(col)
 			
 			# Return new table with appended columns

@@ -212,10 +212,11 @@ def test_table_getattr_starts_with_digit():
 
 def test_table_getitem_priority():
 	"""Test that exact match takes priority over sanitized match"""
-	# Create a table where sanitized name might conflict
+	# Create a table where sanitized name might conflict - warning expected
 	col1 = Vector([1, 2, 3], name='first_name')
 	col2 = Vector([4, 5, 6], name='first name')  # Sanitizes to same thing
-	t = Table([col1, col2])
+	with pytest.warns(UserWarning, match="Duplicate column name 'first_name' detected"):
+		t = Table([col1, col2])
 	
 	# Exact matches should work
 	assert list(t['first_name']) == [1, 2, 3]

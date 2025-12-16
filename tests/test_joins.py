@@ -15,8 +15,9 @@ def test_inner_join_basic():
 		'age': [25, 30, 35]
 	})
 	
-	# Single key join using string syntax
-	result = left.inner_join(right, left_on='id', right_on='id')
+	# Single key join using string syntax - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.inner_join(right, left_on='id', right_on='id')
 	
 	assert len(result) == 2
 	assert list(result['name']) == ['Bob', 'Charlie']
@@ -36,11 +37,13 @@ def test_inner_join_multi_key():
 		'status': ['active', 'active', 'inactive']
 	})
 	
-	result = left.inner_join(
-		right, 
-		left_on=['customer_id', 'date'],
-		right_on=['customer_id', 'date']
-	)
+	# Multi-key join - duplicate 'customer_id' and 'date' columns expected
+	with pytest.warns(UserWarning, match="Duplicate column name '(customer_id|date)' detected"):
+		result = left.inner_join(
+			right, 
+			left_on=['customer_id', 'date'],
+			right_on=['customer_id', 'date']
+		)
 	
 	assert len(result) == 2
 	assert list(result['amount']) == [100, 300]
@@ -58,7 +61,9 @@ def test_join_left():
 		'age': [25, 35]
 	})
 	
-	result = left.join(right, left_on='id', right_on='id')
+	# Left join - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.join(right, left_on='id', right_on='id')
 	
 	assert len(result) == 3
 	assert list(result['name']) == ['Alice', 'Bob', 'Charlie']
@@ -76,7 +81,9 @@ def test_full_join():
 		'right_val': ['X', 'Y']
 	})
 	
-	result = left.full_join(right, left_on='id', right_on='id')
+	# Full join - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.full_join(right, left_on='id', right_on='id')
 	
 	assert len(result) == 3
 	# Check that we have rows for id 1, 2, and 3
@@ -125,7 +132,9 @@ def test_many_to_many_allows_duplicates():
 		'right_val': ['X', 'Y', 'Z']
 	})
 	
-	result = left.inner_join(right, left_on='key', right_on='key', expect='many_to_many')
+	# Many-to-many join - duplicate 'key' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'key' detected"):
+		result = left.inner_join(right, left_on='key', right_on='key', expect='many_to_many')
 	
 	# 1 matches 1 twice = 4 combinations (A-X, A-Y, B-X, B-Y)
 	# 2 matches 2 once = 1 combination (C-Z)
@@ -143,7 +152,9 @@ def test_one_to_many_cardinality():
 		'order': ['Order1', 'Order2', 'Order3']
 	})
 	
-	result = left.inner_join(right, left_on='id', right_on='id', expect='one_to_many')
+	# One-to-many join - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.inner_join(right, left_on='id', right_on='id', expect='one_to_many')
 	
 	assert len(result) == 3
 	assert list(result['name']) == ['Alice', 'Alice', 'Bob']
@@ -196,7 +207,9 @@ def test_left_join_with_multiple_right_matches():
 		'order': ['Order1', 'Order2']
 	})
 	
-	result = left.join(right, left_on='id', right_on='id', expect='one_to_many')
+	# Left join - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.join(right, left_on='id', right_on='id', expect='one_to_many')
 	
 	assert len(result) == 2
 	assert list(result['name']) == ['Alice', 'Alice']
@@ -214,7 +227,9 @@ def test_full_join_no_matches():
 		'right_val': ['X', 'Y']
 	})
 	
-	result = left.full_join(right, left_on='id', right_on='id')
+	# Full join - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.full_join(right, left_on='id', right_on='id')
 	
 	assert len(result) == 4
 	# All left_val should have 2 values and 2 Nones
@@ -246,7 +261,9 @@ def test_join_with_Vector_columns():
 	left = Table({'id': [1, 2]})
 	right = Table({'id': [2, 3]})
 	
-	result = left.inner_join(right, left_on=left.id, right_on=right.id)
+	# Join with Vector columns - duplicate 'id' column expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'id' detected"):
+		result = left.inner_join(right, left_on=left.id, right_on=right.id)
 	
 	assert len(result) == 1
 	assert list(result['id']) == [2]
@@ -265,7 +282,9 @@ def test_join_multi_key_with_Vectors():
 		'data': ['p', 'q', 'r']
 	})
 	
-	result = left.inner_join(right, left_on=[left.a, left.b], right_on=[right.a, right.b])
+	# Multi-key join - duplicate 'a' and 'b' columns expected
+	with pytest.warns(UserWarning, match="Duplicate column name '(a|b)' detected"):
+		result = left.inner_join(right, left_on=[left.a, left.b], right_on=[right.a, right.b])
 	
 	assert len(result) == 2
 	assert list(result['val']) == ['x', 'z']
@@ -338,8 +357,9 @@ def test_join_sanitized_column_name_lookup():
 		'Age': [25, 30, 35]
 	})
 	
-	# Should find column using sanitized name (case-insensitive)
-	result = left.inner_join(right, left_on='customer_id', right_on='customer_id')
+	# Should find column using sanitized name (case-insensitive) - duplicate 'customer_id' expected
+	with pytest.warns(UserWarning, match="Duplicate column name 'customer_id' detected"):
+		result = left.inner_join(right, left_on='customer_id', right_on='customer_id')
 	
 	assert len(result) == 2
 	assert list(result['Name']) == ['Bob', 'Charlie']

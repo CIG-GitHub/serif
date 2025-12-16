@@ -141,11 +141,12 @@ def test_Table_rename_columns_chaining():
 
 def test_Table_duplicate_column_names():
 	"""Test the horrible real-world condition: duplicate column names"""
-	# Create table with duplicate column names
+	# Create table with duplicate column names - warning expected
 	col1 = Vector([1, 2, 3], name='a')
 	col2 = Vector([4, 5, 6], name='a')
 	col3 = Vector([7, 8, 9], name='b')
-	t = Table([col1, col2, col3])
+	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
+		t = Table([col1, col2, col3])
 	
 	# Should have two columns named 'a' and one named 'b'
 	assert t._underlying[0]._name == 'a'
@@ -168,11 +169,12 @@ def test_Table_duplicate_column_names():
 
 def test_Table_rename_all_duplicates():
 	"""Test renaming ALL columns with duplicate names"""
-	# Create table with duplicate column names
+	# Create table with duplicate column names - warning expected
 	col1 = Vector([1, 2, 3], name='a')
 	col2 = Vector([4, 5, 6], name='a')
 	col3 = Vector([7, 8, 9], name='a')
-	t = Table([col1, col2, col3])
+	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
+		t = Table([col1, col2, col3])
 	
 	# All three columns named 'a'
 	assert all(c._name == 'a' for c in t._underlying)
@@ -188,11 +190,12 @@ def test_Table_rename_all_duplicates():
 
 def test_Table_rename_duplicate_columns_separately():
 	"""Test renaming duplicate columns to different names using parallel sequences"""
-	# Create table with duplicate column names
+	# Create table with duplicate column names - warning expected
 	col1 = Vector([1, 2, 3], name='data')
 	col2 = Vector([4, 5, 6], name='data')
 	col3 = Vector([7, 8, 9], name='label')
-	t = Table([col1, col2, col3])
+	with pytest.warns(UserWarning, match="Duplicate column name 'data' detected"):
+		t = Table([col1, col2, col3])
 	
 	# We want to rename both 'data' columns to different names
 	# This is where parallel lists shine
