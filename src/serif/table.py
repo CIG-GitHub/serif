@@ -278,7 +278,6 @@ class Table(Vector):
 
 			column_map[sanitized] = idx
 			col._mark_tame()
-
 		return column_map
 	
 	def __dir__(self):

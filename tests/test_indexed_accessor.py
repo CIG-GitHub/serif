@@ -11,13 +11,13 @@ def test_indexed_accessor_basic():
     t = Table({
         'total': [1, 2, 3],
         'count': [4, 5, 6],
-        'revenue': [7, 8, 9]
+        'sum': [7, 8, 9]
     })
     
     # Access by index with validation
     assert t.total__0 is t.total
     assert t.count__1 is t.count
-    assert t.revenue__2 is t.revenue
+    assert t.sum__2 is t.sum_
     
     # All should return the same vector
     assert all(t.total__0._underlying[i] == t.total._underlying[i] for i in range(3))
@@ -45,7 +45,7 @@ def test_indexed_accessor_wrong_name():
     t = Table({
         'total': [1, 2, 3],
         'count': [4, 5, 6],
-        'revenue': [7, 8, 9]
+        'sum': [7, 8, 9]
     })
     
     # Trying to access column 1 as 'total' should fail
@@ -78,7 +78,7 @@ def test_indexed_accessor_setattr():
     t = Table({
         'total': [1, 2, 3],
         'count': [4, 5, 6],
-        'revenue': [7, 8, 9]
+        'sum': [7, 8, 9]
     })
     
     # Set column 1 with validation
