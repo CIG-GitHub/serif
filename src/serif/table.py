@@ -288,12 +288,12 @@ class Table(Vector):
 	
 	def column_names(self):
 		"""Return list of column names (original names, not sanitized).
-		
+
 		Returns
 		-------
 		list
 			List of column names. None for unnamed columns.
-		
+
 		Examples
 		--------
 		>>> t = Table({'x': [1, 2], 'y': [3, 4]})
@@ -301,6 +301,30 @@ class Table(Vector):
 		['x', 'y']
 		"""
 		return [col._name for col in self._underlying]
+
+	def to_dict(self):
+		"""Serialize table to a column-oriented dict of plain Python lists.
+
+		Intended for transport/export only — not a lossless round-trip.
+		Column names fall back to positional keys ('col_0', 'col_1', ...)
+		for unnamed columns.
+
+		Returns
+		-------
+		dict
+			{'column_name': [v0, v1, ...], ...}
+
+		Examples
+		--------
+		>>> t = Table({'x': [1, 2], 'y': [3, 4]})
+		>>> t.to_dict()
+		{'x': [1, 2], 'y': [3, 4]}
+		"""
+		result = {}
+		for i, col in enumerate(self._underlying):
+			key = col._name if col._name is not None else f"col_{i}"
+			result[key] = list(col._underlying)
+		return result
 
 	def __getattr__(self, attr):
 		"""Access columns by sanitized attribute name using pre-computed column map."""
