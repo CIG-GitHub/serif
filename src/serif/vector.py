@@ -17,6 +17,9 @@ from .naming import _sanitize_user_name
 from .typing import DataType
 from .typing import infer_dtype
 from .typing import validate_scalar
+from .backend import choose_storage
+from .backend import ArrayStorage
+from .backend import TupleStorage
 
 from copy import deepcopy
 from datetime import date
@@ -93,7 +96,8 @@ class MethodProxy:
 class Vector():
 	""" Iterable vector with optional type safety """
 	_dtype = None  # DataType instance (private)
-	_underlying = None
+	_storage = None  # Storage backend (ArrayStorage/TupleStorage)
+	_underlying = None  # Tuple representation (for compatibility)
 	_name = None
 	_display_as_row = False
 	_wild = False  # Flag for name changes (used by Table column tracking)
@@ -172,14 +176,27 @@ class Vector():
 		self._display_as_row = as_row
 		self._wild = True
 
-		# We check self.__dict__ directly to avoid triggering Table.__getattr__
-		# which would crash because the table isn't initialized yet.
+		# Get or materialize initial data
 		if '_precomputed_data' in self.__dict__:
-			self._underlying = self._precomputed_data
+			data = self._precomputed_data
 			del self._precomputed_data # Clean up
 		else:
-			# Standard path: initial was already a list/tuple/dict
-			self._underlying = tuple(initial)
+			data = initial
+		
+		# Choose storage backend based on dtype
+		# For numeric types, use optimized ArrayStorage; otherwise use TupleStorage
+		if self._dtype is not None and self._dtype.kind in (int, float, bool):
+			try:
+				self._storage = choose_storage(data, self._dtype.kind, self._dtype.nullable)
+				self._underlying = self._storage.to_tuple()
+			except (ValueError, OverflowError):
+				# Fallback to tuple if storage fails (e.g., overflow, validation error)
+				self._storage = None
+				self._underlying = tuple(data)
+		else:
+			# Non-numeric types: use tuple storage
+			self._storage = None
+			self._underlying = tuple(data)
 		
 		# Fingerprint cache + powers
 		self._fp: int | None = None
