@@ -1116,9 +1116,10 @@ class Table(Vector):
 			right_schema = right_col.schema()
 			if left_schema is not None and right_schema is not None:
 				if left_schema.kind is not right_schema.kind:
+					from .typing import get_type_name
 					raise SerifTypeError(
 						f"Join key at index {i} has mismatched dtypes: "
-						f"{left_schema.kind.__name__} (left) vs {right_schema.kind.__name__} (right)"
+						f"{get_type_name(left_schema.kind)} (left) vs {get_type_name(right_schema.kind)} (right)"
 					)
 			
 			normalized.append((left_col, right_col))

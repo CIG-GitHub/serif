@@ -144,14 +144,27 @@ class Vector():
 		# Dispatch to typed subclasses based on inferred dtype
 		target_class = cls
 		if dtype is not None:
-			if dtype.kind is str:
+			# Check for Python string type
+			if not isinstance(dtype.kind, str) and dtype.kind is str:
 				target_class = _String
+			# Check for date/datetime
+			elif not isinstance(dtype.kind, str) and dtype.kind is date:
+				target_class = _Date
+			# For sized types, check category
+			elif isinstance(dtype.kind, str):
+				from .typing import get_type_metadata
+				metadata = get_type_metadata(dtype.kind)
+				if metadata:
+					category = metadata[0]  # 'int', 'uint', or 'float'
+					if category in ('int', 'uint'):
+						target_class = _Int
+					elif category == 'float':
+						target_class = _Float
+			# Legacy Python types
 			elif dtype.kind is int:
 				target_class = _Int
 			elif dtype.kind is float:
 				target_class = _Float
-			elif dtype.kind is date:
-				target_class = _Date
 		
 		# Create instance using object.__new__ (bypasses __new__ dispatch)
 		instance = super(Vector, target_class).__new__(target_class)
@@ -184,8 +197,9 @@ class Vector():
 			data = initial
 		
 		# Choose storage backend based on dtype
-		# For numeric types, use optimized ArrayStorage; otherwise use TupleStorage
-		if self._dtype is not None and self._dtype.kind in (int, float, bool):
+		# For sized numeric types, use optimized ArrayStorage; otherwise use TupleStorage
+		if self._dtype is not None and isinstance(self._dtype.kind, str):
+			# Sized type (int32, uint64, float32, etc.)
 			try:
 				self._storage = choose_storage(data, self._dtype.kind, self._dtype.nullable)
 				self._underlying = self._storage.to_tuple()
@@ -194,7 +208,7 @@ class Vector():
 				self._storage = None
 				self._underlying = tuple(data)
 		else:
-			# Non-numeric types: use tuple storage
+			# Non-sized types: use tuple storage (str, date, object, legacy Python types)
 			self._storage = None
 			self._underlying = tuple(data)
 		
@@ -434,9 +448,10 @@ class Vector():
 						as_row=self._display_as_row
 					)
 				except SerifTypeError:
+					from .typing import get_type_name
 					raise ValueError(
 						f"fillna: value {value!r} (type {type(value).__name__}) "
-						f"cannot be used with {dtype.kind.__name__} vector. "
+						f"cannot be used with {get_type_name(dtype.kind)} vector. "
 						f"Promotion not supported."
 					)
 
@@ -566,7 +581,7 @@ class Vector():
 			return self._underlying[key[-1]][key[:-1]]
 
 		key = self._check_duplicate(key)
-		if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
+		if isinstance(key, Vector) and key.schema().is_bool and not key.schema().nullable:
 			if len(self) != len(key):
 				raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
 			return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
@@ -578,7 +593,7 @@ class Vector():
 			return self.copy(self._underlying[key], name=self._name)
 
 		# NOT RECOMMENDED
-		if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
+		if isinstance(key, Vector) and key.schema().is_integer and not key.schema().nullable:
 			if len(self) > 1000:
 				warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
 			return self.copy((self[x] for x in key), name=self._name)
@@ -631,7 +646,7 @@ class Vector():
 		# =====================================================================
 		if (
 			isinstance(key, Vector)
-			and key.schema().kind == bool
+			and key.schema().is_bool
 			and not key.schema().nullable
 		) or (
 			isinstance(key, list) and all(isinstance(e, bool) for e in key)
@@ -692,7 +707,7 @@ class Vector():
 		# =====================================================================
 		elif (
 			isinstance(key, Vector)
-			and key.schema().kind == int
+			and key.schema().is_integer
 			and not key.schema().nullable
 		):
 			if is_seq_val:
@@ -940,8 +955,8 @@ class Vector():
 							name=None,
 							as_row=self._display_as_row)
 		except TypeError as e:
-			raise SerifTypeError(f"Unsupported operand type(s) for '{op_symbol}': '{self._dtype.kind.__name__}' and '{type(other).__name__}'.")
-
+				from .typing import get_type_name
+				raise SerifTypeError(f"Unsupported operand type(s) for '{op_symbol}': '{get_type_name(self._dtype.kind)}' and '{type(other).__name__}'.")
 	def _unary_operation(self, op_func, op_name: str):
 		"""Helper function to handle unary operations on each element."""
 		return Vector(
@@ -971,7 +986,7 @@ class Vector():
 
 	def __invert__(self):
 		# For boolean vectors, use logical NOT instead of bitwise NOT
-		if self._dtype and self._dtype.kind is bool:
+		if self._dtype and self._dtype.is_bool:
 			return Vector(
 				tuple(not x for x in self),
 				dtype=self._dtype,
@@ -1052,46 +1067,103 @@ class Vector():
 
 
 	def _promote(self, new_dtype):
-		""" Check if a vector can change data type (int -> float, float -> complex) """
-		# Handle both Python types and DataType instances
+		"""
+		Promote vector to a new dtype (in-place mutation).
+		
+		Handles:
+		- Sized type promotion (int8 → int16 → int32 → int64)
+		- Type category promotion (int → float, float → complex)
+		- Demotion to object (arbitrary precision / mixed types)
+		"""
+		from .typing import normalize_type, promote_numeric_types, get_type_metadata
+		
+		# Normalize input to kind
 		if isinstance(new_dtype, DataType):
 			target_kind = new_dtype.kind
 		elif isinstance(new_dtype, type):
 			# Python type like int, float
+			target_kind = normalize_type(new_dtype)
+		elif isinstance(new_dtype, str):
+			# Sized type name like 'int32', 'float64'
 			target_kind = new_dtype
 		else:
-			raise SerifTypeError(f"new_dtype must be a DataType instance or Python type, not {type(new_dtype).__name__}")
+			raise SerifTypeError(
+				f"new_dtype must be a DataType, Python type, or sized type string, "
+				f"not {type(new_dtype).__name__}"
+			)
 			
 		# Already the target type
-		if self._dtype.kind is target_kind:
+		if self._dtype.kind == target_kind:
 			return
 		
-		# Allow numeric promotions: int -> float, float -> complex
-		if target_kind is float and self._dtype.kind is int:
-			old_tuple_id = id(self._underlying)
+		current_kind = self._dtype.kind
+		old_tuple_id = id(self._underlying)
+		
+		# Sized type → sized type promotion (recreate ArrayStorage)
+		if isinstance(current_kind, str) and isinstance(target_kind, str):
+			# Check if promotion is valid
+			current_meta = get_type_metadata(current_kind)
+			target_meta = get_type_metadata(target_kind)
+			
+			if current_meta and target_meta:
+				# Recreate storage with new typecode
+				try:
+					new_storage = choose_storage(self._underlying, target_kind, self._dtype.nullable)
+					_ALIAS_TRACKER.unregister(self, old_tuple_id)
+					self._storage = new_storage
+					self._underlying = new_storage.to_tuple()
+					_ALIAS_TRACKER.register(self, id(self._underlying))
+					self._dtype = DataType(target_kind, nullable=self._dtype.nullable)
+					return
+				except (ValueError, OverflowError):
+					# Promotion failed, fall through to object demotion
+					pass
+		
+		# Sized type → object (kill storage, use tuple)
+		if isinstance(current_kind, str) and target_kind is object:
+			_ALIAS_TRACKER.unregister(self, old_tuple_id)
+			self._storage = None
+			# _underlying already has the data as tuple
+			_ALIAS_TRACKER.register(self, id(self._underlying))
+			self._dtype = DataType(object, nullable=self._dtype.nullable)
+			return
+		
+		# Legacy Python type promotions
+		
+		# int → float
+		if target_kind in ('float64', float) and current_kind in ('int64', int):
 			new_tuple = tuple(float(x) if x is not None else None for x in self._underlying)
 			_ALIAS_TRACKER.unregister(self, old_tuple_id)
 			self._underlying = new_tuple
+			self._storage = None
 			_ALIAS_TRACKER.register(self, id(new_tuple))
 			self._dtype = DataType(float, nullable=self._dtype.nullable)
-		elif target_kind is complex and self._dtype.kind in (int, float):
-			old_tuple_id = id(self._underlying)
+			return
+		
+		# float → complex
+		if target_kind is complex and current_kind in ('float64', float, 'int64', int):
 			new_tuple = tuple(complex(x) if x is not None else None for x in self._underlying)
 			_ALIAS_TRACKER.unregister(self, old_tuple_id)
 			self._underlying = new_tuple
+			self._storage = None
 			_ALIAS_TRACKER.register(self, id(new_tuple))
 			self._dtype = DataType(complex, nullable=self._dtype.nullable)
-		elif target_kind is datetime and self._dtype.kind is date:
-			old_tuple_id = id(self._underlying)
+			return
+		
+		# date → datetime
+		if target_kind is datetime and current_kind is date:
 			new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._underlying)
 			_ALIAS_TRACKER.unregister(self, old_tuple_id)
 			self._underlying = new_tuple
+			self._storage = None
 			_ALIAS_TRACKER.register(self, id(new_tuple))
 			self._dtype = DataType(datetime, nullable=self._dtype.nullable)
-		else:
-			# For backwards compat, raise error if trying invalid promotion
-			raise SerifTypeError(f'Cannot convert Vector from {self._dtype.kind.__name__} to {target_kind.__name__}.')
-		return
+			return
+		
+		# Invalid promotion
+		current_name = current_kind if isinstance(current_kind, str) else current_kind.__name__
+		target_name = target_kind if isinstance(target_kind, str) else target_kind.__name__
+		raise SerifTypeError(f'Cannot promote Vector from {current_name} to {target_name}.')
 
 	def ndims(self):
 		return len(self.shape)
@@ -1764,7 +1836,7 @@ class _Date(Vector):
 
 	def __add__(self, other):
 		""" adding integers is adding days """
-		if isinstance(other, Vector) and other.schema().kind == int:
+		if isinstance(other, Vector) and other.schema().is_integer:
 			if len(self) != len(other):
 				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
 			return Vector(tuple(

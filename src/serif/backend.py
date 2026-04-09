@@ -46,24 +46,39 @@ class ArrayStorage:
     """
     Contiguous numeric storage using array.array + optional null mask.
     
-    For numeric types (int, float) with or without nulls.
+    For numeric types (int, uint, float) with or without nulls.
     Uses stdlib array.array for contiguous memory + buffer protocol.
     """
 
-    __slots__ = ('_data', '_mask', '_typecode')
+    __slots__ = ('_data', '_mask', '_typecode', '_dtype_name')
 
-    # Map Python types to array.array typecodes
+    # Map sized type names to array.array typecodes
     _TYPECODE_MAP = {
-        int: 'q',      # signed long long (64-bit)
-        float: 'd',    # double
-        bool: 'B',     # unsigned char (0/1)
+        'int8': 'b',
+        'int16': 'h',
+        'int32': 'i',
+        'int64': 'q',
+        'uint8': 'B',
+        'uint16': 'H',
+        'uint32': 'I',
+        'uint64': 'Q',
+        'float32': 'f',
+        'float64': 'd',
     }
     
-    # Range limits for typecodes
-    _INT64_MIN = -(2**63)
-    _INT64_MAX = 2**63 - 1
+    # Range limits for integer types (typecode → (min, max))
+    _INT_BOUNDS = {
+        'b': (-(2**7), 2**7 - 1),
+        'h': (-(2**15), 2**15 - 1),
+        'i': (-(2**31), 2**31 - 1),
+        'q': (-(2**63), 2**63 - 1),
+        'B': (0, 2**8 - 1),
+        'H': (0, 2**16 - 1),
+        'I': (0, 2**32 - 1),
+        'Q': (0, 2**64 - 1),
+    }
 
-    def __init__(self, data: array, mask: array | None = None):
+    def __init__(self, data: array, mask: array | None = None, dtype_name: str = None):
         """
         Parameters
         ----------
@@ -71,21 +86,27 @@ class ArrayStorage:
             Contiguous numeric data
         mask : array.array of 'B' or None
             Null mask (1 = null, 0 = valid), same length as data
+        dtype_name : str, optional
+            Sized type name (e.g., 'int32', 'float64')
         """
         self._data = data
         self._mask = mask
         self._typecode = data.typecode
+        self._dtype_name = dtype_name
 
     @classmethod
-    def from_iterable(cls, values: Iterable[Any], dtype_kind: type) -> ArrayStorage:
-        """Create from Python iterable."""
-        typecode = cls._TYPECODE_MAP.get(dtype_kind)
+    def from_iterable(cls, values: Iterable[Any], dtype_name: str) -> ArrayStorage:
+        """Create from Python iterable using sized type name."""
+        typecode = cls._TYPECODE_MAP.get(dtype_name)
         if typecode is None:
-            raise ValueError(f"Cannot use ArrayStorage for {dtype_kind}")
+            raise ValueError(f"Cannot use ArrayStorage for dtype {dtype_name}")
 
         data_list = []
         mask_list = []
         has_nulls = False
+        
+        # Get bounds for validation (if integer type)
+        bounds = cls._INT_BOUNDS.get(typecode)
 
         for val in values:
             if val is None:
@@ -93,12 +114,13 @@ class ArrayStorage:
                 mask_list.append(1)
                 data_list.append(0)  # sentinel value (ignored when masked)
             else:
-                # Validate integer bounds for 64-bit array storage
-                if dtype_kind is int:
-                    if val < cls._INT64_MIN or val > cls._INT64_MAX:
+                # Validate integer bounds
+                if bounds is not None:
+                    min_val, max_val = bounds
+                    if val < min_val or val > max_val:
                         raise OverflowError(
-                            f"Integer {val} exceeds 64-bit range [{cls._INT64_MIN}, {cls._INT64_MAX}]. "
-                            "Use TupleStorage for arbitrary precision integers."
+                            f"Value {val} exceeds {dtype_name} range [{min_val}, {max_val}]. "
+                            f"Promotion required."
                         )
                 mask_list.append(0)
                 data_list.append(val)
@@ -106,7 +128,7 @@ class ArrayStorage:
         data = array(typecode, data_list)
         mask = array('B', mask_list) if has_nulls else None
 
-        return cls(data, mask)
+        return cls(data, mask, dtype_name)
 
     def __len__(self) -> int:
         return len(self._data)
@@ -130,19 +152,21 @@ class ArrayStorage:
         """Zero-copy slice (array.array creates new view)."""
         new_data = self._data[slc]
         new_mask = self._mask[slc] if self._mask else None
-        return ArrayStorage(new_data, new_mask)
+        return ArrayStorage(new_data, new_mask, self._dtype_name)
 
     def to_tuple(self) -> tuple:
         return tuple(self)
 
     def set(self, idx: int, value: Any) -> ArrayStorage:
         """Copy-on-write update."""
-        # Validate integer bounds before mutation
-        if value is not None and self._typecode == 'q':
-            if value < self._INT64_MIN or value > self._INT64_MAX:
+        # Validate bounds before mutation
+        bounds = self._INT_BOUNDS.get(self._typecode)
+        if value is not None and bounds is not None:
+            min_val, max_val = bounds
+            if value < min_val or value > max_val:
                 raise OverflowError(
-                    f"Cannot set value {value}: exceeds 64-bit integer range. "
-                    "Vector must be promoted to TupleStorage."
+                    f"Cannot set value {value}: exceeds {self._dtype_name} range. "
+                    "Vector must be promoted."
                 )
         
         new_data = array(self._typecode, self._data)
@@ -157,7 +181,7 @@ class ArrayStorage:
             if new_mask:
                 new_mask[idx] = 0
 
-        return ArrayStorage(new_data, new_mask)
+        return ArrayStorage(new_data, new_mask, self._dtype_name)
     
     def promote_to_tuple(self) -> TupleStorage:
         """Convert ArrayStorage to TupleStorage for arbitrary precision / mixed types."""
@@ -253,7 +277,7 @@ class LazyStorage:
         return self._materialized.set(idx, value)
 
 
-def choose_storage(values: Iterable[Any], dtype_kind: type, nullable: bool) -> Storage:
+def choose_storage(values: Iterable[Any], dtype_name: str, nullable: bool) -> Storage:
     """
     Choose appropriate storage backend based on dtype.
     
@@ -261,8 +285,8 @@ def choose_storage(values: Iterable[Any], dtype_kind: type, nullable: bool) -> S
     ----------
     values : Iterable[Any]
         Data to store
-    dtype_kind : type
-        Python type (int, float, str, etc.)
+    dtype_name : str
+        Sized type name ('int32', 'uint64', 'float64', etc.)
     nullable : bool
         Whether the dtype allows null values (used for validation)
     
@@ -273,40 +297,35 @@ def choose_storage(values: Iterable[Any], dtype_kind: type, nullable: bool) -> S
         
     Notes
     -----
-    - ArrayStorage: Used for numeric types (int, float, bool) within 64-bit range
-    - TupleStorage: Fallback for arbitrary-precision ints, strings, dates, objects
-    - Integers exceeding 64-bit range automatically demote to TupleStorage
+    - ArrayStorage: Used for sized numeric types within bounds
+    - TupleStorage: Fallback for non-sized types, overflow, or other Python types
+    - Values exceeding type bounds trigger OverflowError (caller handles promotion)
     
     Raises
     ------
     ValueError
         If non-nullable dtype contains null values
+    OverflowError
+        If values exceed the range of the specified sized type
     """
-    # Validate nullable constraint if needed
-    if not nullable:
-        # Quick check: if any value is None and dtype is non-nullable, error
-        # Note: This materializes the iterable, so only check for non-lazy iterables
-        # For performance, this validation could be deferred or made optional
-        pass  # Defer validation to Vector level to avoid double iteration
-    
-    # Try array.array for numeric types
-    if dtype_kind in (int, float, bool):
+    # Try array.array for sized numeric types
+    if dtype_name in ArrayStorage._TYPECODE_MAP:
         try:
-            storage = ArrayStorage.from_iterable(values, dtype_kind)
+            storage = ArrayStorage.from_iterable(values, dtype_name)
             
             # Validate nullable constraint after construction
             if not nullable and storage._mask is not None:
                 raise ValueError(
-                    f"Non-nullable dtype {dtype_kind.__name__} cannot contain null values"
+                    f"Non-nullable dtype {dtype_name} cannot contain null values"
                 )
             
             return storage
         except (ValueError, TypeError, OverflowError) as exc:
-            # Overflow: integer too large for array storage
+            # Overflow: value exceeds type range (caller should promote)
             # ValueError: typecode not found or nullable constraint violated
             # TypeError: incompatible type for array
-            if isinstance(exc, ValueError) and "nullable" in str(exc):
-                raise  # Re-raise nullable validation errors
+            if isinstance(exc, (ValueError, OverflowError)) and ("nullable" in str(exc) or "exceeds" in str(exc)):
+                raise  # Re-raise validation/overflow errors for caller to handle
             pass  # Otherwise fall through to tuple storage
 
     # Fallback to tuple for everything else
@@ -319,7 +338,7 @@ def choose_storage(values: Iterable[Any], dtype_kind: type, nullable: bool) -> S
     for val in storage:
         if val is None:
             raise ValueError(
-                f"Non-nullable dtype {dtype_kind.__name__} cannot contain null values"
+                f"Non-nullable dtype {dtype_name} cannot contain null values"
             )
     
     return storage
