@@ -156,7 +156,8 @@ class Vector():
 				metadata = get_type_metadata(dtype.kind)
 				if metadata:
 					category = metadata[0]  # 'int', 'uint', or 'float'
-					if category in ('int', 'uint'):
+					# Dispatch int category, or uint but NOT uint8 (which is for bools)
+					if category == 'int' or (category == 'uint' and dtype.kind != 'uint8'):
 						target_class = _Int
 					elif category == 'float':
 						target_class = _Float
@@ -1098,7 +1099,15 @@ class Vector():
 		if self._dtype.kind == target_kind:
 			return
 		
+		# Validate against backward promotions (lossy conversions)
 		current_kind = self._dtype.kind
+		
+		# Prevent backward promotions in numeric ladder
+		if current_kind in ('float64', float) and target_kind in ('int64', 'int32', 'int16', 'int8', int, 'uint64', 'uint32', 'uint16', 'uint8'):
+			raise SerifTypeError(f"Cannot promote {current_kind} to {target_kind}: lossy backward conversion")
+		if current_kind is complex and target_kind in ('float64', 'float32', float, 'int64', 'int32', 'int16', 'int8', int, 'uint64', 'uint32', 'uint16', 'uint8'):
+			raise SerifTypeError(f"Cannot promote {current_kind} to {target_kind}: lossy backward conversion")
+		
 		old_tuple_id = id(self._underlying)
 		
 		# Sized type → sized type promotion (recreate ArrayStorage)
@@ -1515,6 +1524,7 @@ class Vector():
 		"""
 		# 1. If we are untyped (object), don't guess. Explicit > Implicit.
 		# Use __dict__ to avoid recursive __getattr__ calls
+		from .typing import get_type_name, get_base_type
 		schema = object.__getattribute__(self, 'schema')()
 		if schema is None:
 			raise AttributeError(f"Empty Vector has no attribute '{name}'")
@@ -1523,12 +1533,13 @@ class Vector():
 			raise AttributeError(f"Vector[object] has no attribute '{name}'")
 		
 		# 2. Inspect the class definition of the type we are holding
-		# getattr(cls, name) returns the actual class member (method, property, slot)
-		cls_attr = getattr(dtype_kind, name, None)
+		# For sized types, map to base Python type for method lookup
+		base_type = get_base_type(dtype_kind)
+		cls_attr = getattr(base_type, name, None)
 		
 		if cls_attr is None:
 			# If the class doesn't have it, we definitely don't have it
-			raise AttributeError(f"'{dtype_kind.__name__}' object has no attribute '{name}'")
+			raise AttributeError(f"'{get_type_name(dtype_kind)}' object has no attribute '{name}'")
 		
 		# 3. Check if it's callable at the class level
 		# If it's callable, it's a method. If not, it's a property/descriptor.

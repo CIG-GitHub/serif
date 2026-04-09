@@ -268,6 +268,38 @@ def get_type_name(kind: Union[Type, str]) -> str:
     return kind.__name__
 
 
+def get_base_type(kind: Union[Type, str]) -> Type:
+    """
+    Get the base Python type for method proxying.
+    
+    Maps sized types (e.g., 'int64', 'float32') to their base Python types
+    (int, float) so that method lookups work correctly.
+    
+    Parameters
+    ----------
+    kind : Type or str
+        Python type or sized type name
+        
+    Returns
+    -------
+    Type
+        Base Python type (int, float, str, etc.)
+    """
+    if isinstance(kind, str):
+        # Sized type - look up in registry
+        meta = _TYPE_REGISTRY.get(kind)
+        if meta:
+            category = meta[0]
+            if category in ('int', 'uint'):
+                return int
+            elif category == 'float':
+                return float
+        # If not in registry, shouldn't happen but return object as fallback
+        return object
+    # Already a Python type
+    return kind
+
+
 @dataclass(frozen=True)
 class DataType:
     """
@@ -438,6 +470,11 @@ class DataType:
                         return self
                     
                 elif isinstance(value, int):
+                    # Special case: if current type is uint8 (bool storage) and we get int,
+                    # promote to int64 instead of staying in uint ladder
+                    if self.kind == 'uint8' and current_category == 'uint':
+                        return DataType('int64', self.nullable)
+                    
                     # int value with sized int/uint type
                     if current_category in ('int', 'uint'):
                         if value_fits_in_type(value, self.kind):
@@ -465,6 +502,10 @@ class DataType:
                     elif current_category == 'float':
                         # float type + float value → ok
                         return self
+                
+                elif isinstance(value, complex):
+                    # complex value → promote to complex (sized types don't support complex)
+                    return DataType(complex, self.nullable)
                 
                 # Incompatible type → degrade to object
                 warnings.warn(
