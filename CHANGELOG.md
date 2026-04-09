@@ -41,3 +41,8 @@
 - Replaced `hasattr(__iter__)` checks with explicit `isinstance(...)`
 - Refactored helper layout and imports for readability
 - Added contributing guidelines, PR templates, and code of conduct
+
+## 0.1.3 – Table Dictionary Export
+
+### Added
+- `Table.to_dict()` method for converting tables to dictionaries
