@@ -313,11 +313,13 @@ def choose_storage(values: Iterable[Any], dtype_kind: type, nullable: bool) -> S
     storage = TupleStorage.from_iterable(values)
     
     # Validate nullable constraint for tuple storage
-    if not nullable:
-        for val in storage:
-            if val is None:
-                raise ValueError(
-                    f"Non-nullable dtype {dtype_kind.__name__} cannot contain null values"
-                )
+    if nullable:
+        return storage
+    
+    for val in storage:
+        if val is None:
+            raise ValueError(
+                f"Non-nullable dtype {dtype_kind.__name__} cannot contain null values"
+            )
     
     return storage
