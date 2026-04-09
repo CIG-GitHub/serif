@@ -411,7 +411,7 @@ class Table(Vector):
 	def __setattr__(self, attr, value):
 		"""Intercept column assignments (t.colname = vec) to update underlying columns."""
 		# Let instance attributes initialize normally (before __init__ completes)
-		if attr in ('_underlying', '_storage', '_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows'):
+		if attr in ('_underlying', '_underlying_cache', '_storage', '_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows'):
 			object.__setattr__(self, attr, value)
 			return
 		
@@ -449,14 +449,15 @@ class Table(Vector):
 				cols = list(self._underlying)
 				value._name = self._underlying[col_idx_indexed]._name  # Preserve original name
 				cols[col_idx_indexed] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				object.__setattr__(self, '_underlying_cache', tuple(cols))
+				object.__setattr__(self, '_storage', None)  # Invalidate storage
 				object.__setattr__(self, '_column_map', self._build_column_map())
 				return
 			
-			# Regular column lookup by name
-			col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
+			# Try normal column lookup
+			col_idx = self._column_map.get(attr)
+			
 			if col_idx is not None:
-				# Replace the column in _underlying
 				if not isinstance(value, Vector):
 					value = Vector(value)
 				
@@ -470,7 +471,8 @@ class Table(Vector):
 				cols = list(self._underlying)
 				value._name = self._underlying[col_idx]._name  # Preserve original name
 				cols[col_idx] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				object.__setattr__(self, '_underlying_cache', tuple(cols))
+				object.__setattr__(self, '_storage', None)  # Invalidate storage
 				
 				# Rebuild column map to reflect any structural changes
 				object.__setattr__(self, '_column_map', self._build_column_map())

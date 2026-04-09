@@ -197,28 +197,55 @@ class Vector():
 		else:
 			data = initial
 		
+		# Phase 5: Storage-first architecture
+		# _storage is primary, _underlying_cache materializes on demand
+		# This saves memory for numeric vectors (no need to store both array + tuple)
+		self._underlying_cache = None  # Lazy tuple cache
+		
 		# Choose storage backend based on dtype
 		# For sized numeric types, use optimized ArrayStorage; otherwise use TupleStorage
 		if self._dtype is not None and isinstance(self._dtype.kind, str):
 			# Sized type (int32, uint64, float32, etc.)
 			try:
 				self._storage = choose_storage(data, self._dtype.kind, self._dtype.nullable)
-				self._underlying = self._storage.to_tuple()
+				# Don't materialize tuple yet - lazy evaluation
 			except (ValueError, OverflowError):
 				# Fallback to tuple if storage fails (e.g., overflow, validation error)
 				self._storage = None
-				self._underlying = tuple(data)
+				self._underlying_cache = tuple(data)
 		else:
 			# Non-sized types: use tuple storage (str, date, object, legacy Python types)
 			self._storage = None
-			self._underlying = tuple(data)
+			self._underlying_cache = tuple(data)
 		
 		# Fingerprint cache + powers
 		self._fp: int | None = None
 		self._fp_powers: List[int] | None = None
 		
 		# Register with alias tracker after full initialization
-		_ALIAS_TRACKER.register(self, id(self._underlying))
+		_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
+	
+	def _get_data_identity(self):
+		"""Get object ID for alias tracking (storage or tuple)."""
+		if self._storage is not None:
+			return self._storage
+		return self._underlying
+	
+	@property
+	def _underlying(self):
+		"""
+		Lazy tuple materialization (Phase 5 optimization).
+		
+		Returns cached tuple if available, otherwise materializes from storage.
+		This allows numeric vectors to avoid storing both array and tuple.
+		"""
+		if self._underlying_cache is None:
+			if self._storage is not None:
+				self._underlying_cache = self._storage.to_tuple()
+			else:
+				# Should not happen - either storage or cache should exist
+				self._underlying_cache = tuple()
+		return self._underlying_cache
 
 
 	@property
@@ -546,11 +573,15 @@ class Vector():
 
 
 	def __iter__(self):
-		""" iterate over the underlying tuple """
+		""" iterate over elements - use storage if available for efficiency """
+		if self._storage is not None:
+			return iter(self._storage)
 		return iter(self._underlying)
 
 	def __len__(self):
-		""" length of the underlying tuple """
+		""" length of vector """
+		if self._storage is not None:
+			return len(self._storage)
 		return len(self._underlying)
 
 	@property
@@ -802,9 +833,10 @@ class Vector():
 		old_id = id(underlying)
 
 		_alias.unregister(self, old_id)
-		self._underlying = new_tuple
+		self._underlying_cache = new_tuple
+		self._storage = None  # Invalidate storage when mutating
 		self._invalidate_fp()
-		_alias.register(self, id(new_tuple))
+		_alias.register(self, id(self._get_data_identity()))
 
 
 
@@ -1169,7 +1201,7 @@ class Vector():
 		if current_kind is complex and target_kind in ('float64', 'float32', float, 'int64', 'int32', 'int16', 'int8', int, 'uint64', 'uint32', 'uint16', 'uint8'):
 			raise SerifTypeError(f"Cannot promote {current_kind} to {target_kind}: lossy backward conversion")
 		
-		old_tuple_id = id(self._underlying)
+		old_data_id = id(self._get_data_identity())
 		
 		# Sized type → sized type promotion (recreate ArrayStorage)
 		if isinstance(current_kind, str) and isinstance(target_kind, str):
@@ -1181,10 +1213,10 @@ class Vector():
 				# Recreate storage with new typecode
 				try:
 					new_storage = choose_storage(self._underlying, target_kind, self._dtype.nullable)
-					_ALIAS_TRACKER.unregister(self, old_tuple_id)
+					_ALIAS_TRACKER.unregister(self, old_data_id)
 					self._storage = new_storage
-					self._underlying = new_storage.to_tuple()
-					_ALIAS_TRACKER.register(self, id(self._underlying))
+					self._underlying_cache = None  # Invalidate cache, will re-materialize from storage
+					_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
 					self._dtype = DataType(target_kind, nullable=self._dtype.nullable)
 					return
 				except (ValueError, OverflowError):
@@ -1193,10 +1225,10 @@ class Vector():
 		
 		# Sized type → object (kill storage, use tuple)
 		if isinstance(current_kind, str) and target_kind is object:
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
+			_ALIAS_TRACKER.unregister(self, old_data_id)
 			self._storage = None
-			# _underlying already has the data as tuple
-			_ALIAS_TRACKER.register(self, id(self._underlying))
+			# _underlying will be in cache from previous materialization
+			_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
 			self._dtype = DataType(object, nullable=self._dtype.nullable)
 			return
 		
@@ -1205,30 +1237,30 @@ class Vector():
 		# int → float
 		if target_kind in ('float64', float) and current_kind in ('int64', int):
 			new_tuple = tuple(float(x) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
+			_ALIAS_TRACKER.unregister(self, old_data_id)
+			self._underlying_cache = new_tuple
 			self._storage = None
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
 			self._dtype = DataType(float, nullable=self._dtype.nullable)
 			return
 		
 		# float → complex
 		if target_kind is complex and current_kind in ('float64', float, 'int64', int):
 			new_tuple = tuple(complex(x) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
+			_ALIAS_TRACKER.unregister(self, old_data_id)
+			self._underlying_cache = new_tuple
 			self._storage = None
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
 			self._dtype = DataType(complex, nullable=self._dtype.nullable)
 			return
 		
 		# date → datetime
 		if target_kind is datetime and current_kind is date:
 			new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
+			_ALIAS_TRACKER.unregister(self, old_data_id)
+			self._underlying_cache = new_tuple
 			self._storage = None
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			_ALIAS_TRACKER.register(self, id(self._get_data_identity()))
 			self._dtype = DataType(datetime, nullable=self._dtype.nullable)
 			return
 		
