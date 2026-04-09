@@ -9,7 +9,7 @@ class TestStringCreation:
     def test_auto_creates_String(self):
         v = Vector(['hello', 'world'])
         assert isinstance(v, _String)
-        assert v.schema().kind == 'large_string'
+        assert v.schema().kind == str
 
 
 class TestStringMethods:

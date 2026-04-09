@@ -175,7 +175,7 @@ class TestCast:
         v = Vector([10, None, 20])
         result = v.cast(str)
         assert list(result) == ['10', None, '20']
-        assert result.schema().kind == 'large_string'
+        assert result.schema().kind == str
         assert result.schema().nullable
     
     def test_cast_nullable_to_nullable(self):

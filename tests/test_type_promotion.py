@@ -18,7 +18,7 @@ class TestInferDtype:
         [
             ([1, 2, 3], 'int64', False),
             ([1.5, 2.5], 'float64', False),
-            (["a", "b", "c"], 'large_string', False),
+            (["a", "b", "c"], str, False),
             ([True, False], 'uint8', False),
             ([1 + 2j, 3 + 4j], complex, False),
             ([date(2020, 1, 1), date(2020, 1, 2)], date, False),
@@ -57,7 +57,7 @@ class TestInferDtype:
         assert dt.nullable
 
         dt = infer_dtype(["a", None, "c"])
-        assert dt.kind == 'large_string'
+        assert dt.kind == str
         assert dt.nullable
 
         dt = infer_dtype([date(2020, 1, 1), None])
@@ -104,7 +104,7 @@ class TestVectorCreationWithDtype:
     def test_create_typed_str(self):
         v = Vector(["a", "b", "c"], dtype=DataType(str, nullable=False))
         s = v.schema()
-        assert s.kind == 'large_string'
+        assert s.kind == str
         assert s.nullable is False
 
     def test_python_type_shorthand(self):
@@ -349,7 +349,7 @@ class TestTypedSubclasses:
         from serif.vector import _String
         v = Vector(["a", "b", "c"])
         assert isinstance(v, _String)
-        assert v.schema().kind == 'large_string'
+        assert v.schema().kind == str
 
     def test_date_vector_uses_Date_subclass(self):
         from serif.vector import _Date

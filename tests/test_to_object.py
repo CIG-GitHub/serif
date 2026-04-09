@@ -81,7 +81,7 @@ def test_to_object_idempotent():
 def test_to_object_with_string_vector():
 	"""Test converting string vector to object"""
 	a = Vector(["a", "b", "c"])
-	assert a._dtype.kind == 'large_string'
+	assert a._dtype.kind == str
 	
 	b = a.to_object()
 	assert b._dtype.kind is object

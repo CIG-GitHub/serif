@@ -418,22 +418,60 @@ class DataType:
 
         # Case 2: Sized type validation
         if isinstance(self.kind, str):
-            # Check if value fits in current sized type
-            if value_fits_in_type(value, self.kind):
-                return self
-            
-            # Try promoting to next size
-            next_type = promote_to_next_size(self.kind)
-            if next_type is not object and isinstance(next_type, str):
-                if value_fits_in_type(value, next_type):
-                    return DataType(next_type, self.nullable)
-            
-            # Can't fit in sized types → degrade to object
-            warnings.warn(
-                f"Value {value!r} exceeds {self.kind} range, degrading to object",
-                stacklevel=3,
-            )
-            return DataType(object, self.nullable)
+            metadata = get_type_metadata(self.kind)
+            if metadata:
+                current_category = metadata[0]  # 'int', 'uint', or 'float'
+                
+                # Check type compatibility first
+                if isinstance(value, bool):
+                    # bool can go into uint8, or promote to int/float
+                    if current_category in ('int', 'uint'):
+                        if value_fits_in_type(value, self.kind):
+                            return self
+                        # Try next size
+                        next_type = promote_to_next_size(self.kind)
+                        if next_type is not object and isinstance(next_type, str):
+                            if value_fits_in_type(value, next_type):
+                                return DataType(next_type, self.nullable)
+                    elif current_category == 'float':
+                        # bool → float is fine
+                        return self
+                    
+                elif isinstance(value, int):
+                    # int value with sized int/uint type
+                    if current_category in ('int', 'uint'):
+                        if value_fits_in_type(value, self.kind):
+                            return self
+                        # Try promoting within same ladder
+                        next_type = promote_to_next_size(self.kind)
+                        if next_type is not object and isinstance(next_type, str):
+                            if value_fits_in_type(value, next_type):
+                                return DataType(next_type, self.nullable)
+                        # Can't fit → degrade to object
+                        warnings.warn(
+                            f"Value {value!r} exceeds {self.kind} range, degrading to object",
+                            stacklevel=3,
+                        )
+                        return DataType(object, self.nullable)
+                    elif current_category == 'float':
+                        # int → float is fine (implicit conversion)
+                        return self
+                
+                elif isinstance(value, float):
+                    # float value
+                    if current_category in ('int', 'uint'):
+                        # int/uint type + float value → promote to float64
+                        return DataType('float64', self.nullable)
+                    elif current_category == 'float':
+                        # float type + float value → ok
+                        return self
+                
+                # Incompatible type → degrade to object
+                warnings.warn(
+                    f"Value {value!r} exceeds {self.kind} range, degrading to object",
+                    stacklevel=3,
+                )
+                return DataType(object, self.nullable)
 
         # Case 3: Exact match (Python types)
         if vtype is self.kind:
