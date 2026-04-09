@@ -276,7 +276,7 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
 	
 	shape_str = "×".join(str(s) for s in shape)
 	if pv._dtype:
-		dt = pv._dtype.kind.__name__
+		dt = pv._dtype.kind if isinstance(pv._dtype.kind, str) else pv._dtype.kind.__name__
 		if pv._dtype.nullable:
 			dt += "?"
 	else:
@@ -343,7 +343,7 @@ def _repr_table(tbl) -> str:
 	dtypes_all = []
 	for col in cols:
 		if col._dtype:
-			dtype_str = col._dtype.kind.__name__
+			dtype_str = col._dtype.kind if isinstance(col._dtype.kind, str) else col._dtype.kind.__name__
 			if col._dtype.nullable:
 				dtype_str += "?"
 			dtypes_all.append(dtype_str)

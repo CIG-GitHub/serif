@@ -1055,6 +1055,20 @@ class Table(Vector):
 			
 			kind = schema.kind
 			
+			# Sized types: check category
+			if isinstance(kind, str):
+				from .typing import get_type_metadata, get_type_name
+				metadata = get_type_metadata(kind)
+				if metadata:
+					category = metadata[0]  # 'int', 'uint', or 'float'
+					if category == 'float':
+						raise SerifTypeError(
+							f"Invalid join key dtype '{get_type_name(kind)}' at position {idx} on {side_name} side. "
+							"Floating-point columns cannot be used as join keys due to precision issues."
+						)
+					# int/uint are fine for joins
+					return
+			
 			# Floats are NOT allowed — non-deterministic equality
 			if kind is float:
 				raise SerifTypeError(
@@ -1066,8 +1080,9 @@ class Table(Vector):
 			# complex is excluded (not typically used for joins, can be added if needed)
 			allowed_types = (int, str, bool, date, datetime, object)
 			if kind not in allowed_types:
+				from .typing import get_type_name
 				raise SerifTypeError(
-					f"Invalid join key dtype '{kind.__name__}' at position {idx} on {side_name} side. "
+					f"Invalid join key dtype '{get_type_name(kind)}' at position {idx} on {side_name} side. "
 					"Join keys must support stable equality and hashing."
 				)
 		

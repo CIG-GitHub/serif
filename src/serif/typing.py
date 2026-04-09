@@ -542,10 +542,15 @@ def infer_kind(value: Any) -> Optional[Union[Type, str]]:
     """
     Infer type for a single scalar.
     
-    Returns sized type for integers within specific ranges,
-    otherwise returns Python type.
+    Returns sized type for numeric values, defaulting to 64-bit precision.
+    Returns Python type for non-numeric values.
     
     Returns None for None values.
+    
+    Defaults:
+    - Integers → 'int64' (signed 64-bit)
+    - Floats → 'float64' (double precision)
+    - Booleans → 'uint8' (stored as 0/1)
     """
     if value is None:
         return None
@@ -555,20 +560,13 @@ def infer_kind(value: Any) -> Optional[Union[Type, str]]:
         return 'uint8'  # Store bool as 0/1 in uint8
     
     if isinstance(value, int):
-        # Infer smallest sized type that fits
-        if -(2**7) <= value < 2**7:
-            return 'int8'
-        if -(2**15) <= value < 2**15:
-            return 'int16'
-        if -(2**31) <= value < 2**31:
-            return 'int32'
-        if -(2**63) <= value < 2**63:
-            return 'int64'
-        # Exceeds int64: fall back to Python int (arbitrary precision)
-        return int
+        # Default to 64-bit signed integer
+        # Users can explicitly specify smaller types if needed
+        return 'int64'
     
     if isinstance(value, float):
-        return 'float64'  # Default to double precision
+        # Default to double precision
+        return 'float64'
     
     if isinstance(value, complex):
         return complex

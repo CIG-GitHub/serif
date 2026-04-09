@@ -781,9 +781,11 @@ class Vector():
 						self._promote(required_dtype.kind)
 						underlying = self._underlying
 					except SerifTypeError:
+						req_kind = required_dtype.kind if isinstance(required_dtype.kind, str) else required_dtype.kind.__name__
+						curr_kind = self._dtype.kind if isinstance(self._dtype.kind, str) else self._dtype.kind.__name__
 						raise SerifTypeError(
-							f"Cannot set {required_dtype.kind.__name__} in "
-							f"{self._dtype.kind.__name__} vector. "
+							f"Cannot set {req_kind} in "
+							f"{curr_kind} vector. "
 							f"Promotion not supported."
 						)
 		# =====================================================================

@@ -9,7 +9,7 @@ class TestIntCreation:
     def test_auto_creates_Int(self):
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
-        assert v.schema().kind == int
+        assert v.schema().kind == 'int64'
     
     def test_does_not_include_bool(self):
         # Bools should not create _Int
@@ -49,7 +49,7 @@ class TestIntOperations:
         v = Vector([10, 21, 30])
         result = v // 3
         assert isinstance(result, Vector)
-        assert v.schema().kind == int
+        assert v.schema().kind == 'int64'
         assert list(result) == [3, 7, 10]
     
     def test_modulo(self):

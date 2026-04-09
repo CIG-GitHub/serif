@@ -88,7 +88,7 @@ class TestBooleanMasking:
     def test_comparison_creates_boolean_mask(self):
         v = Vector([1, 2, 3, 4, 5])
         mask = v > 3
-        assert mask.schema().kind == bool
+        assert mask.schema().kind == 'uint8'
         assert not mask.schema().nullable
         assert list(mask) == [False, False, False, True, True]
     

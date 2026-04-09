@@ -10,7 +10,7 @@ from serif.errors import SerifTypeError
 def test_to_object_basic():
 	"""Test converting int vector to object vector"""
 	a = Vector([1, 2, 3, 4])
-	assert a._dtype.kind is int
+	assert a._dtype.kind == 'int64'
 	
 	b = a.to_object()
 	assert b._dtype.kind is object
@@ -81,7 +81,7 @@ def test_to_object_idempotent():
 def test_to_object_with_string_vector():
 	"""Test converting string vector to object"""
 	a = Vector(["a", "b", "c"])
-	assert a._dtype.kind is str
+	assert a._dtype.kind == 'large_string'
 	
 	b = a.to_object()
 	assert b._dtype.kind is object
@@ -91,7 +91,7 @@ def test_to_object_with_string_vector():
 def test_to_object_with_float_vector():
 	"""Test converting float vector to object"""
 	a = Vector([1.5, 2.5, 3.5])
-	assert a._dtype.kind is float
+	assert a._dtype.kind == 'float64'
 	
 	b = a.to_object()
 	assert b._dtype.kind is object

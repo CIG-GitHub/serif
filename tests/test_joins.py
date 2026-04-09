@@ -322,7 +322,7 @@ def test_join_with_computed_keys():
 	})
 	
 	# Float keys should be rejected due to precision issues
-	with pytest.raises(SerifTypeError, match="Invalid join key dtype 'float'"):
+	with pytest.raises(SerifTypeError, match="Invalid join key dtype 'float"):
 		left.inner_join(right, left_on=left['price'] * 1.08, right_on=right['price_with_tax'])
 
 

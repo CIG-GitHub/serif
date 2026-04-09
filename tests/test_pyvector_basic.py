@@ -7,11 +7,11 @@ class TestCreation:
     """Test basic vector creation"""
     
     @pytest.mark.parametrize("initial,expected_len,expected_dtype", [
-        ([1, 2, 3], 3, int),
-        ([1.5, 2.5, 3.5], 3, float),
+        ([1, 2, 3], 3, 'int64'),
+        ([1.5, 2.5, 3.5], 3, 'float64'),
         (['a', 'b', 'c'], 3, str),
         ([], 0, None),
-        ([1], 1, int),
+        ([1], 1, 'int64'),
     ])
     def test_creation_from_list(self, initial, expected_len, expected_dtype):
         v = Vector(initial)
@@ -33,7 +33,7 @@ class TestCreation:
     def test_creation_typesafe(self):
         v = Vector([1, 2, 3], dtype=int)
         assert not v.schema().nullable
-        assert v.schema().kind == int
+        assert v.schema().kind == 'int64'
 
 
 class TestIteration:
@@ -89,13 +89,13 @@ class TestTypePromotion:
     
     def test_int_to_float_promotion(self):
         v = Vector([1, 2, 3.5])
-        assert v.schema().kind == float
+        assert v.schema().kind == 'float64'
         assert list(v) == [1.0, 2.0, 3.5]
     
     def test_no_promotion_with_dtype_int(self):
         # If dtype=int specified, should not promote to float
         v = Vector([1, 2, 3], dtype=int)
-        assert v.schema().kind == int
+        assert v.schema().kind == 'int64'
 
 
 class TestBooleanBehavior:
@@ -150,7 +150,7 @@ class TestFillNA:
         v = Vector([10, None, 20])
         result = v.fillna(5.4)
         assert list(result) == [10.0, 5.4, 20.0]
-        assert result.schema().kind == float
+        assert result.schema().kind == 'float64'
         assert not result.schema().nullable
     
     def test_fillna_no_promotion_when_compatible(self):
@@ -158,7 +158,7 @@ class TestFillNA:
         v = Vector([1.0, None, 3.0])
         result = v.fillna(2.5)
         assert list(result) == [1.0, 2.5, 3.0]
-        assert result.schema().kind == float
+        assert result.schema().kind == 'float64'
         assert not result.schema().nullable
     
     def test_fillna_preserves_name(self):
@@ -175,7 +175,7 @@ class TestCast:
         v = Vector([10, None, 20])
         result = v.cast(str)
         assert list(result) == ['10', None, '20']
-        assert result.schema().kind == str
+        assert result.schema().kind == 'large_string'
         assert result.schema().nullable
     
     def test_cast_nullable_to_nullable(self):
@@ -183,7 +183,7 @@ class TestCast:
         v = Vector([1.5, None, 2.5])
         result = v.cast(int)
         assert list(result) == [1, None, 2]
-        assert result.schema().kind == int
+        assert result.schema().kind == 'int64'
         assert result.schema().nullable
     
     def test_cast_non_nullable_to_non_nullable(self):
@@ -191,7 +191,7 @@ class TestCast:
         v = Vector([1.5, 2.5, 3.5])
         result = v.cast(int)
         assert list(result) == [1, 2, 3]
-        assert result.schema().kind == int
+        assert result.schema().kind == 'int64'
         assert not result.schema().nullable
 
 
