@@ -183,6 +183,178 @@ class ArrayStorage:
 
         return ArrayStorage(new_data, new_mask, self._dtype_name)
     
+    # Fast-path arithmetic operations (Phase 4 optimization)
+    
+    def binary_op(self, other: ArrayStorage, op_func) -> ArrayStorage:
+        """
+        Fast binary operation between two ArrayStorage instances.
+        
+        Operates directly on array.array buffers without tuple conversion.
+        Handles null masks correctly (null propagation).
+        
+        Parameters
+        ----------
+        other : ArrayStorage
+            Right-hand operand
+        op_func : callable
+            Binary operator function (e.g., operator.add)
+            
+        Returns
+        -------
+        ArrayStorage
+            Result with promoted typecode if needed
+        """
+        if len(self) != len(other):
+            raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+        
+        # Determine result typecode (promote if needed)
+        # For now, use Python's natural promotion rules by computing first element
+        # TODO: Could be smarter about typecode promotion
+        if self._data:
+            sample = op_func(self._data[0], other._data[0])
+            if isinstance(sample, float):
+                result_typecode = 'd'  # float64
+            elif isinstance(sample, int):
+                # Use wider of the two integer types
+                result_typecode = self._typecode if self._typecode >= other._typecode else other._typecode
+            else:
+                result_typecode = self._typecode
+        else:
+            result_typecode = self._typecode
+        
+        # Compute result data
+        result_data = array(result_typecode, 
+            (op_func(x, y) for x, y in zip(self._data, other._data))
+        )
+        
+        # Merge null masks (union: either side null → result null)
+        result_mask = None
+        if self._mask or other._mask:
+            self_mask = self._mask or array('B', [0] * len(self))
+            other_mask = other._mask or array('B', [0] * len(other))
+            result_mask = array('B', 
+                (a | b for a, b in zip(self_mask, other_mask))
+            )
+        
+        return ArrayStorage(result_data, result_mask, None)  # dtype_name inferred later
+    
+    def scalar_op(self, scalar, op_func, reverse=False) -> ArrayStorage:
+        """
+        Fast scalar operation.
+        
+        Operates directly on array.array buffer without tuple conversion.
+        
+        Parameters
+        ----------
+        scalar : int | float
+            Scalar operand
+        op_func : callable
+            Binary operator function
+        reverse : bool
+            If True, compute op_func(scalar, x) instead of op_func(x, scalar)
+            
+        Returns
+        -------
+        ArrayStorage
+            Result with promoted typecode if needed
+        """
+        # Determine result typecode
+        if self._data:
+            sample = op_func(scalar, self._data[0]) if reverse else op_func(self._data[0], scalar)
+            if isinstance(sample, float):
+                result_typecode = 'd'  # float64
+            else:
+                result_typecode = self._typecode
+        else:
+            result_typecode = self._typecode
+        
+        # Compute result data
+        if reverse:
+            result_data = array(result_typecode, 
+                (op_func(scalar, x) for x in self._data)
+            )
+        else:
+            result_data = array(result_typecode, 
+                (op_func(x, scalar) for x in self._data)
+            )
+        
+        # Preserve null mask (scalar op doesn't create new nulls)
+        result_mask = array('B', self._mask) if self._mask else None
+        
+        return ArrayStorage(result_data, result_mask, None)
+    
+    def compare_op(self, other: ArrayStorage, op_func) -> ArrayStorage:
+        """
+        Fast comparison operation between two ArrayStorage instances.
+        
+        Returns ArrayStorage with uint8 typecode (0/1 for False/True).
+        Nulls comparison propagate (any null → result is null).
+        
+        Parameters
+        ----------
+        other : ArrayStorage
+            Right-hand operand
+        op_func : callable
+            Comparison operator (e.g., operator.lt)
+            
+        Returns
+        -------
+        ArrayStorage
+            Boolean result as uint8 (0/1)
+        """
+        if len(self) != len(other):
+            raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+        
+        # Compute comparison (result is boolean → uint8)
+        result_data = array('B', 
+            (1 if op_func(x, y) else 0 for x, y in zip(self._data, other._data))
+        )
+        
+        # Merge null masks
+        result_mask = None
+        if self._mask or other._mask:
+            self_mask = self._mask or array('B', [0] * len(self))
+            other_mask = other._mask or array('B', [0] * len(other))
+            result_mask = array('B', 
+                (a | b for a, b in zip(self_mask, other_mask))
+            )
+        
+        return ArrayStorage(result_data, result_mask, 'uint8')
+    
+    def scalar_compare(self, scalar, op_func, reverse=False) -> ArrayStorage:
+        """
+        Fast scalar comparison.
+        
+        Returns ArrayStorage with uint8 typecode (0/1 for False/True).
+        
+        Parameters
+        ----------
+        scalar : int | float
+            Scalar to compare against
+        op_func : callable
+            Comparison operator
+        reverse : bool
+            If True, compute op_func(scalar, x) instead of op_func(x, scalar)
+            
+        Returns
+        -------
+        ArrayStorage
+            Boolean result as uint8
+        """
+        if reverse:
+            result_data = array('B', 
+                (1 if op_func(scalar, x) else 0 for x in self._data)
+            )
+        else:
+            result_data = array('B', 
+                (1 if op_func(x, scalar) else 0 for x in self._data)
+            )
+        
+        # Preserve null mask
+        result_mask = array('B', self._mask) if self._mask else None
+        
+        return ArrayStorage(result_data, result_mask, 'uint8')
+    
     def promote_to_tuple(self) -> TupleStorage:
         """Convert ArrayStorage to TupleStorage for arbitrary precision / mixed types."""
         return TupleStorage(self.to_tuple())

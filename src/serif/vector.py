@@ -837,19 +837,49 @@ class Vector():
 				for col in other.cols()
 			))
 		
+		# FAST PATH: Both use ArrayStorage (Phase 4 optimization)
+		from .backend import ArrayStorage
 		if isinstance(other, Vector):
 			# Raise mismatched lengths
 			if len(self) != len(other):
 				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+			
+			# Check if both have ArrayStorage
+			if isinstance(self._storage, ArrayStorage) and isinstance(other._storage, ArrayStorage):
+				try:
+					result_storage = self._storage.compare_op(other._storage, op)
+					result_values = result_storage.to_tuple()
+					# Convert uint8 (0/1) to bool
+					result_values = tuple(bool(x) if x is not None else False for x in result_values)
+					return Vector(result_values, dtype=DataType(bool, nullable=False))
+				except (TypeError, ValueError):
+					# Fall back to slow path
+					pass
+			
+			# Slow path: tuple iteration
 			result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
 			return Vector(result_values, dtype=DataType(bool, nullable=False))
+		
 		if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
 			# Raise mismatched lengths
 			if len(self) != len(other):
 				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
 			result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
 			return Vector(result_values, dtype=DataType(bool, nullable=False))
-		# Scalar comparison
+		
+		# FAST PATH: Scalar comparison with ArrayStorage
+		if isinstance(self._storage, ArrayStorage) and isinstance(other, (int, float)):
+			try:
+				result_storage = self._storage.scalar_compare(other, op, reverse=False)
+				result_values = result_storage.to_tuple()
+				# Convert uint8 (0/1) to bool
+				result_values = tuple(bool(x) if x is not None else False for x in result_values)
+				return Vector(result_values, dtype=DataType(bool, nullable=False))
+			except (TypeError, ValueError):
+				# Fall back to slow path
+				pass
+		
+		# Slow path: Scalar comparison
 		if other is None and op in (operator.eq, operator.ne):
 			warnings.warn(
 				"Null comparison: `v == None` always returns False for null values. "
@@ -919,9 +949,27 @@ class Vector():
 				for col in other.cols()
 			))
 		
+		# FAST PATH: Both use ArrayStorage (Phase 4 optimization)
+		from .backend import ArrayStorage
 		if isinstance(other, Vector):
 			if len(self) != len(other):
 				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+			
+			# Check if both have ArrayStorage
+			if isinstance(self._storage, ArrayStorage) and isinstance(other._storage, ArrayStorage):
+				try:
+					result_storage = self._storage.binary_op(other._storage, op_func)
+					result_values = result_storage.to_tuple()
+					result_dtype = infer_dtype(result_values)
+					
+					# Create new vector with optimized storage
+					new_vec = Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+					return new_vec
+				except (TypeError, OverflowError):
+					# Fall back to slow path if operation fails
+					pass
+			
+			# Slow path: tuple iteration
 			try:
 				result_values = tuple(None if (x is None or y is None) else op_func(x, y) for x, y in zip(self, other, strict=True))
 			except TypeError:
@@ -948,7 +996,20 @@ class Vector():
 				dtype=result_dtype,
 				name=None,
 				as_row=self._display_as_row
-				)	# Scalar operation - let Python handle type compatibility
+				)
+		
+		# FAST PATH: Scalar operation with ArrayStorage
+		if isinstance(self._storage, ArrayStorage) and isinstance(other, (int, float)):
+			try:
+				result_storage = self._storage.scalar_op(other, op_func, reverse=False)
+				result_values = result_storage.to_tuple()
+				result_dtype = infer_dtype(result_values)
+				return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+			except (TypeError, OverflowError):
+				# Fall back to slow path
+				pass
+		
+		# Slow path: Scalar operation - let Python handle type compatibility
 		try:
 			result_values = tuple(None if x is None else op_func(x, other) for x in self._underlying)
 			# Infer dtype from result (e.g., int * 0.1 = float)
