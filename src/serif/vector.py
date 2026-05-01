@@ -1349,13 +1349,9 @@ class Vector():
 			warnings.warn(f"The behavior of >> and << have been overridden for concatenation. Use .bitshift() to shift bits.")
 
 		if type(other).__name__ == 'Table':
-			if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
-				raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
 			return Vector((self,) + other.cols(),
 				dtype=self._dtype)
 		if isinstance(other, Vector):
-			if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
-				raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
 			return Vector((self,) + (other,),
 				dtype=self._dtype)
 		if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
