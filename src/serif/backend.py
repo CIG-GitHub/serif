@@ -10,13 +10,6 @@ from typing import Any, Protocol, Iterator
 from collections.abc import Iterable
 
 
-# Bit-width lookup by typecode for promotion comparisons
-_TYPECODE_BITS = {
-    'b': 8,  'h': 16, 'i': 32, 'q': 64,   # signed int
-    'B': 8,  'H': 16, 'I': 32, 'Q': 64,   # unsigned int
-    'f': 32, 'd': 64,                       # float
-}
-
 
 class Storage(Protocol):
     """Protocol for Vector storage backends."""
@@ -73,6 +66,20 @@ class ArrayStorage:
         'float32': 'f',
         'float64': 'd',
     }
+
+    # Reverse: typecode char → sized type name
+    _TYPECODE_REVERSE = {
+        'b': 'int8',  'h': 'int16',  'i': 'int32',  'q': 'int64',
+        'B': 'uint8', 'H': 'uint16', 'I': 'uint32', 'Q': 'uint64',
+        'f': 'float32', 'd': 'float64',
+    }
+
+    # Bit-width by typecode char for promotion comparisons
+    _TYPECODE_BITS = {
+        'b': 8,  'h': 16, 'i': 32, 'q': 64,
+        'B': 8,  'H': 16, 'I': 32, 'Q': 64,
+        'f': 32, 'd': 64,
+    }
     
     # Range limits for integer types (typecode → (min, max))
     _INT_BOUNDS = {
@@ -100,7 +107,7 @@ class ArrayStorage:
         self._data = data
         self._mask = mask
         self._typecode = data.typecode
-        self._dtype_name = dtype_name
+        self._dtype_name = dtype_name if dtype_name is not None else self._TYPECODE_REVERSE.get(data.typecode)
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], dtype_name: str) -> ArrayStorage:
@@ -223,9 +230,9 @@ class ArrayStorage:
             if isinstance(sample, float):
                 result_typecode = 'd'  # float64
             elif isinstance(sample, int):
-                # Use wider typecode by actual bit width, not character ordering
-                self_bits = _TYPECODE_BITS.get(self._typecode, 0)
-                other_bits = _TYPECODE_BITS.get(other._typecode, 0)
+                # Use wider typecode by actual bit width
+                self_bits = self._TYPECODE_BITS.get(self._typecode, 0)
+                other_bits = self._TYPECODE_BITS.get(other._typecode, 0)
                 result_typecode = self._typecode if self_bits >= other_bits else other._typecode
             else:
                 result_typecode = self._typecode
