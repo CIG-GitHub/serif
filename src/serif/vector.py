@@ -97,7 +97,6 @@ class Vector():
 	""" Iterable vector with optional type safety """
 	_dtype = None  # DataType instance (private)
 	_storage = None  # Storage backend (ArrayStorage/TupleStorage)
-	_underlying = None  # Tuple representation (for compatibility)
 	_name = None
 	_display_as_row = False
 	_wild = False  # Flag for name changes (used by Table column tracking)

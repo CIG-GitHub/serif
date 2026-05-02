@@ -10,6 +10,14 @@ from typing import Any, Protocol, Iterator
 from collections.abc import Iterable
 
 
+# Bit-width lookup by typecode for promotion comparisons
+_TYPECODE_BITS = {
+    'b': 8,  'h': 16, 'i': 32, 'q': 64,   # signed int
+    'B': 8,  'H': 16, 'I': 32, 'Q': 64,   # unsigned int
+    'f': 32, 'd': 64,                       # float
+}
+
+
 class Storage(Protocol):
     """Protocol for Vector storage backends."""
 
@@ -215,8 +223,10 @@ class ArrayStorage:
             if isinstance(sample, float):
                 result_typecode = 'd'  # float64
             elif isinstance(sample, int):
-                # Use wider of the two integer types
-                result_typecode = self._typecode if self._typecode >= other._typecode else other._typecode
+                # Use wider typecode by actual bit width, not character ordering
+                self_bits = _TYPECODE_BITS.get(self._typecode, 0)
+                other_bits = _TYPECODE_BITS.get(other._typecode, 0)
+                result_typecode = self._typecode if self_bits >= other_bits else other._typecode
             else:
                 result_typecode = self._typecode
         else:
