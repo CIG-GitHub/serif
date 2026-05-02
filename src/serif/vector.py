@@ -655,7 +655,7 @@ class Vector():
 		"""
 
 		_alias = _ALIAS_TRACKER
-		_alias.check_writable(self, id(self._underlying))
+		_alias.check_writable(self, id(self._get_data_identity()))
 
 		# === Fast precomputed checks ===
 		key = self._check_duplicate(key)
@@ -830,7 +830,7 @@ class Vector():
 			data_list[idx] = new_val
 
 		new_tuple = tuple(data_list)
-		old_id = id(underlying)
+		old_id = id(self._get_data_identity())
 
 		_alias.unregister(self, old_id)
 		self._underlying_cache = new_tuple
