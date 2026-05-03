@@ -35,6 +35,9 @@ from typing import Tuple
 # ============================================================
 # Reverse arithmetic operation helpers
 # ============================================================
+def _reverse_add(y, x):
+	return x + y
+
 def _reverse_sub(y, x):
 	return x - y
 
@@ -1103,44 +1106,7 @@ class Vector():
 		return self._elementwise_operation(other, operator.pow, '__pow__', '**')
 
 	def __radd__(self, other):
-		"""Reverse addition: other + self (handles strings specially)"""
-		other = self._check_duplicate(other)
-		
-		# Vector + Vector
-		if isinstance(other, Vector):
-			if len(self) != len(other):
-				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-			vals = []
-			for x, y in zip(other, self, strict=True):
-				if x is None or y is None:
-					vals.append(None)
-				else:
-					vals.append(x + y)
-			return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
-		
-		# Scalar + Vector
-		if not isinstance(other, Iterable) or isinstance(other, (str, bytes, bytearray)):
-			vals = []
-			for x in self:
-				if x is None:
-					vals.append(None)
-				else:
-					vals.append(other + x)
-			return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
-		
-		# Iterable + Vector
-		if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-			if len(self) != len(other):
-				raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-			vals = []
-			for x, y in zip(other, self, strict=True):
-				if x is None or y is None:
-					vals.append(None)
-				else:
-					vals.append(x + y)
-			return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
-		
-		raise SerifTypeError(f"Unsupported operand type: {type(other).__name__}")
+		return self._elementwise_operation(other, _reverse_add, '__radd__', '+')
 
 	def __rmul__(self, other):
 		return self.__mul__(other)
