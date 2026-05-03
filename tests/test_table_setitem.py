@@ -210,7 +210,7 @@ class TestSliceEdgeCases:
 	def test_assign_string_scalar_fails(self):
 		# Can't assign string to int vector without explicit conversion
 		t = Table({'x': [1, 2, 3]})
-		with pytest.raises(SerifTypeError, match="Cannot set str in int vector"):
+		with pytest.raises(SerifTypeError, match="Cannot set str in int64 vector"):
 			t[0, 'x'] = "hello"
 	
 	def test_assign_to_entire_table(self):

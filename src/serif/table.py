@@ -411,7 +411,7 @@ class Table(Vector):
 	def __setattr__(self, attr, value):
 		"""Intercept column assignments (t.colname = vec) to update underlying columns."""
 		# Let instance attributes initialize normally (before __init__ completes)
-		if attr in ('_underlying', '_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows'):
+		if attr in ('_underlying', '_underlying_cache', '_storage', '_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows'):
 			object.__setattr__(self, attr, value)
 			return
 		
@@ -449,14 +449,15 @@ class Table(Vector):
 				cols = list(self._underlying)
 				value._name = self._underlying[col_idx_indexed]._name  # Preserve original name
 				cols[col_idx_indexed] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				object.__setattr__(self, '_underlying_cache', tuple(cols))
+				object.__setattr__(self, '_storage', None)  # Invalidate storage
 				object.__setattr__(self, '_column_map', self._build_column_map())
 				return
 			
-			# Regular column lookup by name
-			col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
+			# Try normal column lookup
+			col_idx = self._column_map.get(attr)
+			
 			if col_idx is not None:
-				# Replace the column in _underlying
 				if not isinstance(value, Vector):
 					value = Vector(value)
 				
@@ -470,7 +471,8 @@ class Table(Vector):
 				cols = list(self._underlying)
 				value._name = self._underlying[col_idx]._name  # Preserve original name
 				cols[col_idx] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				object.__setattr__(self, '_underlying_cache', tuple(cols))
+				object.__setattr__(self, '_storage', None)  # Invalidate storage
 				
 				# Rebuild column map to reflect any structural changes
 				object.__setattr__(self, '_column_map', self._build_column_map())
@@ -1055,6 +1057,20 @@ class Table(Vector):
 			
 			kind = schema.kind
 			
+			# Sized types: check category
+			if isinstance(kind, str):
+				from .typing import get_type_metadata, get_type_name
+				metadata = get_type_metadata(kind)
+				if metadata:
+					category = metadata[0]  # 'int', 'uint', or 'float'
+					if category == 'float':
+						raise SerifTypeError(
+							f"Invalid join key dtype '{get_type_name(kind)}' at position {idx} on {side_name} side. "
+							"Floating-point columns cannot be used as join keys due to precision issues."
+						)
+					# int/uint are fine for joins
+					return
+			
 			# Floats are NOT allowed — non-deterministic equality
 			if kind is float:
 				raise SerifTypeError(
@@ -1066,8 +1082,9 @@ class Table(Vector):
 			# complex is excluded (not typically used for joins, can be added if needed)
 			allowed_types = (int, str, bool, date, datetime, object)
 			if kind not in allowed_types:
+				from .typing import get_type_name
 				raise SerifTypeError(
-					f"Invalid join key dtype '{kind.__name__}' at position {idx} on {side_name} side. "
+					f"Invalid join key dtype '{get_type_name(kind)}' at position {idx} on {side_name} side. "
 					"Join keys must support stable equality and hashing."
 				)
 		
@@ -1116,9 +1133,10 @@ class Table(Vector):
 			right_schema = right_col.schema()
 			if left_schema is not None and right_schema is not None:
 				if left_schema.kind is not right_schema.kind:
+					from .typing import get_type_name
 					raise SerifTypeError(
 						f"Join key at index {i} has mismatched dtypes: "
-						f"{left_schema.kind.__name__} (left) vs {right_schema.kind.__name__} (right)"
+						f"{get_type_name(left_schema.kind)} (left) vs {get_type_name(right_schema.kind)} (right)"
 					)
 			
 			normalized.append((left_col, right_col))

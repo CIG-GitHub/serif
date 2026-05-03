@@ -60,7 +60,7 @@ def test_promote_preserves_name():
 	v = Vector([1, 2, 3], name="my_vector")
 	v._promote(float)
 	assert v._name == "my_vector"
-	assert v.schema().kind == float
+	assert v.schema().kind == 'float64'
 
 
 def test_math_operations_do_not_preserve_name():

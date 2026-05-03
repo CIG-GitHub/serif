@@ -140,7 +140,7 @@ def _compute_headers(cols, col_indices):
 
 		# Dtype (with nullable indicator)
 		if col._dtype:
-			dtype_str = col._dtype.kind.__name__
+			dtype_str = col._dtype.kind if isinstance(col._dtype.kind, str) else col._dtype.kind.__name__
 			if col._dtype.nullable:
 				dtype_str += "?"
 			dtypes.append(dtype_str)
@@ -256,7 +256,7 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
 	
 	if len(shape) == 1:
 		if pv._dtype:
-			dt = pv._dtype.kind.__name__
+			dt = pv._dtype.kind if isinstance(pv._dtype.kind, str) else pv._dtype.kind.__name__
 			if pv._dtype.nullable:
 				dt += "?"
 		else:
@@ -270,13 +270,13 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
 			else:
 				d = ", ".join(dtype_list)
 		else:
-			d = pv._dtype.kind.__name__ if pv._dtype else "object"
+			d = (pv._dtype.kind if isinstance(pv._dtype.kind, str) else pv._dtype.kind.__name__) if pv._dtype else "object"
 		rows, cols = shape
 		return f"# {rows}×{cols} table <{d}>"
 	
 	shape_str = "×".join(str(s) for s in shape)
 	if pv._dtype:
-		dt = pv._dtype.kind.__name__
+		dt = pv._dtype.kind if isinstance(pv._dtype.kind, str) else pv._dtype.kind.__name__
 		if pv._dtype.nullable:
 			dt += "?"
 	else:
@@ -343,7 +343,7 @@ def _repr_table(tbl) -> str:
 	dtypes_all = []
 	for col in cols:
 		if col._dtype:
-			dtype_str = col._dtype.kind.__name__
+			dtype_str = col._dtype.kind if isinstance(col._dtype.kind, str) else col._dtype.kind.__name__
 			if col._dtype.nullable:
 				dtype_str += "?"
 			dtypes_all.append(dtype_str)
@@ -382,13 +382,13 @@ def _repr_table(tbl) -> str:
 	
 	# Footer: use <mixed> if types are in header, otherwise show type info
 	if show_types_in_header:
-		lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", "<mixed>"))
+		lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind if isinstance(tbl._dtype.kind, str) else tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", "<mixed>"))
 	else:
 		# Check if all dtypes are the same (homogeneous table)
 		unique_dtypes = set(dtypes_all)
 		if len(unique_dtypes) == 1:
 			# Homogeneous - show single type
-			lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", f"<{dtypes_all[0]}>"))
+			lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind if isinstance(tbl._dtype.kind, str) else tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", f"<{dtypes_all[0]}>"))
 		else:
 			# Keep showing all types
 			lines.append(_footer(tbl, dtypes_all, truncated, MAX_HEAD_COLS))

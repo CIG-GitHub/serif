@@ -16,10 +16,10 @@ class TestInferDtype:
     @pytest.mark.parametrize(
         "values, expected_kind, expected_nullable",
         [
-            ([1, 2, 3], int, False),
-            ([1.5, 2.5], float, False),
+            ([1, 2, 3], 'int64', False),
+            ([1.5, 2.5], 'float64', False),
             (["a", "b", "c"], str, False),
-            ([True, False], bool, False),
+            ([True, False], 'uint8', False),
             ([1 + 2j, 3 + 4j], complex, False),
             ([date(2020, 1, 1), date(2020, 1, 2)], date, False),
             ([datetime(2020, 1, 1), datetime(2020, 1, 2)], datetime, False),
@@ -28,21 +28,21 @@ class TestInferDtype:
     def test_infer_pure_kinds(self, values, expected_kind, expected_nullable):
         dt = infer_dtype(values)
         assert isinstance(dt, DataType)
-        assert dt.kind is expected_kind
+        assert dt.kind == expected_kind
         assert dt.nullable is expected_nullable
 
     @pytest.mark.parametrize(
         "values, expected_kind",
         [
-            ([1, 2.5, 3], float),
+            ([1, 2.5, 3], 'float64'),
             ([1, 2.5, 3 + 4j], complex),
-            ([True, 1, 2], int),        # bool + int => int
-            ([True, 1.0], float),       # bool + float => float
+            ([True, 1, 2], 'int64'),        # bool + int => int
+            ([True, 1.0], 'float64'),       # bool + float => float
         ],
     )
     def test_infer_mixed_numeric_promotes(self, values, expected_kind):
         dt = infer_dtype(values)
-        assert dt.kind is expected_kind
+        assert dt.kind == expected_kind
         assert not dt.nullable
 
     def test_infer_mixed_temporal_promotes_to_datetime(self):
@@ -53,11 +53,11 @@ class TestInferDtype:
 
     def test_infer_nullable_when_none_present(self):
         dt = infer_dtype([1, None, 3])
-        assert dt.kind is int
+        assert dt.kind == 'int64'
         assert dt.nullable
 
         dt = infer_dtype(["a", None, "c"])
-        assert dt.kind is str
+        assert dt.kind == str
         assert dt.nullable
 
         dt = infer_dtype([date(2020, 1, 1), None])
@@ -84,33 +84,33 @@ class TestVectorCreationWithDtype:
     def test_create_typed_int(self):
         v = Vector([1, 2, 3], dtype=DataType(int, nullable=False))
         s = v.schema()
-        assert s.kind is int
+        assert s.kind == 'int64'
         assert s.nullable is False
         assert list(v) == [1, 2, 3]
 
     def test_create_nullable_int(self):
         v = Vector([1, None, 3], dtype=DataType(int, nullable=True))
         s = v.schema()
-        assert s.kind is int
+        assert s.kind == 'int64'
         assert s.nullable is True
         assert list(v) == [1, None, 3]
 
     def test_create_typed_float(self):
         v = Vector([1.0, 2.0, 3.0], dtype=DataType(float, nullable=False))
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is False
 
     def test_create_typed_str(self):
         v = Vector(["a", "b", "c"], dtype=DataType(str, nullable=False))
         s = v.schema()
-        assert s.kind is str
+        assert s.kind == str
         assert s.nullable is False
 
     def test_python_type_shorthand(self):
         v = Vector([1, 2, 3], dtype=int)
         s = v.schema()
-        assert s.kind is int
+        assert s.kind == 'int64'
         assert s.nullable is False
 
 
@@ -122,7 +122,7 @@ class TestArithmeticPromotion:
         out = v + 0.5
 
         s = out.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is False
         assert list(out) == [1.5, 2.5, 3.5]
 
@@ -131,7 +131,7 @@ class TestArithmeticPromotion:
         out = v * 0.5
 
         s = out.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is False
         assert list(out) == [0.5, 1.0, 1.5]
 
@@ -140,7 +140,7 @@ class TestArithmeticPromotion:
         out = v / 2
 
         s = out.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is False
         assert list(out) == [2.0, 3.0, 4.0]
 
@@ -150,7 +150,7 @@ class TestArithmeticPromotion:
 
         out = v_int + v_float
         s = out.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is False
         assert list(out) == [2.5, 4.5, 6.5]
 
@@ -169,7 +169,7 @@ class TestArithmeticPromotion:
         out = v + 10
 
         s = out.schema()
-        assert s.kind is int or s.kind is float  # up to implementation
+        assert s.kind == 'int64' or s.kind == 'float64'  # up to implementation
         assert s.nullable is True
         assert list(out) == [11, None, 13]
 
@@ -178,7 +178,7 @@ class TestArithmeticPromotion:
         mask = v > 1
 
         s = mask.schema()
-        assert s.kind is bool
+        assert s.kind == 'uint8'
         assert s.nullable is False
         # Define tri-value comparison as: None compared to anything -> False
         assert list(mask) == [False, False, True]
@@ -197,11 +197,11 @@ class TestDataTypePromotionInternal:
 
     def test_numeric_ladder_int_to_float(self):
         v = Vector([1, 2, 3])
-        assert v.schema().kind is int
+        assert v.schema().kind == 'int64'
 
         v._promote(float)
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert list(v) == [1.0, 2.0, 3.0]
 
     def test_numeric_ladder_int_to_complex(self):
@@ -242,7 +242,7 @@ class TestDataTypePromotionInternal:
 
         v._promote(float)
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert s.nullable is True
         assert list(v) == [1.0, None, 3.0]
 
@@ -252,11 +252,11 @@ class TestSetitemPromotion:
 
     def test_setitem_scalar_promotes_int_to_float(self):
         v = Vector([1, 2, 3])
-        assert v.schema().kind is int
+        assert v.schema().kind == 'int64'
 
         v[1] = 2.5
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert list(v) == [1.0, 2.5, 3.0]
 
     def test_setitem_slice_promotes_int_to_float(self):
@@ -264,7 +264,7 @@ class TestSetitemPromotion:
         v[1:3] = [2.5, 3.5]
 
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert list(v) == [1.0, 2.5, 3.5, 4.0]
 
     def test_setitem_scalar_promotes_to_complex(self):
@@ -281,7 +281,7 @@ class TestSetitemPromotion:
 
         v[mask] = [1.5, 3.5]
         s = v.schema()
-        assert s.kind is float
+        assert s.kind == 'float64'
         assert list(v) == [1.5, 2.0, 3.5, 4.0]
 
     def test_setitem_invalid_promotion_raises(self):
@@ -298,7 +298,7 @@ class TestNullableBehavior:
         m = v.isna()
 
         s = m.schema()
-        assert s.kind is bool
+        assert s.kind == 'uint8'
         assert s.nullable is False
         assert list(m) == [False, True, False, True]
 
@@ -308,7 +308,7 @@ class TestNullableBehavior:
 
         filled = v.fillna(0)
         s = filled.schema()
-        assert s.kind is int or s.kind is float
+        assert s.kind == 'int64' or s.kind == 'float64'
         assert s.nullable is False
         assert list(filled) == [1, 0, 3]
 
@@ -337,19 +337,19 @@ class TestTypedSubclasses:
         from serif.vector import _Int
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
-        assert v.schema().kind is int
+        assert v.schema().kind == 'int64'
 
     def test_float_vector_uses_Float_subclass(self):
         from serif.vector import _Float
         v = Vector([1.5, 2.5])
         assert isinstance(v, _Float)
-        assert v.schema().kind is float
+        assert v.schema().kind == 'float64'
 
     def test_string_vector_uses_String_subclass(self):
         from serif.vector import _String
         v = Vector(["a", "b", "c"])
         assert isinstance(v, _String)
-        assert v.schema().kind is str
+        assert v.schema().kind == str
 
     def test_date_vector_uses_Date_subclass(self):
         from serif.vector import _Date
@@ -361,12 +361,12 @@ class TestTypedSubclasses:
         from serif.vector import _Int
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
-        assert v.schema().kind is int
+        assert v.schema().kind == 'int64'
 
         v._promote(float)
         # class stays the same, dtype changes
         assert isinstance(v, _Int)
-        assert v.schema().kind is float
+        assert v.schema().kind == 'float64'
 
 
 
