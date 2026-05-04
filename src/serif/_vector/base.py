@@ -177,6 +177,7 @@ class Vector():
 		self._display_as_row = as_row
 		self._wild = True
 
+		# I dont know what this is doing. So i'm seeing if it breaks if I remove.
 		# We check self.__dict__ directly to avoid triggering Table.__getattr__
 		# which would crash because the table isn't initialized yet.
 		if '_precomputed_data' in self.__dict__:
