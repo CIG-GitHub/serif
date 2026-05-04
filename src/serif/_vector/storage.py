@@ -143,6 +143,9 @@ class TupleStorage:
         new_mask = self._mask[slc] if self._mask is not None else None
         return TupleStorage(self._data[slc], new_mask)
 
+    def __bool__(self) -> bool:
+        return len(self._data) > 0
+
     def to_tuple(self) -> tuple:
         return self._data
 

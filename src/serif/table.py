@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from .vector import Vector
 
 from .naming import _sanitize_user_name
+from ._vector.storage import TupleStorage
 
 from .errors import SerifKeyError
 from .errors import SerifValueError
@@ -84,7 +85,7 @@ class Row(Vector):
 
 	def __init__(self, table, index=0):
 		# SNAPSHOT: Grab raw column lists for speed
-		self._raw_cols = [col._underlying for col in table._underlying]
+		self._raw_cols = [col._underlying for col in table._storage]
 		self._column_map = table._column_map
 		self._index = index
 		
@@ -93,11 +94,11 @@ class Row(Vector):
 		# Otherwise, it's an object vector.
 		from ._vector.dtype import DataType
 		
-		if not table._underlying:
+		if not table._storage:
 			self._dtype = DataType(object, nullable=True)
 		else:
 			# Check uniformity of column types
-			col_dtypes = [col._dtype for col in table._underlying]
+			col_dtypes = [col._dtype for col in table._storage]
 			unique_kinds = {dt.kind for dt in col_dtypes}
 			
 			if len(unique_kinds) == 1:
@@ -218,20 +219,20 @@ class Table(Vector):
 		super().__init__(initial, dtype=dtype, name=name)
 		
 		# Restore column names after parent init
-		# The parent Vector.__init__ may have modified self._underlying
+		# The parent Vector.__init__ stores columns in self._storage
 		if original_names:
 			for i, col_name in enumerate(original_names):
-				if i < len(self._underlying):
-					self._underlying[i]._name = col_name
+				if i < len(self._storage):
+					self._storage[i]._name = col_name
 		
 		# Build column map
 		self._column_map = self._build_column_map()
 
 	def __len__(self):
-		if len(self._underlying) == 0:
+		if len(self._storage) == 0:
 			return 0
-		if isinstance(self._underlying[0], Table):
-			return len(self._underlying)
+		if isinstance(self._storage[0], Table):
+			return len(self._storage)
 		return self._length
 
 	@property
@@ -239,7 +240,7 @@ class Table(Vector):
 		n_rows = len(self)
 		if n_rows == 0:
 			# Empty table - need to check column count
-			n_cols = len(self._underlying) if hasattr(self, '_underlying') else 0
+			n_cols = len(self._storage) if hasattr(self, '_storage') else 0
 			return (0, n_cols)
 		return (n_rows,) + self[0].shape
 
@@ -251,7 +252,7 @@ class Table(Vector):
 		"""
 		column_map = {}
 		seen = {}
-		for idx, col in enumerate(self._underlying):
+		for idx, col in enumerate(self._storage):
 			if col._name is not None:
 				base = _sanitize_user_name(col._name)
 				if base is None:
@@ -300,7 +301,7 @@ class Table(Vector):
 		>>> t.column_names()
 		['x', 'y']
 		"""
-		return [col._name for col in self._underlying]
+		return [col._name for col in self._storage]
 
 	def to_dict(self):
 		"""Serialize table to a column-oriented dict of plain Python lists.
@@ -321,7 +322,7 @@ class Table(Vector):
 		{'x': [1, 2], 'y': [3, 4]}
 		"""
 		result = {}
-		for i, col in enumerate(self._underlying):
+		for i, col in enumerate(self._storage):
 			key = col._name if col._name is not None else f"col_{i}"
 			result[key] = list(col._underlying)
 		return result
@@ -329,7 +330,7 @@ class Table(Vector):
 	def __getattr__(self, attr):
 		"""Access columns by sanitized attribute name using pre-computed column map."""
 		# Check if any column has been renamed and rebuild map if needed
-		if any(col._wild for col in self._underlying or []):
+		if any(col._wild for col in self._storage or []):
 			self._column_map = self._build_column_map()
 
 		# Parse for indexed accessor pattern (e.g., 'total__5')
@@ -337,13 +338,13 @@ class Table(Vector):
 		
 		if col_idx is not None:
 			# Indexed access: validate column index and name match
-			if col_idx < 0 or col_idx >= len(self._underlying):
+			if col_idx < 0 or col_idx >= len(self._storage):
 				raise AttributeError(
-					f"Column index {col_idx} out of range (table has {len(self._underlying)} columns)"
+					f"Column index {col_idx} out of range (table has {len(self._storage)} columns)"
 				)
 			
 			# Get the actual column at that index
-			col = self._underlying[col_idx]
+			col = self._storage[col_idx]
 			
 			# Validate: does this column's sanitized name match base_name?
 			from .naming import _sanitize_user_name
@@ -361,15 +362,15 @@ class Table(Vector):
 			middle = attr[3:-1]  # Extract between 'col' and '_'
 			if middle.isdigit():
 				idx = int(middle)
-				if 0 <= idx < len(self._underlying):
-					return self._underlying[idx]
+				if 0 <= idx < len(self._storage):
+					return self._storage[idx]
 				raise AttributeError(f"Column index {idx} out of range")
 		
 		else:
 			# Regular access: look up by sanitized name
 			col_idx_lookup = self._column_map.get(attr) or self._column_map.get(attr.lower())
 			if col_idx_lookup is not None:
-				return self._underlying[col_idx_lookup]
+				return self._storage[col_idx_lookup]
 		
 		# Fall back to parent class attributes (e.g., .T for transpose)
 		try:
@@ -411,7 +412,7 @@ class Table(Vector):
 	def __setattr__(self, attr, value):
 		"""Intercept column assignments (t.colname = vec) to update underlying columns."""
 		# Let instance attributes initialize normally (before __init__ completes)
-		if attr in ('_underlying', '_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows', '_storage'):
+		if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows', '_storage'):
 			object.__setattr__(self, attr, value)
 			return
 		
@@ -422,18 +423,18 @@ class Table(Vector):
 			
 			if col_idx_indexed is not None:
 				# Indexed assignment: validate column index and name match
-				if col_idx_indexed < 0 or col_idx_indexed >= len(self._underlying):
+				if col_idx_indexed < 0 or col_idx_indexed >= len(self._storage):
 					raise AttributeError(
-						f"Column index {col_idx_indexed} out of range (table has {len(self._underlying)} columns)"
+						f"Column index {col_idx_indexed} out of range (table has {len(self._storage)} columns)"
 					)
 				
 				# Validate: does this column's sanitized name match base_name?
 				from .naming import _sanitize_user_name
-				sanitized = _sanitize_user_name(self._underlying[col_idx_indexed]._name)
+				sanitized = _sanitize_user_name(self._storage[col_idx_indexed]._name)
 				
 				if sanitized != base_name.lower():
 					raise AttributeError(
-						f"Column {col_idx_indexed} is '{self._underlying[col_idx_indexed]._name}' "
+						f"Column {col_idx_indexed} is '{self._storage[col_idx_indexed]._name}' "
 						f"(sanitizes to '{sanitized}'), not '{base_name}'"
 					)
 				
@@ -441,36 +442,36 @@ class Table(Vector):
 				if not isinstance(value, Vector):
 					value = Vector(value)
 				
-				if self._underlying and len(value) != self._length:
+				if self._storage and len(value) != self._length:
 					raise ValueError(
 						f"Cannot assign column '{attr}': length {len(value)} != table length {self._length}"
 					)
 				
-				cols = list(self._underlying)
-				value._name = self._underlying[col_idx_indexed]._name  # Preserve original name
+				cols = list(self._storage)
+				value._name = self._storage[col_idx_indexed]._name  # Preserve original name
 				cols[col_idx_indexed] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
 				object.__setattr__(self, '_column_map', self._build_column_map())
 				return
 			
 			# Regular column lookup by name
 			col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
 			if col_idx is not None:
-				# Replace the column in _underlying
+				# Replace the column in _storage
 				if not isinstance(value, Vector):
 					value = Vector(value)
 				
 				# Validate length
-				if self._underlying and len(value) != self._length:
+				if self._storage and len(value) != self._length:
 					raise ValueError(
 						f"Cannot assign column '{attr}': length {len(value)} != table length {self._length}"
 					)
 				
 				# Replace column (tuples are immutable, so rebuild)
-				cols = list(self._underlying)
-				value._name = self._underlying[col_idx]._name  # Preserve original name
+				cols = list(self._storage)
+				value._name = self._storage[col_idx]._name  # Preserve original name
 				cols[col_idx] = value
-				object.__setattr__(self, '_underlying', tuple(cols))
+				self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
 				
 				# Rebuild column map to reflect any structural changes
 				object.__setattr__(self, '_column_map', self._build_column_map())
@@ -484,7 +485,7 @@ class Table(Vector):
 
 	def rename_column(self, old_name, new_name):
 		"""Rename a column (modifies in place, returns self for chaining)"""
-		for col in self._underlying:
+		for col in self._storage:
 			if col._name == old_name:
 				col._name = new_name
 				self._column_map = self._build_column_map()
@@ -506,7 +507,7 @@ class Table(Vector):
 			raise SerifValueError("old_names and new_names must have the same length")
 
 		# Simulate renames using a temporary list (avoid mid-state partial renames)
-		simulated = [col._name for col in self._underlying]
+		simulated = [col._name for col in self._storage]
 
 		for old, new in zip(old_names, new_names):
 			try:
@@ -518,7 +519,7 @@ class Table(Vector):
 		# Apply renames for real
 		for old, new in zip(old_names, new_names):
 			# rename the FIRST matching column in the real table
-			for col in self._underlying:
+			for col in self._storage:
 				if col._name == old:
 					col._name = new
 					break
@@ -531,10 +532,10 @@ class Table(Vector):
 		if len(self.shape)==2:
 			# Transpose 2D table: columns become rows
 			num_rows = self._length
-			num_cols = len(self._underlying)
+			num_cols = len(self._storage)
 			rows = []
 			for row_idx in range(num_rows):
-				row = Vector(tuple(col[row_idx] for col in self._underlying))
+				row = Vector(tuple(col[row_idx] for col in self._storage))
 				rows.append(row)
 			return Table(rows)
 		return self.copy((tuple(x.T for x in self))) # higher dimensions
@@ -545,14 +546,14 @@ class Table(Vector):
 		# Handle string indexing for column names
 		if isinstance(key, str):
 			# Try exact match first
-			for col in self._underlying:
+			for col in self._storage:
 				if col._name == key:
 					return col
 			
 			# Try sanitized match (case-insensitive)
 			key_lower = key.lower()
 			seen = set()
-			for idx, col in enumerate(self._underlying):
+			for idx, col in enumerate(self._storage):
 				if col._name is not None:
 					base = _sanitize_user_name(col._name)
 					# If sanitization returns None, match system name
@@ -580,7 +581,7 @@ class Table(Vector):
 			for col_name in key:
 				found = False
 				# Try exact match first
-				for col in self._underlying:
+				for col in self._storage:
 					if col._name == col_name:
 						selected_cols.append(col.copy())  # Copy to preserve original
 						found = True
@@ -590,7 +591,7 @@ class Table(Vector):
 				if not found:
 					col_name_lower = col_name.lower()
 					seen = set()
-					for idx, col in enumerate(self._underlying):
+					for idx, col in enumerate(self._storage):
 						if col._name is not None:
 							base = _sanitize_user_name(col._name)
 							if base is None:
@@ -669,22 +670,22 @@ class Table(Vector):
 
 		if isinstance(key, int):
 			# Effectively a different input type (single not a list). Returning a value, not a vector.
-			if isinstance(self._underlying[0], Table):
-				return self._underlying[key]
+			if isinstance(self._storage[0], Table):
+				return self._storage[key]
 			return Row(self, key)
 
 		if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
 			assert (len(self) == len(key))
-			return Vector(tuple(x[key] for x in self._underlying),
+			return Vector(tuple(x[key] for x in self._storage),
 				dtype = self._dtype
 			)
 		if isinstance(key, list) and {type(e) for e in key} == {bool}:
 			assert (len(self) == len(key))
-			return Vector(tuple(x[key] for x in self._underlying),
+			return Vector(tuple(x[key] for x in self._storage),
 				dtype = self._dtype
 			)
 		if isinstance(key, slice):
-			return Vector(tuple(x[key] for x in self._underlying), 
+			return Vector(tuple(x[key] for x in self._storage), 
 				dtype = self._dtype,
 				name=self._name
 			)
@@ -693,7 +694,7 @@ class Table(Vector):
 		if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
 			if len(self) > 1000:
 				warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
-			return Vector(tuple(x[key] for x in self._underlying),
+			return Vector(tuple(x[key] for x in self._storage),
 				dtype = self._dtype
 			)
 
@@ -720,7 +721,7 @@ class Table(Vector):
 		# --- 2. Resolve Target Columns ---
 		# This replicates the lookup logic from __getitem__
 		target_indices = []
-		n_cols = len(self._underlying)
+		n_cols = len(self._storage)
 		
 		if isinstance(col_spec, slice):
 			target_indices = list(range(n_cols)[col_spec])
@@ -754,7 +755,7 @@ class Table(Vector):
 		# t[0:5, 'A'] = 10
 		if not isinstance(value, Iterable) or isinstance(value, (str, bytes, bytearray)):
 			for col_idx in target_indices:
-				self._underlying[col_idx][row_spec] = value
+				self._storage[col_idx][row_spec] = value
 			return
 
 		# CASE B: Single Row Assignment
@@ -769,7 +770,7 @@ class Table(Vector):
 				)
 			
 			for i, col_idx in enumerate(target_indices):
-				self._underlying[col_idx][row_spec] = val_seq[i]
+				self._storage[col_idx][row_spec] = val_seq[i]
 			return
 
 		# CASE C: Rectangular/Table Assignment
@@ -783,7 +784,7 @@ class Table(Vector):
 			
 			# We delegate row-length validation to the vector.__setitem__ calls below
 			for i, col_idx in enumerate(target_indices):
-				self._underlying[col_idx][row_spec] = value.cols()[i]
+				self._storage[col_idx][row_spec] = value.cols()[i]
 			return
 
 		# CASE D: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
@@ -798,7 +799,7 @@ class Table(Vector):
 				# Check if it's a flat list (not nested)
 				if not value or not isinstance(value[0], (list, tuple, Vector)):
 					# Flat list -> assign to the single column
-					self._underlying[target_indices[0]][row_spec] = value
+					self._storage[target_indices[0]][row_spec] = value
 					return
 			
 			if len(value) != len(target_indices):
@@ -806,7 +807,7 @@ class Table(Vector):
 			
 			# Assume value[i] corresponds to target_indices[i]
 			for i, col_idx in enumerate(target_indices):
-				self._underlying[col_idx][row_spec] = value[i]
+				self._storage[col_idx][row_spec] = value[i]
 			return
 
 		raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
@@ -868,7 +869,7 @@ class Table(Vector):
 					)
 				
 				# Validate length
-				if self._underlying and len(col) != self._length:
+				if self._storage and len(col) != self._length:
 					raise ValueError(
 						f"Column '{col_name}' has length {len(col)}, expected {self._length}"
 					)
@@ -881,7 +882,7 @@ class Table(Vector):
 				named_cols.append(col)
 			
 			# Return new table with appended columns
-			return Table(tuple(self._underlying) + tuple(named_cols))
+			return Table(tuple(self._storage) + tuple(named_cols))
 
 		if isinstance(other, Table):
 			if self._dtype is not None and not self._dtype.nullable and other.schema() is not None and not other.schema().nullable and self._dtype.kind != other.schema().kind:
@@ -1162,8 +1163,8 @@ class Table(Vector):
 		# Pre-bind lengths and columns
 		left_nrows = len(self)
 		right_nrows = len(other)
-		left_cols = self._underlying
-		right_cols = other._underlying
+		left_cols = self._storage
+		right_cols = other._storage
 		n_left_cols = len(left_cols)
 		n_right_cols = len(right_cols)
 		
@@ -1302,8 +1303,8 @@ class Table(Vector):
 		
 		left_nrows = len(self)
 		right_nrows = len(other)
-		left_cols = self._underlying
-		right_cols = other._underlying
+		left_cols = self._storage
+		right_cols = other._storage
 		n_left_cols = len(left_cols)
 		n_right_cols = len(right_cols)
 		
@@ -1446,8 +1447,8 @@ class Table(Vector):
 		left_nrows = len(self)
 		right_nrows = len(other)
 		
-		left_cols = self._underlying
-		right_cols = other._underlying
+		left_cols = self._storage
+		right_cols = other._storage
 		n_left_cols = len(left_cols)
 		n_right_cols = len(right_cols)
 		
@@ -2164,7 +2165,7 @@ class Table(Vector):
 		# --- 4. Edge case: empty table ---
 		if nrows == 0:
 			# Preserve columns / names but with no rows
-			new_cols = [Vector([], name=col._name) for col in self._underlying]
+			new_cols = [Vector([], name=col._name) for col in self._storage]
 			return Table(new_cols)
 
 		# --- 5. Build sorted row index using stable multi-key sort ---
@@ -2197,7 +2198,7 @@ class Table(Vector):
 
 		# --- 6. Rebuild columns in sorted order ---
 		new_cols = []
-		for col in self._underlying:
+		for col in self._storage:
 			src = col._underlying
 			new_data = [src[i] for i in indices]
 			new_cols.append(Vector(new_data, name=col._name))
@@ -2225,7 +2226,7 @@ class Table(Vector):
 			up to 200 rows (no truncation for typical column counts).
 		"""
 		nrows = len(self)
-		ncols = len(self._underlying)
+		ncols = len(self._storage)
 
 		# --- Edge case: empty table ---
 		if ncols == 0:
@@ -2275,7 +2276,7 @@ class Table(Vector):
 
 		max_value_str_len = 40  # mild truncation for display only
 
-		for idx, col in enumerate(self._underlying):
+		for idx, col in enumerate(self._storage):
 			data = col._underlying
 			col_name = col._name
 
