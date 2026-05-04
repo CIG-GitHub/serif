@@ -386,7 +386,6 @@ class Vector():
 
 		out = []
 		has_none = False
-		# Fucking fuck
 		for i, elem in enumerate(self._storage):
 			if elem is None:
 				out.append(None)
@@ -408,8 +407,6 @@ class Vector():
 		if isinstance(py_target_type, type):
 			new_dtype = DataType(py_target_type, nullable=has_none)
 		else:
-			# Fucking fuck
-			# user gave a weird callable as target_type, infer from result
 			new_dtype = infer_dtype(out)
 
 		return Vector(tuple(out), dtype=new_dtype, name=self._name, as_row=self._display_as_row)
