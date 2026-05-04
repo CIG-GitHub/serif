@@ -1,6 +1,9 @@
 from .base import Vector
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
+from collections.abc import Iterable
+from ..typing import DataType
 
 class _Date(Vector):
 	def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):

@@ -142,12 +142,16 @@ class Vector():
 		target_class = cls
 		if dtype is not None:
 			if dtype.kind is str:
+				from .string import _String
 				target_class = _String
 			elif dtype.kind is int:
+				from .numeric import _Int
 				target_class = _Int
 			elif dtype.kind is float:
+				from .numeric import _Float
 				target_class = _Float
 			elif dtype.kind is date:
+				from .dates import _Date
 				target_class = _Date
 		
 		# Create instance using object.__new__ (bypasses __new__ dispatch)
