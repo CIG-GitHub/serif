@@ -79,7 +79,7 @@ class MethodProxy:
 	def __call__(self, *args, **kwargs):
 		method = self._method_name
 		results = []
-		for elem in self._vector._underlying:
+		for elem in self._vector._storage:
 			if elem is None:
 				results.append(None)
 			else:
@@ -94,7 +94,7 @@ class MethodProxy:
 class Vector():
 	""" Iterable vector with optional type safety """
 	_dtype = None  # DataType instance (private)
-	_underlying = None
+	_storage = None
 	_name = None
 	_display_as_row = False
 	_wild = False  # Flag for name changes (used by Table column tracking)
@@ -180,23 +180,36 @@ class Vector():
 		# We check self.__dict__ directly to avoid triggering Table.__getattr__
 		# which would crash because the table isn't initialized yet.
 		if '_precomputed_data' in self.__dict__:
-			self._underlying = self._precomputed_data
-			del self._precomputed_data # Clean up
+			data = self._precomputed_data
+			del self._precomputed_data
 		else:
-			# Standard path: initial was already a list/tuple/dict
-			self._underlying = tuple(initial)
-		
+			data = initial
+
+		nullable = self._dtype.nullable if self._dtype is not None else True
+		self._storage = TupleStorage.from_iterable(data, nullable=nullable)
+
 		# Fingerprint cache + powers
 		self._fp: int | None = None
 		self._fp_powers: List[int] | None = None
 		
 		# Register with alias tracker after full initialization
-		_ALIAS_TRACKER.register(self, id(self._underlying))
+		_ALIAS_TRACKER.register(self, id(self._storage))
 
 
 	@property
+	def _underlying(self):
+		"""Tuple view of storage data. Read by Table and legacy code."""
+		return self._storage.to_tuple() if self._storage is not None else ()
+
+	@_underlying.setter
+	def _underlying(self, value):
+		"""Allow Table and legacy code to assign a tuple directly."""
+		nullable = self._dtype.nullable if self._dtype is not None else True
+		self._storage = TupleStorage.from_iterable(value, nullable=nullable)
+
+	@property
 	def shape(self):
-		if not self._underlying:
+		if not self._storage:
 			return tuple()
 		return (len(self),)
 
@@ -247,7 +260,7 @@ class Vector():
 		return hash(repr(x))
 
 	def _ensure_fp_powers(self) -> None:
-		n = len(self._underlying)
+		n = len(self._storage)
 		if n == 0:
 			self._fp_powers = []
 			return
@@ -262,14 +275,14 @@ class Vector():
 		P = self._FP_P
 		B = self._FP_B
 		total = 0
-		for x in self._underlying:
+		for x in self._storage:
 			h = self._hash_element(x)
 			total = (total * B + h) % P
 		return total
 
 	def fingerprint(self) -> int:
 		if self._fp is None:
-			if self._fp_powers is None or len(self._fp_powers) != len(self._underlying):
+			if self._fp_powers is None or len(self._fp_powers) != len(self._storage):
 				self._ensure_fp_powers()
 			self._fp = self._compute_fingerprint_full()
 		return self._fp
@@ -296,7 +309,7 @@ class Vector():
 		# Preserve name if not explicitly overridden
 		# Use sentinel value (...) to distinguish between name=None (clear) and not passing name (preserve)
 		use_name = self._name if name is ... else name
-		return Vector(list(new_values or self._underlying),
+		return Vector(list(new_values or self._storage),
 			dtype = self._dtype,
 			name = use_name,
 			as_row = self._display_as_row)
@@ -313,7 +326,7 @@ class Vector():
 			a = a.to_object()            # now object vector
 			a[2] = "ryan"                # allowed - can mix types
 		"""
-		return Vector(list(self._underlying), dtype=object, name=self._name, as_row=self._display_as_row)
+		return Vector(list(self._storage), dtype=object, name=self._name, as_row=self._display_as_row)
 
 	def alias(self, new_name):
 		"""
@@ -373,7 +386,8 @@ class Vector():
 
 		out = []
 		has_none = False
-		for i, elem in enumerate(self._underlying):
+		# Fucking fuck
+		for i, elem in enumerate(self._storage):
 			if elem is None:
 				out.append(None)
 				has_none = True
@@ -394,6 +408,7 @@ class Vector():
 		if isinstance(py_target_type, type):
 			new_dtype = DataType(py_target_type, nullable=has_none)
 		else:
+			# Fucking fuck
 			# user gave a weird callable as target_type, infer from result
 			new_dtype = infer_dtype(out)
 
@@ -414,7 +429,7 @@ class Vector():
 					result = self.copy()
 					result._promote(required_dtype.kind)
 					# Now fill with the value on the promoted vector
-					out = tuple(value if x is None else x for x in result._underlying)
+					out = tuple(value if x is None else x for x in result._storage)
 					return Vector(
 						out,
 						dtype=DataType(required_dtype.kind, nullable=False),
@@ -429,7 +444,7 @@ class Vector():
 					)
 
 		# Standard path: fill value is compatible with dtype
-		out = tuple(value if x is None else x for x in self._underlying)
+		out = tuple(value if x is None else x for x in self._storage)
 
 		# Determine new nullability
 		new_nullable = any(x is None for x in out)
@@ -463,7 +478,7 @@ class Vector():
 		>>> v.dropna()
 		Vector([1, 3, 5])
 		"""
-		return Vector(tuple(elem for elem in self._underlying if elem is not None), dtype=self._dtype.with_nullable(False))
+		return Vector(tuple(elem for elem in self._storage if elem is not None), dtype=self._dtype.with_nullable(False))
 
 	def isna(self):
 		"""
@@ -480,7 +495,7 @@ class Vector():
 		>>> v.isna()
 		Vector([False, True, False])
 		"""
-		return Vector(tuple(elem is None for elem in self._underlying), dtype=DataType(bool))
+		return Vector(tuple(elem is None for elem in self._storage), dtype=DataType(bool))
 
 	def isinstance(self, types):
 		"""
@@ -507,7 +522,7 @@ class Vector():
 		Vector([False, False, False, True])
 		"""
 		return Vector(
-			tuple(b_isinstance(elem, types) for elem in self._underlying),
+			tuple(b_isinstance(elem, types) for elem in self._storage),
 			dtype=DataType(bool)
 		)
 
@@ -519,11 +534,11 @@ class Vector():
 
 	def __iter__(self):
 		""" iterate over the underlying tuple """
-		return iter(self._underlying)
+		return iter(self._storage)
 
 	def __len__(self):
 		""" length of the underlying tuple """
-		return len(self._underlying)
+		return len(self._storage)
 
 	@property
 	def T(self):
@@ -544,14 +559,14 @@ class Vector():
 		"""
 		if isinstance(key, int):
 			# Effectively a different input type (single not a list). Returning a value, not a vector.
-			return self._underlying[key]
+			return self._storage[key]
 
 		if isinstance(key, tuple):
 			if len(key) != len(self.shape):
 				raise SerifKeyError(f"Matrix indexing must provide an index in each dimension: {self.shape}")
 			if len(key) == 1:
 				return self[key[0]]
-			return self._underlying[key[-1]][key[:-1]]
+			return self._storage[key[-1]][key[:-1]]
 
 		key = self._check_duplicate(key)
 		if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
@@ -563,7 +578,7 @@ class Vector():
 				raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
 			return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
 		if isinstance(key, slice):
-			return self.copy(self._underlying[key], name=self._name)
+			return self.copy(self._storage[key], name=self._name)
 
 		# NOT RECOMMENDED
 		if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
@@ -596,7 +611,7 @@ class Vector():
 		"""
 
 		_alias = _ALIAS_TRACKER
-		_alias.check_writable(self, id(self._underlying))
+		_alias.check_writable(self, id(self._storage))
 
 		# === Fast precomputed checks ===
 		key = self._check_duplicate(key)
@@ -609,7 +624,7 @@ class Vector():
 		)
 
 		n = len(self)
-		underlying = self._underlying  # local bind
+		underlying = self._storage  # local bind
 		append_update = lambda idx, v: updates.append((idx, v))
 
 		updates = []  # list of (idx, new_value)
@@ -752,7 +767,7 @@ class Vector():
 					required_dtype = infer_dtype([incompatible])
 					try:
 						self._promote(required_dtype.kind)
-						underlying = self._underlying
+						underlying = self._storage
 					except SerifTypeError:
 						raise SerifTypeError(
 							f"Cannot set {required_dtype.kind.__name__} in "
@@ -769,12 +784,13 @@ class Vector():
 			data_list[idx] = new_val
 
 		new_tuple = tuple(data_list)
-		old_id = id(underlying)
+		old_id = id(self._storage)
 
 		_alias.unregister(self, old_id)
-		self._underlying = new_tuple
+		nullable = self._dtype.nullable if self._dtype is not None else True
+		self._storage = TupleStorage.from_iterable(new_tuple, nullable=nullable)
 		self._invalidate_fp()
-		_alias.register(self, id(new_tuple))
+		_alias.register(self, id(self._storage))
 
 
 
@@ -920,7 +936,7 @@ class Vector():
 				as_row=self._display_as_row
 				)	# Scalar operation - let Python handle type compatibility
 		try:
-			result_values = tuple(None if x is None else op_func(x, other) for x in self._underlying)
+			result_values = tuple(None if x is None else op_func(x, other) for x in self._storage)
 			# Infer dtype from result (e.g., int * 0.1 = float)
 			result_dtype = infer_dtype(result_values)
 			return Vector(result_values,
@@ -1056,25 +1072,25 @@ class Vector():
 		
 		# Allow numeric promotions: int -> float, float -> complex
 		if target_kind is float and self._dtype.kind is int:
-			old_tuple_id = id(self._underlying)
-			new_tuple = tuple(float(x) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			old_id = id(self._storage)
+			new_tuple = tuple(float(x) if x is not None else None for x in self._storage)
+			_ALIAS_TRACKER.unregister(self, old_id)
+			self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+			_ALIAS_TRACKER.register(self, id(self._storage))
 			self._dtype = DataType(float, nullable=self._dtype.nullable)
 		elif target_kind is complex and self._dtype.kind in (int, float):
-			old_tuple_id = id(self._underlying)
-			new_tuple = tuple(complex(x) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			old_id = id(self._storage)
+			new_tuple = tuple(complex(x) if x is not None else None for x in self._storage)
+			_ALIAS_TRACKER.unregister(self, old_id)
+			self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+			_ALIAS_TRACKER.register(self, id(self._storage))
 			self._dtype = DataType(complex, nullable=self._dtype.nullable)
 		elif target_kind is datetime and self._dtype.kind is date:
-			old_tuple_id = id(self._underlying)
-			new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._underlying)
-			_ALIAS_TRACKER.unregister(self, old_tuple_id)
-			self._underlying = new_tuple
-			_ALIAS_TRACKER.register(self, id(new_tuple))
+			old_id = id(self._storage)
+			new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._storage)
+			_ALIAS_TRACKER.unregister(self, old_id)
+			self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+			_ALIAS_TRACKER.register(self, id(self._storage))
 			self._dtype = DataType(datetime, nullable=self._dtype.nullable)
 		else:
 			# For backwards compat, raise error if trying invalid promotion
@@ -1086,7 +1102,7 @@ class Vector():
 
 	def cols(self, key=None):
 		if isinstance(key, int):
-			return self._underlying[key]
+			return self._storage[key]
 		if isinstance(key, slice):
 			return self._underlying[key]
 		return self._underlying
@@ -1108,32 +1124,32 @@ class Vector():
 		if self.ndims() == 2:
 			return self.copy((c.sum() for c in self.cols()), name=None).T
 		# Exclude None values from sum
-		return sum(v for v in self._underlying if v is not None)
+		return sum(v for v in self._storage if v is not None)
 
 	def all(self):
 		"""Return True if all elements are truthy (excluding None)."""
 		if self.ndims() == 2:
 			return self.copy((c.all() for c in self.cols()), name=None).T
-		return all(v for v in self._underlying if v is not None)
+		return all(v for v in self._storage if v is not None)
 
 	def any(self):
 		"""Return True if any element is truthy (excluding None)."""
 		if self.ndims() == 2:
 			return self.copy((c.any() for c in self.cols()), name=None).T
-		return any(v for v in self._underlying if v is not None)
+		return any(v for v in self._storage if v is not None)
 
 	def mean(self):
 		if self.ndims() == 2:
 			return self.copy((c.mean() for c in self.cols()), name=None).T
 		# Exclude None values from mean
-		non_none = [v for v in self._underlying if v is not None]
+		non_none = [v for v in self._storage if v is not None]
 		return sum(non_none) / len(non_none) if non_none else None
 
 	def stdev(self, population=False):
 		if self.ndims() == 2:
 			return self.copy((c.stdev(population) for c in self.cols()), name=None).T
 		# Exclude None values from stdev
-		non_none = [v for v in self._underlying if v is not None]
+		non_none = [v for v in self._storage if v is not None]
 		if len(non_none) < 2:
 			return None
 		m = sum(non_none) / len(non_none)
@@ -1148,7 +1164,7 @@ class Vector():
 
 		# Fast path: hashable
 		try:
-			for x in self._underlying:
+			for x in self._storage:
 				if x not in seen:
 					seen.add(x)
 					out.append(x)
@@ -1158,14 +1174,14 @@ class Vector():
 
 		# Slow path: unhashables
 		out = []
-		for x in self._underlying:
+		for x in self._storage:
 			if not any(x == y for y in out):
 				out.append(x)
 		return Vector(out)
 
 
 	def argsort(self):
-		return [i for i, _ in sorted(enumerate(self._underlying), key=lambda x: x[1])]
+		return [i for i, _ in sorted(enumerate(self._storage), key=lambda x: x[1])]
 
 	def pluck(self, key, default=None):
 		"""Extract a key/index from each element, returning default if not found.
@@ -1173,7 +1189,7 @@ class Vector():
 		Works with dicts, lists, tuples, strings, or any subscriptable object.
 		"""
 		results = []
-		for item in self._underlying:
+		for item in self._storage:
 			# If item is None, can't subscript it
 			if item is None:
 				results.append(default)
@@ -1212,7 +1228,7 @@ class Vector():
 		else:
 			key_fn = lambda x: (0 if x is None else 1, x if x is not None else 0)
 		
-		new_values = tuple(sorted(self._underlying, key=key_fn, reverse=reverse))
+		new_values = tuple(sorted(self._storage, key=key_fn, reverse=reverse))
 
 		# dtype DOES NOT change — preserving nullability and kind
 		new_vector = Vector(new_values, dtype=self._dtype, name=self._name)
@@ -1278,8 +1294,8 @@ class Vector():
 				if len(cols) != len(other):
 						raise SerifValueError(f"Dim mismatch: Matrix cols {len(cols)} != Vector len {len(other)}")
 				
-				# OPTIMIZATION: Access other._underlying directly to avoid index overhead in loop
-				scalars = other._underlying
+				# OPTIMIZATION: Access other._storage directly to avoid index overhead in loop
+				scalars = other._storage
 				
 				if not cols:
 					return Vector([])
@@ -1304,7 +1320,7 @@ class Vector():
 		# Standard sum of products
 		if len(self) != len(other):
 			raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-		return sum(x*y for x, y in zip(self._underlying, other._underlying, strict=True))
+		return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
 
 	def __rmatmul__(self, other):
 		other = self._check_duplicate(other)
@@ -1312,7 +1328,7 @@ class Vector():
 			return Vector(tuple(x @ other for x in self.cols()))
 		if len(self) != len(other):
 			raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-		return sum(x*y for x, y in zip(self._underlying, other, strict=True))
+		return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
 		raise SerifTypeError(f"Unsupported operand type(s) for '*': '{self._dtype.__name__}' and '{type(other).__name__}'.")
 
 
@@ -1338,12 +1354,12 @@ class Vector():
 		if isinstance(other, Vector):
 			if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
 				raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
-			return Vector(self._underlying + other._underlying,
+			return Vector(list(self._storage) + list(other._storage),
 				dtype=self._dtype)
 		if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-			return Vector(self._underlying + tuple(other),
+			return Vector(list(self._storage) + list(other),
 				dtype=self._dtype)
-		return Vector(self._underlying + (other,),
+		return Vector(list(self._storage) + [other],
 				dtype=self._dtype)
 
 
@@ -1373,15 +1389,9 @@ class Vector():
 		"""
 		# Convert other to Vector and concatenate with self
 		if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-			return Vector(tuple(other) + self._underlying,
-				None,  # other doesn't have a default element
-				None,
-				False)
+			return Vector(list(other) + list(self._storage))
 		# Scalar case: [other] + self
-		return Vector((other,) + self._underlying,
-			None,
-			None,
-			False)
+		return Vector([other] + list(self._storage))
 
 	def __rrshift__(self, other):
 		""" The >> operator behavior has been overridden to add columns
@@ -1449,6 +1459,6 @@ class Vector():
 			# property (non-callable attribute)
 			return Vector(tuple(
 				getattr(x, name) if x is not None else None
-				for x in self._underlying
+				for x in self._storage
 			))
 
