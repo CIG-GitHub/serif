@@ -14,9 +14,9 @@ from ..errors import SerifValueError
 from ..errors import SerifKeyError
 from ..display import _printr
 from ..naming import _sanitize_user_name
-from ..typing import DataType
-from ..typing import infer_dtype
-from ..typing import validate_scalar
+from .dtype import DataType
+from .dtype import infer_dtype
+from .dtype import validate_scalar
 from .storage import ArrayStorage, TupleStorage
 
 from copy import deepcopy
