@@ -91,7 +91,7 @@ class Row(Vector):
 		# Smart Dtype Inference (Runs once per table iteration/access)
 		# If all columns are the same type, the row is that type.
 		# Otherwise, it's an object vector.
-		from .typing import DataType
+		from ._vector.dtype import DataType
 		
 		if not table._underlying:
 			self._dtype = DataType(object, nullable=True)
