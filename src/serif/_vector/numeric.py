@@ -2,145 +2,71 @@
 # Container for numeric backends
 # ============================================================
 from .base import Vector
+from .storage import ArrayStorage, TupleStorage
 
 
 class _Float(Vector):
     dtype_name = 'float'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        """
-        Initialize a new Vector instance.
-        """
-        self._name = None
-        if name is not None:
-            self._name = name
-        self._display_as_row = as_row
-        self._wild = True
+    typecode = 'd'
 
-        # We check self.__dict__ directly to avoid triggering Table.__getattr__
-        # which would crash because the table isn't initialized yet.
-        if '_precomputed_data' in self.__dict__:
-            data = self._precomputed_data
-            del self._precomputed_data
-        else:
-            data = initial
-
-        nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
-
-        # Fingerprint cache + powers
-        self._fp: int | None = None
-        self._fp_powers: List[int] | None = None
-        
-        # Register with alias tracker after full initialization
-        _ALIAS_TRACKER.register(self, id(self._storage))
+    def _build_storage(self, data, nullable):
+        return ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
 
 
 class _Int(Vector):
     dtype_name = 'int'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        """
-        Initialize a new Vector instance.
-        """
-        self._name = None
-        if name is not None:
-            self._name = name
-        self._display_as_row = as_row
-        self._wild = True
+    typecode = None
 
-        # We check self.__dict__ directly to avoid triggering Table.__getattr__
-        # which would crash because the table isn't initialized yet.
-        if '_precomputed_data' in self.__dict__:
-            data = self._precomputed_data
-            del self._precomputed_data
-        else:
-            data = initial
-
-        nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
-
-        # Fingerprint cache + powers
-        self._fp: int | None = None
-        self._fp_powers: List[int] | None = None
-        
-        # Register with alias tracker after full initialization
-        _ALIAS_TRACKER.register(self, id(self._storage))
+    def _build_storage(self, data, nullable):
+        if self.typecode is not None:
+            return ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
+        if not isinstance(data, (list, tuple)):
+            data = list(data)
+        try:
+            return ArrayStorage.from_iterable(data, typecode='q', nullable=nullable)
+        except OverflowError:
+            return TupleStorage.from_iterable(data, nullable=nullable)
 
 
-class _Int64(Vector):
+class _Int64(_Int):
     dtype_name = 'int64'
     typecode = 'q'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _Int32(Vector):
+class _Int32(_Int):
     dtype_name = 'int32'
     typecode = 'i'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _Int16(Vector):
+class _Int16(_Int):
     dtype_name = 'int16'
     typecode = 'h'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _Int8(Vector):
+class _Int8(_Int):
     dtype_name = 'int8'
     typecode = 'b'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _UInt64(Vector):
+class _UInt64(_Int):
     dtype_name = 'uint64'
     typecode = 'Q'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _UInt32(Vector):
+class _UInt32(_Int):
     dtype_name = 'uint32'
     typecode = 'I'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _UInt16(Vector):
+class _UInt16(_Int):
     dtype_name = 'uint16'
     typecode = 'H'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
-class _UInt8(Vector):
+class _UInt8(_Int):
     dtype_name = 'uint8'
     typecode = 'B'
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
 
-class _Float32(Vector):
+class _Float32(_Float):
     dtype_name = 'float32'
     typecode = 'f'
-    
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
 
-class _Float64(Vector):
-    dtype_name = 'float64'
-    typecode = 'd'
-    
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
+_Float64 = _Float
 
 
 
