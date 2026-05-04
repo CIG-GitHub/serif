@@ -16,6 +16,7 @@ from ..display import _printr
 from ..naming import _sanitize_user_name
 from .dtype import DataType
 from .dtype import infer_dtype
+from .dtype import infer_kind
 from .dtype import validate_scalar
 from .storage import ArrayStorage, TupleStorage
 
@@ -91,6 +92,58 @@ class MethodProxy:
 # Main backend
 # ============================================================
 
+# ============================================================
+# Vector construction helpers
+# ============================================================
+
+def _collect_and_infer(iterable, dtype_hint):
+    """
+    Walk 'iterable' exactly once.
+
+    Simultaneously: collects values into a list, checks whether all items are
+    Vector instances (Table candidate), and infers the DataType.
+
+    Returns
+    -------
+    data        : list
+    all_vectors : bool  — True if every item is a Vector (Table candidate)
+    dtype       : DataType | None
+    """
+    data = []
+    all_vectors = True
+    dtype = dtype_hint
+
+    for val in iterable:
+        data.append(val)
+        if not isinstance(val, Vector):
+            all_vectors = False
+        if dtype is None:
+            k = infer_kind(val)
+            dtype = DataType(object, nullable=True) if k is None else DataType(k, nullable=False)
+        else:
+            dtype = dtype.promote_with(val)
+
+    return data, all_vectors, dtype
+
+
+def _pick_target_class(dtype):
+    """Return the Vector subclass appropriate for the given DataType."""
+    if dtype is None:
+        return Vector
+    if dtype.kind is str:
+        from .string import _String
+        return _String
+    if dtype.kind is int:
+        from .numeric import _Int
+        return _Int
+    if dtype.kind is float:
+        from .numeric import _Float
+        return _Float
+    if dtype.kind is date:
+        from .dates import _Date
+        return _Date
+    return Vector
+
 class Vector():
     """ Iterable vector with optional type safety """
     _dtype = None  # DataType instance (private)
@@ -109,90 +162,68 @@ class Vector():
 
 
     def __new__(cls, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        """
-        Decide what type of Vector to create based on contents.
-        """
-        # If 'initial' is an iterator/generator (consumable), we must materialize it ONCE here.
-        # Otherwise, infer_dtype(initial) consumes it, leaving nothing for __init__.
-        _precomputed_data = None
-        
-        # Check if iterable but not a reusable container (list/tuple/Vector)
-        # Generators and iterators need to be materialized before dtype inference
-        if isinstance(initial, Iterator):
-            initial = tuple(initial)
-            _precomputed_data = initial
+        # Subclass construction (Table, _Int, _Float, etc.): just allocate,
+        # __init__ will handle initialization.
+        if cls is not Vector:
+            return object.__new__(cls)
 
-        # Check if we're creating a Table (all elements are vectors of same length)
-        if initial and all(isinstance(x, Vector) for x in initial):
-            if len({len(x) for x in initial}) == 1:
-                from ..table import Table
-                return Table(initial=initial, dtype=dtype, name=name, as_row=as_row)
-            warnings.warn('Passing vectors of different length will not produce a Table.')
-        
-        # Convert Python types to DataType if needed
+        # === Vector(...) factory — minimal-walk construction ===
+
+        # Normalize dtype
         if dtype is not None and not isinstance(dtype, DataType):
             dtype = DataType(dtype)
-        
-        # Infer dtype if not provided
-        # (Safe to run now because 'initial' is definitely a tuple/list/reusable)
-        if dtype is None and initial:
-            dtype = infer_dtype(initial)
-        
-        # Dispatch to typed subclasses based on inferred dtype
-        target_class = cls
-        if dtype is not None:
-            if dtype.kind is str:
-                from .string import _String
-                target_class = _String
-            elif dtype.kind is int:
-                from .numeric import _Int
-                target_class = _Int
-            elif dtype.kind is float:
-                from .numeric import _Float
-                target_class = _Float
-            elif dtype.kind is date:
-                from .dates import _Date
-                target_class = _Date
-        
-        # Create instance using object.__new__ (bypasses __new__ dispatch)
-        instance = super(Vector, target_class).__new__(target_class)
-        
-        # Stash dtype on instance
+
+        # Fast path: data already materialized and dtype known — straight to storage.
+        # Used by internal calls (copy, fillna, etc.) that always supply dtype.
+        if isinstance(initial, (list, tuple)) and dtype is not None:
+            data = initial
+            is_table = False
+        else:
+            # Single Python loop: collect + table-check + infer simultaneously
+            data, is_table, dtype = _collect_and_infer(initial, dtype)
+
+        # Table path
+        if is_table and data:
+            if len({len(x) for x in data}) == 1:
+                from ..table import Table
+                return Table(initial=data, dtype=dtype, name=name, as_row=as_row)
+            warnings.warn('Passing vectors of different length will not produce a Table.')
+
+        # Dispatch to the right subclass
+        target_class = _pick_target_class(dtype)
+
+        # Allocate and fully initialize — __init__ will see _storage and return early
+        instance = object.__new__(target_class)
         instance._dtype = dtype
-        
-        # Attach the materialized data so __init__ doesn't have to re-read (or guess)
-        if _precomputed_data is not None:
-            instance._precomputed_data = _precomputed_data
-        
+        instance._name = name
+        instance._display_as_row = as_row
+        instance._wild = True
+        instance._fp = None
+        instance._fp_powers = None
+        nullable = dtype.nullable if dtype is not None else True
+        instance._storage = instance._build_storage(data, nullable)
+        _ALIAS_TRACKER.register(instance, id(instance._storage))
         return instance
 
 
     def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        """
-        Initialize a new Vector instance.
-        """
-        self._name = None
-        if name is not None:
-            self._name = name
+        # Factory path: __new__ already built the instance fully.
+        if '_storage' in self.__dict__:
+            return
+
+        # Subclass path: Table.__init__ → super().__init__(), or other subclass
+        # direct construction. self._dtype may already be set by the subclass.
+        self._name = name
         self._display_as_row = as_row
         self._wild = True
-
-        # We check self.__dict__ directly to avoid triggering Table.__getattr__
-        # which would crash because the table isn't initialized yet.
-        if '_precomputed_data' in self.__dict__:
-            data = self._precomputed_data
-            del self._precomputed_data
-        else:
-            data = initial
-
+        if dtype is not None:
+            if not isinstance(dtype, DataType):
+                dtype = DataType(dtype)
+            self._dtype = dtype
         nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = self._build_storage(data, nullable)
-
-        # Fingerprint cache + powers
-        self._fp: int | None = None
-        self._fp_powers: List[int] | None = None
-        
-        # Register with alias tracker after full initialization
+        self._storage = self._build_storage(initial, nullable)
+        self._fp = None
+        self._fp_powers = None
         _ALIAS_TRACKER.register(self, id(self._storage))
 
     def _build_storage(self, data, nullable):
