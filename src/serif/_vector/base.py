@@ -196,6 +196,9 @@ class Vector():
         _ALIAS_TRACKER.register(self, id(self._storage))
 
     def _build_storage(self, data, nullable):
+        tc = getattr(self, 'typecode', None)
+        if tc is not None:
+            return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
         return TupleStorage.from_iterable(data, nullable=nullable)
 
 

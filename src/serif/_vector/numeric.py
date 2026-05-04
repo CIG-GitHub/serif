@@ -9,17 +9,11 @@ class _Float(Vector):
     dtype_name = 'float'
     typecode = 'd'
 
-    def _build_storage(self, data, nullable):
-        return ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
-
 
 class _Int(Vector):
     dtype_name = 'int'
-    typecode = None
 
     def _build_storage(self, data, nullable):
-        if self.typecode is not None:
-            return ArrayStorage.from_iterable(data, typecode=self.typecode, nullable=nullable)
         if not isinstance(data, (list, tuple)):
             data = list(data)
         try:
@@ -28,45 +22,42 @@ class _Int(Vector):
             return TupleStorage.from_iterable(data, nullable=nullable)
 
 
-class _Int64(_Int):
+class _Int64(Vector):
     dtype_name = 'int64'
     typecode = 'q'
 
-class _Int32(_Int):
+class _Int32(Vector):
     dtype_name = 'int32'
     typecode = 'i'
 
-class _Int16(_Int):
+class _Int16(Vector):
     dtype_name = 'int16'
     typecode = 'h'
 
-class _Int8(_Int):
+class _Int8(Vector):
     dtype_name = 'int8'
     typecode = 'b'
 
-class _UInt64(_Int):
+class _UInt64(Vector):
     dtype_name = 'uint64'
     typecode = 'Q'
 
-class _UInt32(_Int):
+class _UInt32(Vector):
     dtype_name = 'uint32'
     typecode = 'I'
 
-class _UInt16(_Int):
+class _UInt16(Vector):
     dtype_name = 'uint16'
     typecode = 'H'
 
-class _UInt8(_Int):
+class _UInt8(Vector):
     dtype_name = 'uint8'
     typecode = 'B'
 
 
-class _Float32(_Float):
+class _Float32(Vector):
     dtype_name = 'float32'
     typecode = 'f'
-
-
-_Float64 = _Float
 
 
 
