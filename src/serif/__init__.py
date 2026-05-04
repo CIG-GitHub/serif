@@ -21,11 +21,7 @@ Zero external dependencies - pure Python stdlib only.
 
 from .alias_tracker import _ALIAS_TRACKER
 from .alias_tracker import AliasError
-from .vector import Vector
-from .vector import _Float
-from .vector import _Int
-from .vector import _String
-from .vector import _Date
+from ._vector import Vector, _Int, _Float, _String, _Date
 from .table import Table
 from .errors import SerifError
 from .errors import SerifKeyError

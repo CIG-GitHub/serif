@@ -1,6 +1,6 @@
 """Test that aggregate preserves order of first appearance (stable sort behavior)."""
 import pytest
-from serif.vector import Vector
+from serif import Vector
 from serif.table import Table
 
 

@@ -2,7 +2,7 @@ import operator
 import warnings
 from collections.abc import Iterable
 
-from .vector import Vector
+from ._vector import Vector
 
 from .naming import _sanitize_user_name
 from ._vector.storage import TupleStorage
