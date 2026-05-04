@@ -116,9 +116,9 @@ def test_Table_rename_columns_atomic():
 		t.rename_columns(['a', 'invalid', 'b'], ['alpha', 'oops', 'beta'])
 	
 	# No changes should have been made - 'a' should NOT be renamed to 'alpha'
-	assert t._underlying[0]._name == 'a'
-	assert t._underlying[1]._name == 'b'
-	assert t._underlying[2]._name == 'c'
+	assert t._storage[0]._name == 'a'
+	assert t._storage[1]._name == 'b'
+	assert t._storage[2]._name == 'c'
 	
 	# Should still be accessible by original names
 	assert list(t['a']) == [1, 2, 3]
@@ -149,18 +149,18 @@ def test_Table_duplicate_column_names():
 		t = Table([col1, col2, col3])
 	
 	# Should have two columns named 'a' and one named 'b'
-	assert t._underlying[0]._name == 'a'
-	assert t._underlying[1]._name == 'a'
-	assert t._underlying[2]._name == 'b'
+	assert t._storage[0]._name == 'a'
+	assert t._storage[1]._name == 'a'
+	assert t._storage[2]._name == 'b'
 	
 	# Accessing t['a'] should return the first match
 	assert list(t['a']) == [1, 2, 3]
 	
 	# Renaming one 'a' should only rename the first match
 	t.rename_column('a', 'alpha')
-	assert t._underlying[0]._name == 'alpha'
-	assert t._underlying[1]._name == 'a'  # Second 'a' unchanged
-	assert t._underlying[2]._name == 'b'
+	assert t._storage[0]._name == 'alpha'
+	assert t._storage[1]._name == 'a'  # Second 'a' unchanged
+	assert t._storage[2]._name == 'b'
 	
 	# Now we have alpha, a, b
 	assert list(t['alpha']) == [1, 2, 3]
@@ -177,15 +177,15 @@ def test_Table_rename_all_duplicates():
 		t = Table([col1, col2, col3])
 	
 	# All three columns named 'a'
-	assert all(c._name == 'a' for c in t._underlying)
+	assert all(c._name == 'a' for c in t._storage)
 	
 	# rename_columns with parallel lists renames each match in order
 	t.rename_columns(['a', 'a', 'a'], ['x', 'y', 'z'])
 	
 	# Each 'a' renamed in order
-	assert t._underlying[0]._name == 'x'
-	assert t._underlying[1]._name == 'y'
-	assert t._underlying[2]._name == 'z'
+	assert t._storage[0]._name == 'x'
+	assert t._storage[1]._name == 'y'
+	assert t._storage[2]._name == 'z'
 
 
 def test_Table_rename_duplicate_columns_separately():
@@ -201,9 +201,9 @@ def test_Table_rename_duplicate_columns_separately():
 	# This is where parallel lists shine
 	t.rename_columns(['data', 'data'], ['measurement', 'control'])
 	
-	assert t._underlying[0]._name == 'measurement'
-	assert t._underlying[1]._name == 'control'
-	assert t._underlying[2]._name == 'label'
+	assert t._storage[0]._name == 'measurement'
+	assert t._storage[1]._name == 'control'
+	assert t._storage[2]._name == 'label'
 	
 	# Verify data preserved
 	assert list(t['measurement']) == [1, 2, 3]
@@ -256,6 +256,7 @@ def test_Table_rename_preserves_data():
 	
 	assert list(t['x']) == original_a
 	assert list(t['y']) == original_b
+
 
 
 

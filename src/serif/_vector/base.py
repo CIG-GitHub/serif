@@ -234,17 +234,6 @@ class Vector():
 
 
     @property
-    def _underlying(self):
-        """Tuple view of storage data. Read by Table and legacy code."""
-        return self._storage.to_tuple() if self._storage is not None else ()
-
-    @_underlying.setter
-    def _underlying(self, value):
-        """Allow Table and legacy code to assign a tuple directly."""
-        nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = TupleStorage.from_iterable(value, nullable=nullable)
-
-    @property
     def shape(self):
         if not self._storage:
             return tuple()
@@ -1138,8 +1127,8 @@ class Vector():
         if isinstance(key, int):
             return self._storage[key]
         if isinstance(key, slice):
-            return self._underlying[key]
-        return self._underlying
+            return self._storage.to_tuple()[key]
+        return self._storage.to_tuple()
 
     """
     Recursive Vector Operations

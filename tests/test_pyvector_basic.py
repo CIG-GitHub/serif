@@ -63,7 +63,7 @@ class TestCopy:
         v2 = v1.copy()
         assert list(v1) == list(v2)
         assert v1 is not v2
-        assert v1._underlying is not v2._underlying
+        assert v1._storage is not v2._storage
     
     def test_copy_mutation_independence(self):
         v1 = Vector([1, 2, 3])
@@ -193,6 +193,7 @@ class TestCast:
         assert list(result) == [1, 2, 3]
         assert result.schema().kind == int
         assert not result.schema().nullable
+
 
 
 

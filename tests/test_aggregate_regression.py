@@ -26,8 +26,9 @@ def test_aggregate_over_no_warnings_and_correct_keys():
     res_year = res['year']
     res_month = res['month']
     expected_keys = {(year[i], month[i]) for i in range(len(year))}
-    actual_keys = set(zip(res_year._underlying, res_month._underlying))
+    actual_keys = set(zip(res_year._storage, res_month._storage))
     assert actual_keys == expected_keys
+
 
 
 
