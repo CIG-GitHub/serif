@@ -89,10 +89,6 @@ class MethodProxy:
 
 
 # ============================================================
-# Main backend
-# ============================================================
-
-# ============================================================
 # Vector construction helpers
 # ============================================================
 
@@ -144,6 +140,12 @@ def _pick_target_class(dtype):
         return _Date
     return Vector
 
+
+# ============================================================
+# Main backend
+# ============================================================
+
+
 class Vector():
     """ Iterable vector with optional type safety """
     _dtype = None  # DataType instance (private)
@@ -166,8 +168,6 @@ class Vector():
         # __init__ will handle initialization.
         if cls is not Vector:
             return object.__new__(cls)
-
-        # === Vector(...) factory — minimal-walk construction ===
 
         # Normalize dtype
         if dtype is not None and not isinstance(dtype, DataType):
