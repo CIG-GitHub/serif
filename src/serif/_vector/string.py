@@ -1,4 +1,4 @@
-from serif import Vector
+from .base import Vector
 
 
 class _String(Vector):

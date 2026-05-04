@@ -1,6 +1,7 @@
 # ============================================================
 # Container for numeric backends
 # ============================================================
+from .base import Vector
 
 
 class _Float(Vector):
@@ -19,37 +20,37 @@ class _Int(Vector):
 
 class _Int64(Vector):
 	dtype_name = 'int64'
-	typecode: 'q'
+	typecode = 'q'
 class _Int32(Vector):
 	dtype_name = 'int32'
-	typecode: 'i'
+	typecode = 'i'
 class _Int16(Vector):
 	dtype_name = 'int16'
-	typecode: 'h'
+	typecode = 'h'
 class _Int8(Vector):
 	dtype_name = 'int8'
-	typecode: 'b'
+	typecode = 'b'
 
 class _UInt64(Vector):
 	dtype_name = 'uint64'
-	typecode: 'Q'
+	typecode = 'Q'
 class _UInt32(Vector):
 	dtype_name = 'uint32'
-	typecode: 'I'
+	typecode = 'I'
 class _UInt16(Vector):
 	dtype_name = 'uint16'
-	typecode: 'H'
+	typecode = 'H'
 class _UInt8(Vector):
 	dtype_name = 'uint8'
-	typecode: 'B'
+	typecode = 'B'
 
 
 class _Float32(Vector):
 	dtype_name = 'float32'
-	typecode: 'f'
+	typecode = 'f'
 class _Float64(Vector):
 	dtype_name = 'float64'
-	typecode: 'd'
+	typecode = 'd'
 
 
 
