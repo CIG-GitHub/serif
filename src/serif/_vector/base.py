@@ -6,23 +6,24 @@ from builtins import isinstance as b_isinstance
 from collections.abc import Iterator
 from collections.abc import Iterable
 
-from .alias_tracker import _ALIAS_TRACKER
-from .alias_tracker import AliasError
-from .errors import SerifTypeError
-from .errors import SerifIndexError
-from .errors import SerifValueError
-from .errors import SerifKeyError
-from .display import _printr
-from .naming import _sanitize_user_name
-from .typing import DataType
-from .typing import infer_dtype
-from .typing import validate_scalar
+from ..alias_tracker import _ALIAS_TRACKER
+from ..alias_tracker import AliasError
+from ..errors import SerifTypeError
+from ..errors import SerifIndexError
+from ..errors import SerifValueError
+from ..errors import SerifKeyError
+from ..display import _printr
+from ..naming import _sanitize_user_name
+from ..typing import DataType
+from ..typing import infer_dtype
+from ..typing import validate_scalar
+from .storage import ArrayStorage, TupleStorage
 
 from copy import deepcopy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-from .typeutils import slice_length
+from ..typeutils import slice_length
 
 from typing import Any
 from typing import Iterable
@@ -124,7 +125,7 @@ class Vector():
 		# Check if we're creating a Table (all elements are vectors of same length)
 		if initial and all(isinstance(x, Vector) for x in initial):
 			if len({len(x) for x in initial}) == 1:
-				from .table import Table
+				from ..table import Table
 				return Table(initial=initial, dtype=dtype, name=name, as_row=as_row)
 			warnings.warn('Passing vectors of different length will not produce a Table.')
 		

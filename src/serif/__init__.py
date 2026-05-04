@@ -31,7 +31,6 @@ from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
 from .csv import read_csv
-from .typing import DataType
 from .display import set_repr_rows
 
 __version__ = "0.1.2"
@@ -39,7 +38,6 @@ __all__ = [
 	"Vector", 
 	"Table",
 	"read_csv",
-	"DataType",
 	"set_repr_rows",
 	"AliasError",
 	"SerifError",
