@@ -7,12 +7,14 @@ Designed for Python users who need to work with datasets beyond Excel's limits
 Main classes:
     - Vector: 1D vector with optional type safety
     - Table: 2D table (multiple columns of equal length)
-    
-Type-specific subclasses (auto-created):
-    - _Float: Vector of floats with float method proxying
-    - _Int: Vector of integers with int method proxying
-    - _String: Vector of strings with string method proxying
-    - _Date: Vector of dates with date method proxying
+
+Internals live in serif._vector:
+    - _vector/base.py    — Vector mechanics
+    - _vector/dtype.py   — DataType, infer_dtype, validate_scalar
+    - _vector/storage.py — ArrayStorage, TupleStorage
+    - _vector/numeric.py — _Int, _Float, sized subclasses, promotion table
+    - _vector/string.py  — _String
+    - _vector/dates.py   — _Date
 
 Zero external dependencies - pure Python stdlib only.
 """
@@ -31,7 +33,6 @@ from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
 from .csv import read_csv
-from .typing import DataType
 from .display import set_repr_rows
 
 __version__ = "0.1.2"
@@ -39,7 +40,6 @@ __all__ = [
 	"Vector", 
 	"Table",
 	"read_csv",
-	"DataType",
 	"set_repr_rows",
 	"AliasError",
 	"SerifError",
