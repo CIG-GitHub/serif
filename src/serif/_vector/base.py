@@ -973,14 +973,6 @@ class Vector():
                 for col in other.cols()
             ))
 
-        # Coerce plain iterables to Vector so the typed fast path applies
-        if (
-            isinstance(other, Iterable)
-            and not isinstance(other, (str, bytes, bytearray))
-            and not isinstance(other, Vector)
-        ):
-            other = Vector(list(other))
-
         if isinstance(other, Vector):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
@@ -995,6 +987,20 @@ class Vector():
                 return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
             if result_dtype is None:
                 result_dtype = infer_dtype(result_values)
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+
+        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
+            if len(self) != len(other):
+                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            try:
+                result_values = tuple(
+                    None if (x is None or y is None) else op_func(x, y)
+                    for x, y in zip(self, other, strict=True)
+                )
+            except TypeError:
+                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
+                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+            result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
 
         # Scalar path
