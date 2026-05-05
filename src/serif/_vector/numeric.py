@@ -2,7 +2,8 @@
 # Container for numeric backends
 # ============================================================
 from .base import Vector
-from .storage import ArrayStorage, TupleStorage
+from .storage import ArrayStorage
+from .storage import TupleStorage
 
 
 class _Float(Vector):

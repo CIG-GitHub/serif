@@ -18,7 +18,8 @@ from .dtype import DataType
 from .dtype import infer_dtype
 from .dtype import infer_kind
 from .dtype import validate_scalar
-from .storage import ArrayStorage, TupleStorage
+from .storage import ArrayStorage
+from .storage import TupleStorage
 
 from copy import deepcopy
 from datetime import date

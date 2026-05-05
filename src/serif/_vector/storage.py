@@ -4,7 +4,8 @@ Storage backends for Vector data.
 
 from __future__ import annotations
 from array import array
-from typing import Any, Iterator
+from typing import Any
+from typing import Iterator
 from collections.abc import Iterable
 
 
