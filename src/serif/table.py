@@ -1703,8 +1703,13 @@ class Table(Vector):
                         out.append(func(Table(group_cols)))
                     result_cols.append(Vector(out, name=agg_name))
                 else:
+                    hint = (
+                        f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
+                        f" Use t.col.sum not t.col.sum())"
+                        if not callable(func) else ""
+                    )
                     raise SerifTypeError(
-                        f"aggregations['{agg_name}'] must be a bound Vector method or callable"
+                        f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
                     )
 
         # ------------------------------------------------------------------
@@ -1827,8 +1832,13 @@ class Table(Vector):
                         group_map[_key] = func(Table(group_cols))
                     result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
                 else:
+                    hint = (
+                        f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
+                        f" Use t.col.sum not t.col.sum())"
+                        if not callable(func) else ""
+                    )
                     raise SerifTypeError(
-                        f"aggregations['{agg_name}'] must be a bound Vector method or callable"
+                        f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
                     )
 
         # ------------------------------------------------------------------
