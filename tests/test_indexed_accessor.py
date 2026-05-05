@@ -10,13 +10,13 @@ def test_indexed_accessor_basic():
     """Test basic indexed accessor retrieval."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6],
+        'qty': [4, 5, 6],
         'sum': [7, 8, 9]
     })
     
     # Access by index with validation
     assert t.total__0 is t.total
-    assert t.count__1 is t.count
+    assert t.qty__1 is t.qty
     assert t.sum__2 is t.sum_
     
     # All should return the same vector
@@ -44,24 +44,24 @@ def test_indexed_accessor_wrong_name():
     """Test that indexed accessor validates column name."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6],
+        'qty': [4, 5, 6],
         'sum': [7, 8, 9]
     })
     
     # Trying to access column 1 as 'total' should fail
-    with pytest.raises(AttributeError, match="Column 1 is 'count'.*not 'total'"):
+    with pytest.raises(AttributeError, match="Column 1 is 'qty'.*not 'total'"):
         _ = t.total__1
     
-    # Trying to access column 0 as 'count' should fail
-    with pytest.raises(AttributeError, match="Column 0 is 'total'.*not 'count'"):
-        _ = t.count__0
+    # Trying to access column 0 as 'qty' should fail
+    with pytest.raises(AttributeError, match="Column 0 is 'total'.*not 'qty'"):
+        _ = t.qty__0
 
 
 def test_indexed_accessor_out_of_range():
     """Test that out-of-range indices raise errors."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6]
+        'qty': [4, 5, 6]
     })
     
     # Index too high
@@ -77,35 +77,35 @@ def test_indexed_accessor_setattr():
     """Test setting columns via indexed accessor."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6],
+        'qty': [4, 5, 6],
         'sum': [7, 8, 9]
     })
     
     # Set column 1 with validation
     new_col = Vector([10, 20, 30])
-    t.count__1 = new_col
+    t.qty__1 = new_col
     
-    assert all(t.count._storage[i] == new_col._storage[i] for i in range(3))
-    assert t.count._name == 'count'  # Name preserved
+    assert all(t.qty._storage[i] == new_col._storage[i] for i in range(3))
+    assert t.qty._name == 'qty'  # Name preserved
 
 
 def test_indexed_accessor_setattr_wrong_name():
     """Test that setattr validates column name."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6]
+        'qty': [4, 5, 6]
     })
     
-    # Trying to set column 0 as 'count' should fail
-    with pytest.raises(AttributeError, match="Column 0 is 'total'.*not 'count'"):
-        t.count__0 = Vector([10, 20, 30])
+    # Trying to set column 0 as 'qty' should fail
+    with pytest.raises(AttributeError, match="Column 0 is 'total'.*not 'qty'"):
+        t.qty__0 = Vector([10, 20, 30])
 
 
 def test_indexed_accessor_setattr_wrong_length():
     """Test that setattr validates vector length."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6]
+        'qty': [4, 5, 6]
     })
     
     # Wrong length
@@ -117,7 +117,7 @@ def test_indexed_accessor_empty_base():
     """Test that __N without base name raises error."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6]
+        'qty': [4, 5, 6]
     })
     
     # '__5' should error with clear message
@@ -153,12 +153,12 @@ def test_regular_access_still_works():
     """Test that regular column access (without index) still works."""
     t = Table({
         'total': [1, 2, 3],
-        'count': [4, 5, 6]
+        'qty': [4, 5, 6]
     })
     
     # Regular access should return first match
     assert t.total is t._storage[0]
-    assert t.count is t._storage[1]
+    assert t.qty is t._storage[1]
 
 
 def test_indexed_accessor_with_special_chars():

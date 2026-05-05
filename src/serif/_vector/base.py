@@ -1287,6 +1287,11 @@ class Vector():
         num = sum((x-m)*(x-m) for x in non_none)
         return (num/(len(non_none) - 1 + population))**0.5
 
+    def count(self):
+        if self.ndims() == 2:
+            return self.copy((c.count() for c in self.cols()), name=None).T
+        return sum(1 for v in self._storage if v is not None)
+
     def unique(self):
         seen = set()
         out = []
