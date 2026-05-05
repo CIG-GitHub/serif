@@ -433,7 +433,11 @@ class Vector():
             a = a.to_object()            # now object vector
             a[2] = "ryan"                # allowed - can mix types
         """
-        return Vector(list(self._storage), dtype=object, name=self._name, as_row=self._display_as_row)
+        return self._clone(
+            TupleStorage.from_iterable(self._storage),
+            dtype=Schema(object, self._dtype.nullable if self._dtype is not None else True),
+            name=self._name,
+        )
 
     def alias(self, new_name):
         """
@@ -957,14 +961,18 @@ class Vector():
             # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
-            return Vector(result_values, dtype=Schema(bool, False))
+            return Vector._from_iterable_known_dtype(
+                (False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
+                Schema(bool, False),
+            )
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
-            return Vector(result_values, dtype=Schema(bool, False))
+            return Vector._from_iterable_known_dtype(
+                (False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
+                Schema(bool, False),
+            )
         # Scalar comparison
         if other is None and op in (operator.eq, operator.ne):
             warnings.warn(
@@ -972,8 +980,10 @@ class Vector():
                 "Use `v.isna()` to test for nulls.",
                 stacklevel=2
             )
-        result_values = tuple(False if x is None else bool(op(x, other)) for x in self)
-        return Vector(result_values, dtype=Schema(bool, False))    # Now, we can redefine the comparison methods using the helper function
+        return Vector._from_iterable_known_dtype(
+            (False if x is None else bool(op(x, other)) for x in self),
+            Schema(bool, False),
+        )    # Now, we can redefine the comparison methods using the helper function
     
     def __eq__(self, other):
         return self._elementwise_compare(other, operator.eq)
@@ -1139,35 +1149,29 @@ class Vector():
         if isinstance(other, Vector):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            vals = []
-            for x, y in zip(other, self, strict=True):
-                if x is None or y is None:
-                    vals.append(None)
-                else:
-                    vals.append(x + y)
-            return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
+            return Vector._from_iterable_known_dtype(
+                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
+                self._dtype,
+                as_row=self._display_as_row,
+            )
         
         # Scalar + Vector
         if not isinstance(other, Iterable) or isinstance(other, (str, bytes, bytearray)):
-            vals = []
-            for x in self:
-                if x is None:
-                    vals.append(None)
-                else:
-                    vals.append(other + x)
-            return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
+            return Vector._from_iterable_known_dtype(
+                (None if x is None else other + x for x in self),
+                self._dtype,
+                as_row=self._display_as_row,
+            )
         
         # Iterable + Vector
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            vals = []
-            for x, y in zip(other, self, strict=True):
-                if x is None or y is None:
-                    vals.append(None)
-                else:
-                    vals.append(x + y)
-            return Vector(vals, dtype=self._dtype, name=None, as_row=self._display_as_row)
+            return Vector._from_iterable_known_dtype(
+                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
+                self._dtype,
+                as_row=self._display_as_row,
+            )
         
         raise SerifTypeError(f"Unsupported operand type: {type(other).__name__}")
 
