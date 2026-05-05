@@ -24,6 +24,7 @@ from copy import deepcopy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
+from itertools import chain
 
 from typing import Any
 from typing import Iterable
@@ -295,6 +296,22 @@ class Vector():
         instance._storage = new_storage
         return instance
 
+    @classmethod
+    def _from_iterable_known_dtype(cls, iterable, dtype, *, name=None, as_row=False):
+        """Build a Vector directly from an iterable when the dtype is already known.
+        Bypasses __new__/__init__ inference; one walk into storage."""
+        target_cls = _pick_target_class(dtype)
+        instance = object.__new__(target_cls)
+        instance._dtype = dtype
+        instance._name = name
+        instance._display_as_row = as_row
+        instance._wild = True
+        instance._fp = None
+        instance._fp_powers = None
+        nullable = dtype.nullable if dtype is not None else True
+        instance._storage = instance._build_storage(iterable, nullable)
+        return instance
+
 
     @property
     def shape(self):
@@ -394,14 +411,14 @@ class Vector():
         return cls(dtype=dtype)
 
 
-    def copy(self, new_values = None, name=...):
-        # Preserve name if not explicitly overridden
-        # Use sentinel value (...) to distinguish between name=None (clear) and not passing name (preserve)
+    def copy(self, new_values=None, name=...):
         use_name = self._name if name is ... else name
-        return Vector(list(new_values or self._storage),
-            dtype = self._dtype,
-            name = use_name,
-            as_row = self._display_as_row)
+        if self._dtype is not None:
+            # Typed 1D vector: build storage directly, no inference needed.
+            source = new_values if new_values is not None else self._storage
+            return self._clone(self._build_storage(source, self._dtype.nullable), name=use_name)
+        # dtype unknown (Table or untyped vector): full constructor for class dispatch.
+        return Vector(list(new_values or self._storage), dtype=None, name=use_name, as_row=self._display_as_row)
     
     def to_object(self):
         """
@@ -532,8 +549,9 @@ class Vector():
         # Standard path: fill value is compatible with dtype
         out = tuple(value if x is None else x for x in self._storage)
 
-        # Determine new nullability
-        new_nullable = any(x is None for x in out)
+        # Replacing None with a non-None value eliminates all nulls;
+        # replacing None with None leaves nullability unchanged.
+        new_nullable = value is None and (self._dtype.nullable if self._dtype is not None else True)
 
         # Construct new dtype
         if dtype is None:
@@ -591,7 +609,25 @@ class Vector():
         >>> v.isna()
         Vector([False, True, False])
         """
-        return Vector(tuple(elem is None for elem in self._storage), dtype=Schema(bool, False))
+        storage = self._storage
+        if isinstance(storage, ArrayStorage):
+            # Fast path: the null mask is already a packed byte array.
+            # If there is no mask, no elements are null.
+            if storage._mask is None:
+                from .storage import TupleStorage as _TS
+                return self._clone(
+                    _TS(tuple(False for _ in range(len(storage)))),
+                    dtype=Schema(bool, False),
+                )
+            return self._clone(
+                TupleStorage(tuple(bool(b) for b in storage._mask._data)),
+                dtype=Schema(bool, False),
+            )
+        return Vector._from_iterable_known_dtype(
+            (elem is None for elem in storage),
+            Schema(bool, False),
+            as_row=self._display_as_row,
+        )
 
     def isinstance(self, types):
         """
@@ -617,9 +653,10 @@ class Vector():
         >>> v.isinstance(type(None))
         Vector([False, False, False, True])
         """
-        return Vector(
-            tuple(b_isinstance(elem, types) for elem in self._storage),
-            dtype=Schema(bool, False)
+        return Vector._from_iterable_known_dtype(
+            (b_isinstance(elem, types) for elem in self._storage),
+            Schema(bool, False),
+            as_row=self._display_as_row,
         )
 
     @property
@@ -875,9 +912,8 @@ class Vector():
             old_val = data_list[idx]
             data_list[idx] = new_val
 
-        new_tuple = tuple(data_list)
         nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = TupleStorage.from_iterable(new_tuple, nullable=nullable)
+        self._storage = TupleStorage.from_iterable(data_list, nullable=nullable)
         self._invalidate_fp()
 
 
@@ -1072,11 +1108,8 @@ class Vector():
     def __invert__(self):
         # For boolean vectors, use logical NOT instead of bitwise NOT
         if self._dtype and self._dtype.kind is bool:
-            return Vector(
-                tuple(not x for x in self),
-                dtype=self._dtype,
-                name=self._name,
-                as_row=self._display_as_row
+            return self._clone(
+                self._build_storage((not x for x in self), self._dtype.nullable)
             )
         return self._unary_operation(operator.invert, '__invert__')
 
@@ -1464,16 +1497,14 @@ class Vector():
         if self._dtype.kind in (bool, int) and isinstance(other, int):
             warnings.warn(f"The behavior of >> and << have been overridden for concatenation. Use .bitshift() to shift bits.")
 
+        nullable = self._dtype.nullable if self._dtype is not None else True
         if isinstance(other, Vector):
             if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
                 raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
-            return Vector(list(self._storage) + list(other._storage),
-                dtype=self._dtype)
+            return self._clone(self._build_storage(chain(self._storage, other._storage), nullable))
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return Vector(list(self._storage) + list(other),
-                dtype=self._dtype)
-        return Vector(list(self._storage) + [other],
-                dtype=self._dtype)
+            return self._clone(self._build_storage(chain(self._storage, other), nullable))
+        return self._clone(self._build_storage(chain(self._storage, (other,)), nullable))
 
 
     def __rshift__(self, other):
@@ -1502,9 +1533,9 @@ class Vector():
         """
         # Convert other to Vector and concatenate with self
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return Vector(list(other) + list(self._storage))
+            return Vector(chain(other, self._storage))
         # Scalar case: [other] + self
-        return Vector([other] + list(self._storage))
+        return Vector(chain((other,), self._storage))
 
     def __rrshift__(self, other):
         """ The >> operator behavior has been overridden to add columns
