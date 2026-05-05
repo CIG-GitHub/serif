@@ -338,6 +338,24 @@ class TestAggregateWindowEdgeCases:
 		result = table.aggregate(groupby=table.x)
 		assert len(result) == 0
 
+	def test_aggregate_no_groupby_whole_table(self):
+		table = Table({'sales': [100, 200, 300], 'price': [10.0, 20.0, 30.0]})
+		result = table.aggregate(aggregations={
+			'total_sales': table.sales.sum,
+			'avg_price':   table.price.mean,
+			'n':           table.sales.count,
+		})
+		assert len(result) == 1
+		assert result.total_sales[0] == 600
+		assert result.avg_price[0] == 20.0
+		assert result.n[0] == 3
+
+	def test_aggregate_no_groupby_positional(self):
+		table = Table({'x': [1, 2, 3]})
+		result = table.aggregate({'x_sum': table.x.sum})
+		assert len(result) == 1
+		assert result.x_sum[0] == 6
+
 	def test_window_empty_table(self):
 		table = Table({'x': [], 'y': []})
 		result = table.window(groupby=table.x)

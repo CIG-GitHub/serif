@@ -1581,62 +1581,70 @@ class Table(Vector):
         
         return Table(result_cols)
     
-    def aggregate(self, groupby, aggregations=None):
+    def aggregate(self, groupby=None, aggregations=None):
         """
         Group rows by partition key(s) and compute aggregations.
 
         Args:
-            groupby: Vector, str, or list of these — column(s) to group by
+            groupby: Vector, str, or list of these — column(s) to group by.
+                     If None, the entire table is treated as one group.
             aggregations: dict of {output_name: func}
                 - Bound method of a Vector (e.g. t.sales.sum): slices the source
                   column per group and calls that method on the slice
                 - Callable: receives the group as a Table, must return a scalar
 
         Returns:
-            Table with one row per unique group, preserving first-appearance order
+            Table with one row per unique group, preserving first-appearance order.
+            If groupby is None, returns a single-row Table.
 
         Examples:
-            t.aggregate(
-                groupby=t.region,
-                aggregations={
-                    "total": t.sales.sum,
-                    "avg":   t.price.mean,
-                    "n":     t.sales.count,
-                }
-            )
+            t.aggregate(t.region, {"total": t.sales.sum, "avg": t.price.mean})
+            t.aggregate(groupby=t.region, aggregations={"total": t.sales.sum})
+            t.aggregate(aggregations={"grand_total": t.sales.sum})  # whole table
         """
+        nrows = len(self)
+
         # ------------------------------------------------------------------
         # 1. Normalize groupby
         # ------------------------------------------------------------------
-        if isinstance(groupby, (str, Vector)):
-            groupby = [groupby]
-        groupby = [self._resolve_column(col) for col in groupby]
+        # Allow passing the aggregations dict as the first positional arg
+        if isinstance(groupby, dict):
+            aggregations = groupby
+            groupby = None
 
-        # ------------------------------------------------------------------
-        # 2. Validate lengths
-        # ------------------------------------------------------------------
-        nrows = len(self)
-        for i, col in enumerate(groupby):
-            if len(col) != nrows:
-                raise SerifValueError(
-                    f"groupby key at index {i} has length {len(col)}, "
-                    f"but table has {nrows} rows."
-                )
+        if groupby is None:
+            # Treat the entire table as one group
+            partition_index = {(): list(range(nrows))}
+            groupby = []
+        else:
+            if isinstance(groupby, (str, Vector)):
+                groupby = [groupby]
+            groupby = [self._resolve_column(col) for col in groupby]
 
-        # ------------------------------------------------------------------
-        # 3. Build partition index: key_tuple -> list of row indices
-        # ------------------------------------------------------------------
-        partition_index = {}
-        pk_len = len(groupby)
-        over_data = [c._storage.to_tuple() for c in groupby]
+            # ------------------------------------------------------------------
+            # 2. Validate lengths
+            # ------------------------------------------------------------------
+            for i, col in enumerate(groupby):
+                if len(col) != nrows:
+                    raise SerifValueError(
+                        f"groupby key at index {i} has length {len(col)}, "
+                        f"but table has {nrows} rows."
+                    )
 
-        for row_idx in range(nrows):
-            key = tuple(over_data[i][row_idx] for i in range(pk_len))
-            bucket = partition_index.get(key)
-            if bucket is None:
-                partition_index[key] = [row_idx]
-            else:
-                bucket.append(row_idx)
+            # ------------------------------------------------------------------
+            # 3. Build partition index: key_tuple -> list of row indices
+            # ------------------------------------------------------------------
+            partition_index = {}
+            pk_len = len(groupby)
+            over_data = [c._storage.to_tuple() for c in groupby]
+
+            for row_idx in range(nrows):
+                key = tuple(over_data[i][row_idx] for i in range(pk_len))
+                bucket = partition_index.get(key)
+                if bucket is None:
+                    partition_index[key] = [row_idx]
+                else:
+                    bucket.append(row_idx)
 
         group_items = list(partition_index.items())
 
