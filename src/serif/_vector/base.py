@@ -6,8 +6,6 @@ from builtins import isinstance as b_isinstance
 from collections.abc import Iterator
 from collections.abc import Iterable
 
-from ..alias_tracker import _ALIAS_TRACKER
-from ..alias_tracker import AliasError
 from ..errors import SerifTypeError
 from ..errors import SerifIndexError
 from ..errors import SerifValueError
@@ -249,7 +247,6 @@ class Vector():
         instance._fp_powers = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(data, nullable)
-        _ALIAS_TRACKER.register(instance, id(instance._storage))
         return instance
 
 
@@ -271,7 +268,6 @@ class Vector():
         self._storage = self._build_storage(initial, nullable)
         self._fp = None
         self._fp_powers = None
-        _ALIAS_TRACKER.register(self, id(self._storage))
 
     def _build_storage(self, data, nullable):
         tc = getattr(self, 'typecode', None)
@@ -297,7 +293,6 @@ class Vector():
         instance._fp = None
         instance._fp_powers = None
         instance._storage = new_storage
-        _ALIAS_TRACKER.register(instance, id(new_storage))
         return instance
 
 
@@ -707,12 +702,8 @@ class Vector():
         Includes:
         - dtype validation & promotion
         - copy-on-write
-        - alias tracking
         - fingerprint incremental update
         """
-
-        _alias = _ALIAS_TRACKER
-        _alias.check_writable(self, id(self._storage))
 
         # === Fast precomputed checks ===
         key = self._check_duplicate(key)
@@ -885,13 +876,9 @@ class Vector():
             data_list[idx] = new_val
 
         new_tuple = tuple(data_list)
-        old_id = id(self._storage)
-
-        _alias.unregister(self, old_id)
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = TupleStorage.from_iterable(new_tuple, nullable=nullable)
         self._invalidate_fp()
-        _alias.register(self, id(self._storage))
 
 
 
@@ -1181,25 +1168,16 @@ class Vector():
         
         # Allow numeric promotions: int -> float, float -> complex
         if target_kind is float and self._dtype.kind is int:
-            old_id = id(self._storage)
             new_tuple = tuple(float(x) if x is not None else None for x in self._storage)
-            _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
-            _ALIAS_TRACKER.register(self, id(self._storage))
             self._dtype = Schema(float, self._dtype.nullable)
         elif target_kind is complex and self._dtype.kind in (int, float):
-            old_id = id(self._storage)
             new_tuple = tuple(complex(x) if x is not None else None for x in self._storage)
-            _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
-            _ALIAS_TRACKER.register(self, id(self._storage))
             self._dtype = Schema(complex, self._dtype.nullable)
         elif target_kind is datetime and self._dtype.kind is date:
-            old_id = id(self._storage)
             new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._storage)
-            _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
-            _ALIAS_TRACKER.register(self, id(self._storage))
             self._dtype = Schema(datetime, self._dtype.nullable)
         else:
             # For backwards compat, raise error if trying invalid promotion

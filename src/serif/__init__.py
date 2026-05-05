@@ -19,8 +19,6 @@ Internals live in serif._vector:
 Zero external dependencies - pure Python stdlib only.
 """
 
-from .alias_tracker import _ALIAS_TRACKER
-from .alias_tracker import AliasError
 from ._vector import Vector
 from ._vector import _Int
 from ._vector import _Float
@@ -41,7 +39,6 @@ __all__ = [
     "Table",
     "read_csv",
     "set_repr_rows",
-    "AliasError",
     "SerifError",
     "SerifKeyError",
     "SerifValueError",
