@@ -55,6 +55,43 @@ def _slice_length(s: slice, sequence_length: int) -> int:
     start, stop, step = s.indices(sequence_length)
     return max(0, (stop - start + (step - (1 if step > 0 else -1))) // step)
 
+
+def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
+    """
+    Resolve the output Schema for a binary math op purely from types.
+
+    Returns None when the result type cannot be determined without touching data
+    (e.g. object dtype, temporal ops, or an unknown rhs kind).
+    """
+    from .numeric import _KIND_PROMOTION
+
+    if lhs_schema is None or lhs_schema.kind is object:
+        return None
+    lhs_kind = lhs_schema.kind
+
+    _is_truediv = op_func is operator.truediv or op_func is _reverse_truediv
+
+    if isinstance(rhs, Vector):
+        rhs_schema = rhs._dtype
+        if rhs_schema is None or rhs_schema.kind is object:
+            return None
+        result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_schema.kind))
+        if result_kind is None:
+            return None
+        if _is_truediv and result_kind in (bool, int):
+            result_kind = float
+        return Schema(result_kind, lhs_schema.nullable or rhs_schema.nullable)
+
+    # Scalar: resolve rhs kind
+    rhs_kind = type(rhs)
+    result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_kind))
+    if result_kind is None:
+        return None
+    if _is_truediv and result_kind in (bool, int):
+        result_kind = float
+    return Schema(result_kind, lhs_schema.nullable)
+
+
 # ============================================================
 # Small helpers
 # ============================================================
@@ -919,65 +956,62 @@ class Vector():
     def _elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
         """Helper function to handle element-wise operations with broadcasting."""
         other = self._check_duplicate(other)
-        
+
         # CASE A: Self is 2D (Table on Left)
         # T + v -> [C1+v, C2+v, ...]
         if self.ndims() == 2:
             return self.copy(tuple(
-                # recursive call: Column + other
-                col._elementwise_operation(other, op_func, op_name, op_symbol) 
+                col._elementwise_operation(other, op_func, op_name, op_symbol)
                 for col in self.cols()
             ))
-        
+
         # CASE B: Other is 2D (Table on Right)
         # v + T -> [v+C1, v+C2, ...]
         if isinstance(other, Vector) and other.ndims() == 2:
             return other.copy(tuple(
-                # recursive call: self + Column
-                self._elementwise_operation(col, op_func, op_name, op_symbol) 
+                self._elementwise_operation(col, op_func, op_name, op_symbol)
                 for col in other.cols()
             ))
-        
+
+        # Coerce plain iterables to Vector so the typed fast path applies
+        if (
+            isinstance(other, Iterable)
+            and not isinstance(other, (str, bytes, bytearray))
+            and not isinstance(other, Vector)
+        ):
+            other = Vector(list(other))
+
         if isinstance(other, Vector):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
             try:
-                result_values = tuple(None if (x is None or y is None) else op_func(x, y) for x, y in zip(self, other, strict=True))
+                result_values = tuple(
+                    None if (x is None or y is None) else op_func(x, y)
+                    for x, y in zip(self, other, strict=True)
+                )
             except TypeError:
-                # Incompatible types - fall back to object dtype with raw tuples
                 result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
                 return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                            dtype=result_dtype,
-                            name=None,
-                            as_row=self._display_as_row)
+            if result_dtype is None:
+                result_dtype = infer_dtype(result_values)
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
 
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            try:
-                result_values = tuple(None if (x is None or y is None) else op_func(x, y) for x, y in zip(self, other, strict=True))
-            except TypeError:
-                # Incompatible types - fall back to object dtype with raw tuples
-                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                dtype=result_dtype,
-                name=None,
-                as_row=self._display_as_row
-                )    # Scalar operation - let Python handle type compatibility
+        # Scalar path
+        result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
         try:
-            result_values = tuple(None if x is None else op_func(x, other) for x in self._storage)
-            # Infer dtype from result (e.g., int * 0.1 = float)
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                            dtype=result_dtype,
-                            name=None,
-                            as_row=self._display_as_row)
-        except TypeError as e:
-            raise SerifTypeError(f"Unsupported operand type(s) for '{op_symbol}': '{self._dtype.kind.__name__}' and '{type(other).__name__}'.")
+            result_values = tuple(
+                None if x is None else op_func(x, other)
+                for x in self._storage
+            )
+            if result_dtype is None:
+                result_dtype = infer_dtype(result_values)
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+        except TypeError:
+            raise SerifTypeError(
+                f"Unsupported operand type(s) for '{op_symbol}': "
+                f"'{self._dtype.kind.__name__}' and '{type(other).__name__}'."
+            )
 
     def _unary_operation(self, op_func, op_name: str):
         """Helper function to handle unary operations on each element."""
