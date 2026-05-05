@@ -92,10 +92,10 @@ class Row(Vector):
         # Smart Dtype Inference (Runs once per table iteration/access)
         # If all columns are the same type, the row is that type.
         # Otherwise, it's an object vector.
-        from ._vector.dtype import DataType
+        from ._vector.dtype import Schema
         
         if not table._storage:
-            self._dtype = DataType(object, nullable=True)
+            self._dtype = Schema(object, True)
         else:
             # Check uniformity of column types
             col_dtypes = [col._dtype for col in table._storage]
@@ -106,10 +106,10 @@ class Row(Vector):
                 kind = unique_kinds.pop()
                 # If ANY column is nullable, the row vector must be nullable
                 is_nullable = any(dt.nullable for dt in col_dtypes)
-                self._dtype = DataType(kind, nullable=is_nullable)
+                self._dtype = Schema(kind, is_nullable)
             else:
                 # Heterogeneous (DataFrame-like)
-                self._dtype = DataType(object, nullable=True)
+                self._dtype = Schema(object, True)
 
         # CRITICAL: We DO NOT call super().__init__()
         # calling Vector.__init__ would materialize the data and kill performance.

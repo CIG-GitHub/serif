@@ -4,8 +4,10 @@ Storage backends for Vector data.
 
 from __future__ import annotations
 from array import array
-from typing import Any, Iterator
+from typing import Any
+from typing import Iterator
 from collections.abc import Iterable
+from .nullable import ByteMask
 
 
 class ArrayStorage:
@@ -19,50 +21,49 @@ class ArrayStorage:
 
     __slots__ = ('_data', '_mask')
 
-    def __init__(self, data: array, mask: array | None = None):
+    def __init__(self, data: array, mask: ByteMask | None = None):
         self._data = data
         self._mask = mask
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], typecode: str, nullable: bool) -> ArrayStorage:
         data_list = []
-        mask_list = []
+        null_flags = []
         has_nulls = False
-
         for val in values:
             if val is None:
                 has_nulls = True
-                mask_list.append(1)
+                null_flags.append(True)
                 data_list.append(0)  # sentinel — position is masked
             else:
-                mask_list.append(0)
+                null_flags.append(False)
                 data_list.append(val)
 
         data = array(typecode, data_list)  # raises TypeError/OverflowError on bad values
-        mask = array('B', mask_list) if has_nulls else None
+        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
         return cls(data, mask)
 
     def __len__(self) -> int:
         return len(self._data)
 
     def __getitem__(self, idx: int) -> Any:
-        if self._mask and self._mask[idx]:
+        if self._mask is not None and self._mask.is_null(idx):
             return None
         return self._data[idx]
 
     def __iter__(self) -> Iterator[Any]:
-        if self._mask:
+        if self._mask is not None:
             for i in range(len(self._data)):
-                yield None if self._mask[i] else self._data[i]
+                yield None if self._mask.is_null(i) else self._data[i]
         else:
             yield from self._data
 
     def is_null(self, idx: int) -> bool:
-        return bool(self._mask and self._mask[idx])
+        return self._mask is not None and self._mask.is_null(idx)
 
     def slice(self, slc: slice) -> ArrayStorage:
         new_data = self._data[slc]
-        new_mask = self._mask[slc] if self._mask else None
+        new_mask = self._mask[slc] if self._mask is not None else None
         return ArrayStorage(new_data, new_mask)
 
     def to_tuple(self) -> tuple:
@@ -71,16 +72,13 @@ class ArrayStorage:
     def set(self, idx: int, value: Any) -> ArrayStorage:
         """Copy-on-write. Let array.array raise on overflow."""
         new_data = array(self._data.typecode, self._data)
-        new_mask = array('B', self._mask) if self._mask else None
 
         if value is None:
-            if new_mask is None:
-                new_mask = array('B', [0] * len(new_data))
-            new_mask[idx] = 1
+            mask = self._mask if self._mask is not None else ByteMask.from_size(len(new_data))
+            new_mask = mask.mark_null(idx)
         else:
             new_data[idx] = value
-            if new_mask:
-                new_mask[idx] = 0
+            new_mask = self._mask.mark_valid(idx) if self._mask is not None else None
 
         return ArrayStorage(new_data, new_mask)
 
@@ -99,6 +97,8 @@ class TupleStorage:
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], nullable: bool = False) -> TupleStorage:
+        if isinstance(values, tuple):
+            return cls(values)
         return cls(tuple(values))
 
     def __len__(self) -> int:

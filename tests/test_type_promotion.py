@@ -7,11 +7,11 @@ from datetime import date, datetime
 import pytest
 
 from serif import Vector
-from serif._vector.dtype import DataType, infer_dtype
+from serif._vector.dtype import Schema, infer_dtype
 
 
 class TestInferDtype:
-    """Inference from raw Python values -> DataType."""
+    """Inference from raw Python values -> Schema."""
 
     @pytest.mark.parametrize(
         "values, expected_kind, expected_nullable",
@@ -27,7 +27,7 @@ class TestInferDtype:
     )
     def test_infer_pure_kinds(self, values, expected_kind, expected_nullable):
         dt = infer_dtype(values)
-        assert isinstance(dt, DataType)
+        assert isinstance(dt, Schema)
         assert dt.kind is expected_kind
         assert dt.nullable is expected_nullable
 
@@ -79,30 +79,30 @@ class TestInferDtype:
 
 
 class TestVectorCreationWithDtype:
-    """Creating vectors with explicit DataType or Python type."""
+    """Creating vectors with explicit Schema or Python type."""
 
     def test_create_typed_int(self):
-        v = Vector([1, 2, 3], dtype=DataType(int, nullable=False))
+        v = Vector([1, 2, 3], dtype=int)
         s = v.schema()
         assert s.kind is int
         assert s.nullable is False
         assert list(v) == [1, 2, 3]
 
     def test_create_nullable_int(self):
-        v = Vector([1, None, 3], dtype=DataType(int, nullable=True))
+        v = Vector([1, None, 3])
         s = v.schema()
         assert s.kind is int
         assert s.nullable is True
         assert list(v) == [1, None, 3]
 
     def test_create_typed_float(self):
-        v = Vector([1.0, 2.0, 3.0], dtype=DataType(float, nullable=False))
+        v = Vector([1.0, 2.0, 3.0], dtype=float)
         s = v.schema()
         assert s.kind is float
         assert s.nullable is False
 
     def test_create_typed_str(self):
-        v = Vector(["a", "b", "c"], dtype=DataType(str, nullable=False))
+        v = Vector(["a", "b", "c"], dtype=str)
         s = v.schema()
         assert s.kind is str
         assert s.nullable is False
@@ -192,7 +192,7 @@ class TestArithmeticPromotion:
         assert s.kind is object
 
 
-class TestDataTypePromotionInternal:
+class TestSchemaPromotionInternal:
     """Direct tests for internal promotion behavior (_promote)."""
 
     def test_numeric_ladder_int_to_float(self):
@@ -237,7 +237,7 @@ class TestDataTypePromotionInternal:
         assert all(isinstance(x, datetime) for x in v)
 
     def test_promotion_preserves_nullable_flag(self):
-        v = Vector([1, None, 3], dtype=DataType(int, nullable=True))
+        v = Vector([1, None, 3])
         assert v.schema().nullable is True
 
         v._promote(float)

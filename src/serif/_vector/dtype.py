@@ -1,15 +1,12 @@
 """
-DataType system for Vector / Table.
+Type inference and scalar validation for Vector / Table.
 
-Pure metadata design:
-  - DataType describes column semantics (type + nullable flag)
-  - Null masks live on Vector instances, not in DataType
-  - Promotion is functional (immutable DataType instances)
-  - Backend-agnostic and stable
+Schema is a lightweight namedtuple (kind, nullable) returned by Vector.schema().
+All promotion, inference, and validation logic lives here as standalone functions.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from collections import namedtuple
 from datetime import date
 from datetime import datetime
 from typing import Any
@@ -19,92 +16,86 @@ from typing import Type
 import warnings
 
 
-@dataclass(frozen=True)
-class DataType:
+Schema = namedtuple('Schema', ['kind', 'nullable'])
+"""
+Describes the semantic type of a Vector column.
+
+Fields
+------
+kind : type
+    Python type (int, float, str, date, etc.)
+nullable : bool
+    Whether the column may contain None values
+"""
+
+
+def is_numeric_kind(kind: Type) -> bool:
+    """True if kind is bool, int, float, or complex."""
+    try:
+        return issubclass(kind, (int, float, complex, bool))
+    except TypeError:
+        return False
+
+
+def is_temporal_kind(kind: Type) -> bool:
+    """True if kind is date or datetime."""
+    try:
+        return issubclass(kind, (date, datetime))
+    except TypeError:
+        return False
+
+
+def promote_dtype(schema: Schema, value: Any) -> Schema:
     """
-    Describes the semantic type of a Vector column.
+    Return a new Schema promoted to accommodate value.
 
-    Attributes
-    ----------
-    kind : Type
-        Python type (int, float, str, date, etc.)
-    nullable : bool
-        Whether the column may contain None values
+    None values update nullable only; the kind is unchanged.
+    Mixed incompatible types degrade to object with a warning.
     """
+    if value is None:
+        if schema.nullable:
+            return schema
+        return Schema(schema.kind, True)
 
-    kind: Type[Any]
-    nullable: bool = False
+    vtype = type(value)
 
-    def __repr__(self):
-        if self.nullable:
-            return f"<{self.kind.__name__}?>"
-        return f"<{self.kind.__name__}>"
+    if vtype is schema.kind:
+        return schema
 
-    def with_nullable(self, nullable: bool) -> DataType:
-        return DataType(self.kind, nullable=nullable)
+    if is_numeric_kind(schema.kind) and isinstance(value, (int, float, complex, bool)):
+        if schema.kind is complex or vtype is complex:
+            new_kind = complex
+        elif schema.kind is float or vtype is float:
+            new_kind = float
+        elif schema.kind is int or vtype is int:
+            new_kind = int
+        else:
+            new_kind = bool
+        if new_kind is not schema.kind:
+            return Schema(new_kind, schema.nullable)
+        return schema
 
-    @property
-    def is_numeric(self) -> bool:
-        """True if kind is bool, int, float, or complex."""
-        try:
-            return issubclass(self.kind, (int, float, complex, bool))
-        except TypeError:
-            return False
+    if is_temporal_kind(schema.kind) and isinstance(value, (date, datetime)):
+        if schema.kind is datetime or vtype is datetime:
+            new_kind = datetime
+        else:
+            new_kind = date
+        if new_kind is not schema.kind:
+            return Schema(new_kind, schema.nullable)
+        return schema
 
-    @property
-    def is_temporal(self) -> bool:
-        """True if kind is date or datetime."""
-        try:
-            return issubclass(self.kind, (date, datetime))
-        except TypeError:
-            return False
+    if schema.kind in (str, bytes) and vtype is schema.kind:
+        return schema
 
-    def promote_with(self, value: Any) -> DataType:
-        """Promote this DataType to accommodate a new Python value."""
-        if value is None:
-            if self.nullable:
-                return self
-            return DataType(self.kind, nullable=True)
+    if schema.kind is not object:
+        warnings.warn(
+            f"Degrading column<{schema.kind.__name__}> to column<object> "
+            f"due to incompatible value of type {vtype.__name__}",
+            stacklevel=3,
+        )
+        return Schema(object, schema.nullable)
 
-        vtype = type(value)
-
-        if vtype is self.kind:
-            return self
-
-        if self.is_numeric and isinstance(value, (int, float, complex, bool)):
-            if self.kind is complex or vtype is complex:
-                new_kind = complex
-            elif self.kind is float or vtype is float:
-                new_kind = float
-            elif self.kind is int or vtype is int:
-                new_kind = int
-            else:
-                new_kind = bool
-            if new_kind != self.kind:
-                return DataType(new_kind, self.nullable)
-            return self
-
-        if self.is_temporal and isinstance(value, (date, datetime)):
-            if self.kind is datetime or vtype is datetime:
-                new_kind = datetime
-            else:
-                new_kind = date
-            if new_kind != self.kind:
-                return DataType(new_kind, self.nullable)
-            return self
-
-        if self.kind in (str, bytes) and vtype is self.kind:
-            return self
-
-        if self.kind is not object:
-            warnings.warn(
-                f"Degrading column<{self.kind.__name__}> to column<object> "
-                f"due to incompatible value of type {vtype.__name__}",
-                stacklevel=3,
-            )
-            return DataType(object, self.nullable)
-
-        return self
+    return schema
 
 
 def infer_kind(value: Any) -> Optional[Type]:
@@ -136,27 +127,24 @@ def infer_kind(value: Any) -> Optional[Type]:
     return type(value)
 
 
-def infer_dtype(values: Iterable[Any]) -> DataType:
-    """Infer a DataType from an iterable of Python scalars."""
-    dtype: Optional[DataType] = None
+def infer_dtype(values: Iterable[Any]) -> Schema:
+    """Infer a Schema (kind + nullable) from an iterable of Python scalars."""
+    schema: Optional[Schema] = None
 
     for v in values:
-        if dtype is None:
+        if schema is None:
             k = infer_kind(v)
-            if k is None:
-                dtype = DataType(object, nullable=True)
-            else:
-                dtype = DataType(k, nullable=False)
+            schema = Schema(object, True) if k is None else Schema(k, False)
         else:
-            dtype = dtype.promote_with(v)
+            schema = promote_dtype(schema, v)
 
-    if dtype is None:
-        return DataType(object, nullable=True)
+    if schema is None:
+        return Schema(object, True)
 
-    return dtype
+    return schema
 
 
-def validate_scalar(value: Any, dtype: DataType) -> Any:
+def validate_scalar(value: Any, dtype: Schema) -> Any:
     """Validate (and possibly coerce) a scalar before writing into a vector."""
     if value is None:
         if not dtype.nullable:

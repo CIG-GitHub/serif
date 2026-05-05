@@ -3,7 +3,7 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from collections.abc import Iterable
-from .dtype import DataType
+from .dtype import Schema
 
 class _Date(Vector):
     def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
@@ -17,19 +17,19 @@ class _Date(Vector):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             if other.schema().kind == str:
-                return Vector(tuple(bool(op(x, date.fromisoformat(y))) for x, y in zip(self, other, strict=True)), dtype=DataType(bool))
+                return Vector(tuple(bool(op(x, date.fromisoformat(y))) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
             if other.schema().kind == datetime:
-                return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), y)) for x, y in zip(self, other, strict=True)), dtype=DataType(bool))
+                return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), y)) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
         elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             # If it's not a Vector or Constant, don't apply date compare logic
-            return Vector(tuple(bool(op(x, y)) for x, y in zip(self, other, strict=True)), dtype=DataType(bool))
+            return Vector(tuple(bool(op(x, y)) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
         elif isinstance(other, str):
-            return Vector(tuple(bool(op(x, date.fromisoformat(other))) for x in self), dtype=DataType(bool))
+            return Vector(tuple(bool(op(x, date.fromisoformat(other))) for x in self), dtype=Schema(bool, False))
         elif isinstance(other, datetime):
-            return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), other)) for x in self), dtype=DataType(bool))
+            return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), other)) for x in self), dtype=Schema(bool, False))
         # finally, 
         return super()._elementwise_compare(other, op)
 

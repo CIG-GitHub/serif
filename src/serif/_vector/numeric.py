@@ -2,7 +2,8 @@
 # Container for numeric backends
 # ============================================================
 from .base import Vector
-from .storage import ArrayStorage, TupleStorage
+from .storage import ArrayStorage
+from .storage import TupleStorage
 
 
 class _Float(Vector):
@@ -59,6 +60,29 @@ class _Float32(Vector):
     dtype_name = 'float32'
     typecode = 'f'
 
+
+class _Complex(Vector):
+    dtype_name = 'complex'
+
+
+# Kind-level promotion for plain Python numeric types.
+# Used by _pre_compute_op_schema in base.py to resolve output dtype
+# before touching any data.
+_KIND_PROMOTION = {
+    (bool,    bool):    bool,
+    (bool,    int):     int,
+    (int,     bool):    int,
+    (int,     int):     int,
+    (int,     float):   float,
+    (float,   int):     float,
+    (float,   float):   float,
+    (int,     complex): complex,
+    (float,   complex): complex,
+    (complex, int):     complex,
+    (complex, float):   complex,
+    (complex, complex): complex,
+    (str,     str):     str,
+}
 
 
 _PROMOTION = {

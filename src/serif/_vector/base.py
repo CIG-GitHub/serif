@@ -14,17 +14,18 @@ from ..errors import SerifValueError
 from ..errors import SerifKeyError
 from ..display import _printr
 from ..naming import _sanitize_user_name
-from .dtype import DataType
+from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import infer_kind
+from .dtype import promote_dtype
 from .dtype import validate_scalar
-from .storage import ArrayStorage, TupleStorage
+from .storage import ArrayStorage
+from .storage import TupleStorage
 
 from copy import deepcopy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-from ..typeutils import slice_length
 
 from typing import Any
 from typing import Iterable
@@ -33,6 +34,7 @@ from typing import Tuple
 
 # ============================================================
 # Reverse arithmetic operation helpers
+## This section looks ok
 # ============================================================
 def _reverse_sub(y, x):
     return x - y
@@ -48,6 +50,47 @@ def _reverse_mod(y, x):
 
 def _reverse_pow(y, x):
     return x ** y
+
+def _slice_length(s: slice, sequence_length: int) -> int:
+    start, stop, step = s.indices(sequence_length)
+    return max(0, (stop - start + (step - (1 if step > 0 else -1))) // step)
+
+
+def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
+    """
+    Resolve the output Schema for a binary math op purely from types.
+
+    Returns None when the result type cannot be determined without touching data
+    (e.g. object dtype, temporal ops, or an unknown rhs kind).
+    """
+    from .numeric import _KIND_PROMOTION
+
+    if lhs_schema is None or lhs_schema.kind is object:
+        return None
+    lhs_kind = lhs_schema.kind
+
+    _is_truediv = op_func is operator.truediv or op_func is _reverse_truediv
+
+    if isinstance(rhs, Vector):
+        rhs_schema = rhs._dtype
+        if rhs_schema is None or rhs_schema.kind is object:
+            return None
+        result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_schema.kind))
+        if result_kind is None:
+            return None
+        if _is_truediv and result_kind in (bool, int):
+            result_kind = float
+        return Schema(result_kind, lhs_schema.nullable or rhs_schema.nullable)
+
+    # Scalar: resolve rhs kind
+    rhs_kind = type(rhs)
+    result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_kind))
+    if result_kind is None:
+        return None
+    if _is_truediv and result_kind in (bool, int):
+        result_kind = float
+    return Schema(result_kind, lhs_schema.nullable)
+
 
 # ============================================================
 # Small helpers
@@ -115,9 +158,9 @@ def _collect_and_infer(iterable, dtype_hint):
             all_vectors = False
         if dtype is None:
             k = infer_kind(val)
-            dtype = DataType(object, nullable=True) if k is None else DataType(k, nullable=False)
+            dtype = Schema(object, True) if k is None else Schema(k, False)
         else:
-            dtype = dtype.promote_with(val)
+            dtype = promote_dtype(dtype, val)
 
     return data, all_vectors, dtype
 
@@ -148,7 +191,7 @@ def _pick_target_class(dtype):
 
 class Vector():
     """ Iterable vector with optional type safety """
-    _dtype = None  # DataType instance (private)
+    _dtype = None  # Schema instance (private)
     _storage = None
     _name = None
     _display_as_row = False
@@ -159,7 +202,7 @@ class Vector():
     _FP_B = 1315423911     # Base for rolling hash
 
     def schema(self):
-        """Get the DataType schema of this vector."""
+        """Get the Schema (kind, nullable) of this vector."""
         return self._dtype
 
 
@@ -169,18 +212,22 @@ class Vector():
         if cls is not Vector:
             return object.__new__(cls)
 
-        # Normalize dtype
-        if dtype is not None and not isinstance(dtype, DataType):
-            dtype = DataType(dtype)
+        # Normalize dtype: plain Python types are a hint, not a full Schema.
+        # Only a Schema instance carries both kind and nullable — use the fast path.
+        # Plain types need inference to determine nullable from actual data.
+        if dtype is not None and not isinstance(dtype, Schema):
+            dtype_hint = Schema(dtype, False)
+        else:
+            dtype_hint = dtype
 
-        # Fast path: data already materialized and dtype known — straight to storage.
-        # Used by internal calls (copy, fillna, etc.) that always supply dtype.
-        if isinstance(initial, (list, tuple)) and dtype is not None:
+        # Fast path: data already materialized and Schema known (internal calls).
+        if isinstance(initial, (list, tuple)) and isinstance(dtype_hint, Schema):
             data = initial
             is_table = False
+            dtype = dtype_hint
         else:
             # Single Python loop: collect + table-check + infer simultaneously
-            data, is_table, dtype = _collect_and_infer(initial, dtype)
+            data, is_table, dtype = _collect_and_infer(initial, dtype_hint)
 
         # Table path
         if is_table and data:
@@ -217,8 +264,8 @@ class Vector():
         self._display_as_row = as_row
         self._wild = True
         if dtype is not None:
-            if not isinstance(dtype, DataType):
-                dtype = DataType(dtype)
+            if not isinstance(dtype, Schema):
+                dtype = Schema(dtype, False)
             self._dtype = dtype
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = self._build_storage(initial, nullable)
@@ -231,6 +278,27 @@ class Vector():
         if tc is not None:
             return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
         return TupleStorage.from_iterable(data, nullable=nullable)
+
+    def _clone(self, new_storage, dtype=..., name=...):
+        """
+        Fastest possible copy: bypass __new__, __init__, and all inference.
+
+        Use when the output dtype and subclass are already known — e.g. after
+        a sort, permutation, or any op where the type cannot change.
+
+        dtype and name default to self's values (sentinel ... means "keep").
+        Pass explicit values to override.
+        """
+        instance = object.__new__(type(self))
+        instance._dtype = self._dtype if dtype is ... else dtype
+        instance._name = self._name if name is ... else name
+        instance._display_as_row = self._display_as_row
+        instance._wild = True
+        instance._fp = None
+        instance._fp_powers = None
+        instance._storage = new_storage
+        _ALIAS_TRACKER.register(instance, id(new_storage))
+        return instance
 
 
     @property
@@ -323,11 +391,11 @@ class Vector():
             assert isinstance(length, int)
             dtype = infer_dtype([default_element])
             if typesafe:
-                dtype = dtype.with_nullable(False)
+                dtype = Schema(dtype.kind, False)
             return cls([default_element for _ in range(length)], dtype=dtype)
-        dtype = infer_dtype([default_element]) if default_element is not None else DataType(object)
+        dtype = infer_dtype([default_element]) if default_element is not None else Schema(object, False)
         if typesafe:
-            dtype = dtype.with_nullable(False).with_default(default_element)
+            dtype = Schema(dtype.kind, False)
         return cls(dtype=dtype)
 
 
@@ -431,11 +499,11 @@ class Vector():
 
         # Now decide dtype using the *logical* type, not the callable
         if isinstance(py_target_type, type):
-            new_dtype = DataType(py_target_type, nullable=has_none)
+            new_dtype = Schema(py_target_type, has_none)
         else:
             new_dtype = infer_dtype(out)
 
-        return Vector(tuple(out), dtype=new_dtype, name=self._name, as_row=self._display_as_row)
+        return Vector(out, dtype=new_dtype, name=self._name, as_row=self._display_as_row)
 
     def fillna(self, value):
         dtype = self.schema()
@@ -455,7 +523,7 @@ class Vector():
                     out = tuple(value if x is None else x for x in result._storage)
                     return Vector(
                         out,
-                        dtype=DataType(required_dtype.kind, nullable=False),
+                        dtype=Schema(required_dtype.kind, False),
                         name=self._name,
                         as_row=self._display_as_row
                     )
@@ -477,7 +545,7 @@ class Vector():
             # Mixed type → leave as None (dtype inference will happen)
             new_dtype = None
         else:
-            new_dtype = dtype.with_nullable(nullable=new_nullable)
+            new_dtype = Schema(dtype.kind, new_nullable)
 
         return Vector(
             out,
@@ -501,7 +569,17 @@ class Vector():
         >>> v.dropna()
         Vector([1, 3, 5])
         """
-        return Vector(tuple(elem for elem in self._storage if elem is not None), dtype=self._dtype.with_nullable(False))
+        storage = self._storage
+        new_dtype = Schema(self._dtype.kind, False)
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            tc = storage._data.typecode
+            kept = [i for i in range(len(storage)) if not storage.is_null(i)]
+            new_data = _array(tc, (storage._data[i] for i in kept))
+            new_storage = ArrayStorage(new_data, None)
+        else:
+            new_storage = TupleStorage(tuple(x for x in storage._data if x is not None))
+        return self._clone(new_storage, dtype=new_dtype)
 
     def isna(self):
         """
@@ -518,7 +596,7 @@ class Vector():
         >>> v.isna()
         Vector([False, True, False])
         """
-        return Vector(tuple(elem is None for elem in self._storage), dtype=DataType(bool))
+        return Vector(tuple(elem is None for elem in self._storage), dtype=Schema(bool, False))
 
     def isinstance(self, types):
         """
@@ -546,7 +624,7 @@ class Vector():
         """
         return Vector(
             tuple(b_isinstance(elem, types) for elem in self._storage),
-            dtype=DataType(bool)
+            dtype=Schema(bool, False)
         )
 
     @property
@@ -601,7 +679,7 @@ class Vector():
                 raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, slice):
-            return self.copy(self._storage[key], name=self._name)
+            return self._clone(self._storage.slice(key))
 
         # NOT RECOMMENDED
         if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
@@ -684,7 +762,7 @@ class Vector():
         # CASE 2 — Slice assignment
         # =====================================================================
         elif isinstance(key, slice):
-            slice_len = slice_length(key, n)
+            slice_len = _slice_length(key, n)
             start, stop, step = key.indices(n)
 
             if is_seq_val:
@@ -851,13 +929,13 @@ class Vector():
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
-            return Vector(result_values, dtype=DataType(bool, nullable=False))
+            return Vector(result_values, dtype=Schema(bool, False))
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             result_values = tuple(False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True))
-            return Vector(result_values, dtype=DataType(bool, nullable=False))
+            return Vector(result_values, dtype=Schema(bool, False))
         # Scalar comparison
         if other is None and op in (operator.eq, operator.ne):
             warnings.warn(
@@ -866,7 +944,7 @@ class Vector():
                 stacklevel=2
             )
         result_values = tuple(False if x is None else bool(op(x, other)) for x in self)
-        return Vector(result_values, dtype=DataType(bool, nullable=False))    # Now, we can redefine the comparison methods using the helper function
+        return Vector(result_values, dtype=Schema(bool, False))    # Now, we can redefine the comparison methods using the helper function
     
     def __eq__(self, other):
         return self._elementwise_compare(other, operator.eq)
@@ -909,74 +987,82 @@ class Vector():
     def _elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
         """Helper function to handle element-wise operations with broadcasting."""
         other = self._check_duplicate(other)
-        
+
         # CASE A: Self is 2D (Table on Left)
         # T + v -> [C1+v, C2+v, ...]
         if self.ndims() == 2:
             return self.copy(tuple(
-                # recursive call: Column + other
-                col._elementwise_operation(other, op_func, op_name, op_symbol) 
+                col._elementwise_operation(other, op_func, op_name, op_symbol)
                 for col in self.cols()
             ))
-        
+
         # CASE B: Other is 2D (Table on Right)
         # v + T -> [v+C1, v+C2, ...]
         if isinstance(other, Vector) and other.ndims() == 2:
             return other.copy(tuple(
-                # recursive call: self + Column
-                self._elementwise_operation(col, op_func, op_name, op_symbol) 
+                self._elementwise_operation(col, op_func, op_name, op_symbol)
                 for col in other.cols()
             ))
-        
+
         if isinstance(other, Vector):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
             try:
-                result_values = tuple(None if (x is None or y is None) else op_func(x, y) for x, y in zip(self, other, strict=True))
+                result_values = tuple(
+                    None if (x is None or y is None) else op_func(x, y)
+                    for x, y in zip(self, other, strict=True)
+                )
             except TypeError:
-                # Incompatible types - fall back to object dtype with raw tuples
                 result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=DataType(object), name=None, as_row=self._display_as_row)
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                            dtype=result_dtype,
-                            name=None,
-                            as_row=self._display_as_row)
+                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+            if result_dtype is None:
+                result_dtype = infer_dtype(result_values)
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
 
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             try:
-                result_values = tuple(None if (x is None or y is None) else op_func(x, y) for x, y in zip(self, other, strict=True))
+                result_values = tuple(
+                    None if (x is None or y is None) else op_func(x, y)
+                    for x, y in zip(self, other, strict=True)
+                )
             except TypeError:
-                # Incompatible types - fall back to object dtype with raw tuples
                 result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=DataType(object), name=None, as_row=self._display_as_row)
+                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
             result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                dtype=result_dtype,
-                name=None,
-                as_row=self._display_as_row
-                )    # Scalar operation - let Python handle type compatibility
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+
+        # Scalar path
+        result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
         try:
-            result_values = tuple(None if x is None else op_func(x, other) for x in self._storage)
-            # Infer dtype from result (e.g., int * 0.1 = float)
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values,
-                            dtype=result_dtype,
-                            name=None,
-                            as_row=self._display_as_row)
-        except TypeError as e:
-            raise SerifTypeError(f"Unsupported operand type(s) for '{op_symbol}': '{self._dtype.kind.__name__}' and '{type(other).__name__}'.")
+            result_values = tuple(
+                None if x is None else op_func(x, other)
+                for x in self._storage
+            )
+            if result_dtype is None:
+                result_dtype = infer_dtype(result_values)
+            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+        except TypeError:
+            raise SerifTypeError(
+                f"Unsupported operand type(s) for '{op_symbol}': "
+                f"'{self._dtype.kind.__name__}' and '{type(other).__name__}'."
+            )
 
     def _unary_operation(self, op_func, op_name: str):
         """Helper function to handle unary operations on each element."""
-        return Vector(
-            tuple(op_func(x) for x in self),
-            dtype=self._dtype,
-            name=self._name,
-            as_row=self._display_as_row
-        )
+        storage = self._storage
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            tc = storage._data.typecode
+            new_data = _array(tc, (op_func(storage._data[i]) for i in range(len(storage._data))))
+            new_storage = ArrayStorage(new_data, storage._mask)
+        else:
+            new_storage = TupleStorage(tuple(
+                None if x is None else op_func(x) for x in storage._data
+            ))
+        return self._clone(new_storage)
     
     def __add__(self, other):
         return self._elementwise_operation(other, operator.add, '__add__', '+')
@@ -1081,13 +1167,13 @@ class Vector():
     def _promote(self, new_dtype):
         """ Check if a vector can change data type (int -> float, float -> complex) """
         # Handle both Python types and DataType instances
-        if isinstance(new_dtype, DataType):
+        if isinstance(new_dtype, Schema):
             target_kind = new_dtype.kind
         elif isinstance(new_dtype, type):
             # Python type like int, float
             target_kind = new_dtype
         else:
-            raise SerifTypeError(f"new_dtype must be a DataType instance or Python type, not {type(new_dtype).__name__}")
+            raise SerifTypeError(f"new_dtype must be a Schema instance or Python type, not {type(new_dtype).__name__}")
             
         # Already the target type
         if self._dtype.kind is target_kind:
@@ -1100,21 +1186,21 @@ class Vector():
             _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
             _ALIAS_TRACKER.register(self, id(self._storage))
-            self._dtype = DataType(float, nullable=self._dtype.nullable)
+            self._dtype = Schema(float, self._dtype.nullable)
         elif target_kind is complex and self._dtype.kind in (int, float):
             old_id = id(self._storage)
             new_tuple = tuple(complex(x) if x is not None else None for x in self._storage)
             _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
             _ALIAS_TRACKER.register(self, id(self._storage))
-            self._dtype = DataType(complex, nullable=self._dtype.nullable)
+            self._dtype = Schema(complex, self._dtype.nullable)
         elif target_kind is datetime and self._dtype.kind is date:
             old_id = id(self._storage)
             new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._storage)
             _ALIAS_TRACKER.unregister(self, old_id)
             self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
             _ALIAS_TRACKER.register(self, id(self._storage))
-            self._dtype = DataType(datetime, nullable=self._dtype.nullable)
+            self._dtype = Schema(datetime, self._dtype.nullable)
         else:
             # For backwards compat, raise error if trying invalid promotion
             raise SerifTypeError(f'Cannot convert Vector from {self._dtype.kind.__name__} to {target_kind.__name__}.')
@@ -1184,6 +1270,7 @@ class Vector():
     def unique(self):
         seen = set()
         out = []
+        has_none = False
 
         # Fast path: hashable
         try:
@@ -1191,15 +1278,24 @@ class Vector():
                 if x not in seen:
                     seen.add(x)
                     out.append(x)
+                    if x is None:
+                        has_none = True
+            if self._dtype is not None:
+                return Vector(out, dtype=Schema(self._dtype.kind, has_none))
             return Vector(out)
         except TypeError:
             pass   # fall through → slow path
 
         # Slow path: unhashables
         out = []
+        has_none = False
         for x in self._storage:
             if not any(x == y for y in out):
                 out.append(x)
+                if x is None:
+                    has_none = True
+        if self._dtype is not None:
+            return Vector(out, dtype=Schema(self._dtype.kind, has_none))
         return Vector(out)
 
 
@@ -1239,24 +1335,40 @@ class Vector():
         na_last : bool
             If True, None sorts after all valid values.
             If False, None sorts before all valid values.
-        
+
         Returns
         -------
         Vector
             Sorted vector with same dtype
         """
-        # Build key for each element
+        storage = self._storage
+        n = len(storage)
+
+        # Build sort order from indices — avoids materializing Python objects
+        # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
         if na_last:
-            key_fn = lambda x: (x is None, x if x is not None else 0)
+            key_fn = lambda i: (storage.is_null(i), storage[i] if not storage.is_null(i) else 0)
         else:
-            key_fn = lambda x: (0 if x is None else 1, x if x is not None else 0)
-        
-        new_values = tuple(sorted(self._storage, key=key_fn, reverse=reverse))
+            key_fn = lambda i: (0 if storage.is_null(i) else 1, storage[i] if not storage.is_null(i) else 0)
 
-        # dtype DOES NOT change — preserving nullability and kind
-        new_vector = Vector(new_values, dtype=self._dtype, name=self._name)
+        order = sorted(range(n), key=key_fn, reverse=reverse)
 
-        return new_vector
+        # Permute storage directly — no Vector() constructor, no type inference
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            from .nullable import ByteMask
+            tc = storage._data.typecode
+            new_data = _array(tc, (storage._data[i] for i in order))
+            if storage._mask is not None:
+                new_mask = ByteMask.from_iterable(storage._mask.is_null(i) for i in order)
+            else:
+                new_mask = None
+            new_storage = ArrayStorage(new_data, new_mask)
+        else:
+            new_storage = TupleStorage(tuple(storage._data[i] for i in order))
+
+        # Bypass Vector.__new__ — dtype is invariant under sort
+        return self._clone(new_storage)
 
 
     def _check_duplicate(self, other):
