@@ -97,6 +97,8 @@ class TupleStorage:
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], nullable: bool = False) -> TupleStorage:
+        if isinstance(values, tuple):
+            return cls(values)
         return cls(tuple(values))
 
     def __len__(self) -> int:

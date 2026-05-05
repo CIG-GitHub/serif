@@ -482,7 +482,7 @@ class Vector():
         else:
             new_dtype = infer_dtype(out)
 
-        return Vector(tuple(out), dtype=new_dtype, name=self._name, as_row=self._display_as_row)
+        return Vector(out, dtype=new_dtype, name=self._name, as_row=self._display_as_row)
 
     def fillna(self, value):
         dtype = self.schema()
@@ -1234,6 +1234,7 @@ class Vector():
     def unique(self):
         seen = set()
         out = []
+        has_none = False
 
         # Fast path: hashable
         try:
@@ -1241,15 +1242,24 @@ class Vector():
                 if x not in seen:
                     seen.add(x)
                     out.append(x)
+                    if x is None:
+                        has_none = True
+            if self._dtype is not None:
+                return Vector(out, dtype=Schema(self._dtype.kind, has_none))
             return Vector(out)
         except TypeError:
             pass   # fall through → slow path
 
         # Slow path: unhashables
         out = []
+        has_none = False
         for x in self._storage:
             if not any(x == y for y in out):
                 out.append(x)
+                if x is None:
+                    has_none = True
+        if self._dtype is not None:
+            return Vector(out, dtype=Schema(self._dtype.kind, has_none))
         return Vector(out)
 
 
