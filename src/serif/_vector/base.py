@@ -279,6 +279,27 @@ class Vector():
             return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
         return TupleStorage.from_iterable(data, nullable=nullable)
 
+    def _clone(self, new_storage, dtype=..., name=...):
+        """
+        Fastest possible copy: bypass __new__, __init__, and all inference.
+
+        Use when the output dtype and subclass are already known — e.g. after
+        a sort, permutation, or any op where the type cannot change.
+
+        dtype and name default to self's values (sentinel ... means "keep").
+        Pass explicit values to override.
+        """
+        instance = object.__new__(type(self))
+        instance._dtype = self._dtype if dtype is ... else dtype
+        instance._name = self._name if name is ... else name
+        instance._display_as_row = self._display_as_row
+        instance._wild = True
+        instance._fp = None
+        instance._fp_powers = None
+        instance._storage = new_storage
+        _ALIAS_TRACKER.register(instance, id(new_storage))
+        return instance
+
 
     @property
     def shape(self):
@@ -1332,16 +1353,7 @@ class Vector():
             new_storage = TupleStorage(tuple(storage._data[i] for i in order))
 
         # Bypass Vector.__new__ — dtype is invariant under sort
-        instance = object.__new__(type(self))
-        instance._dtype = self._dtype
-        instance._name = self._name
-        instance._display_as_row = self._display_as_row
-        instance._wild = True
-        instance._fp = None
-        instance._fp_powers = None
-        instance._storage = new_storage
-        _ALIAS_TRACKER.register(instance, id(new_storage))
-        return instance
+        return self._clone(new_storage)
 
 
     def _check_duplicate(self, other):
