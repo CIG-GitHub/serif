@@ -20,7 +20,6 @@ from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import TupleStorage
 
-from copy import deepcopy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -533,10 +532,10 @@ class Vector():
                 # Value is incompatible - need promotion
                 required_dtype = infer_dtype([value])
                 try:
-                    # Create a copy and promote it
-                    result = self.copy()
+                    # Clone (zero-cost storage share), then promote in one walk.
+                    result = self._clone(self._storage)
                     result._promote(required_dtype.kind)
-                    # Now fill with the value on the promoted vector
+                    # Fill in one walk; Vector(tuple, Schema) fast-paths to free wrap.
                     out = tuple(value if x is None else x for x in result._storage)
                     return Vector(
                         out,
@@ -1394,9 +1393,7 @@ class Vector():
 
     def _check_duplicate(self, other):
         if id(self) == id(other):
-            # If the object references match, we need to copy other
-            # return Vector((x for x in other), other._default, other._dtype, other._typesafe)
-            return deepcopy(other)
+            return self.copy()
         return other
 
 
