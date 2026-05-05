@@ -569,7 +569,17 @@ class Vector():
         >>> v.dropna()
         Vector([1, 3, 5])
         """
-        return Vector(tuple(elem for elem in self._storage if elem is not None), dtype=Schema(self._dtype.kind, False))
+        storage = self._storage
+        new_dtype = Schema(self._dtype.kind, False)
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            tc = storage._data.typecode
+            kept = [i for i in range(len(storage)) if not storage.is_null(i)]
+            new_data = _array(tc, (storage._data[i] for i in kept))
+            new_storage = ArrayStorage(new_data, None)
+        else:
+            new_storage = TupleStorage(tuple(x for x in storage._data if x is not None))
+        return self._clone(new_storage, dtype=new_dtype)
 
     def isna(self):
         """
@@ -669,7 +679,7 @@ class Vector():
                 raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, slice):
-            return self.copy(self._storage[key], name=self._name)
+            return self._clone(self._storage.slice(key))
 
         # NOT RECOMMENDED
         if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
@@ -1042,12 +1052,17 @@ class Vector():
 
     def _unary_operation(self, op_func, op_name: str):
         """Helper function to handle unary operations on each element."""
-        return Vector(
-            tuple(op_func(x) for x in self),
-            dtype=self._dtype,
-            name=self._name,
-            as_row=self._display_as_row
-        )
+        storage = self._storage
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            tc = storage._data.typecode
+            new_data = _array(tc, (op_func(storage._data[i]) for i in range(len(storage._data))))
+            new_storage = ArrayStorage(new_data, storage._mask)
+        else:
+            new_storage = TupleStorage(tuple(
+                None if x is None else op_func(x) for x in storage._data
+            ))
+        return self._clone(new_storage)
     
     def __add__(self, other):
         return self._elementwise_operation(other, operator.add, '__add__', '+')
