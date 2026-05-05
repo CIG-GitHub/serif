@@ -35,46 +35,46 @@ class _Date(Vector):
 
 
     def ctime(self, *args, **kwargs):
-        return Vector(tuple((s.ctime(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.ctime(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def fromisocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.fromisocalendar(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.fromisocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def fromisoformat(self, *args, **kwargs):
-        return Vector(tuple((s.fromisoformat(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.fromisoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def fromordinal(self, *args, **kwargs):
-        return Vector(tuple((s.fromordinal(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.fromordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def fromtimestamp(self, *args, **kwargs):
-        return Vector(tuple((s.fromtimestamp(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.fromtimestamp(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def isocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.isocalendar(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.isocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def isoformat(self, *args, **kwargs):
-        return Vector(tuple((s.isoformat(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.isoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def isoweekday(self, *args, **kwargs):
-        return Vector(tuple((s.isoweekday(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.isoweekday(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def replace(self, *args, **kwargs):
-        return Vector(tuple((s.replace(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.replace(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def strftime(self, *args, **kwargs):
-        return Vector(tuple((s.strftime(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.strftime(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def timetuple(self, *args, **kwargs):
-        return Vector(tuple((s.timetuple(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.timetuple(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def today(self, *args, **kwargs):
-        return Vector(tuple((s.today(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.today(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def toordinal(self, *args, **kwargs):
-        return Vector(tuple((s.toordinal(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.toordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def weekday(self, *args, **kwargs):
-        return Vector(tuple((s.weekday(*args, **kwargs) if s is not None else None) for s in self._underlying))
+        return Vector(tuple((s.weekday(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def __add__(self, other):
         """ adding integers is adding days """
@@ -83,16 +83,16 @@ class _Date(Vector):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 (date.fromordinal(s.toordinal() + y) if s is not None and y is not None else None)
-                for s, y in zip(self._underlying, other, strict=True)
+                for s, y in zip(self._storage, other, strict=True)
             ))
 
         if isinstance(other, int):
-            return Vector(tuple((date.fromordinal(s.toordinal() + other) if s is not None else None) for s in self._underlying))
+            return Vector(tuple((date.fromordinal(s.toordinal() + other) if s is not None else None) for s in self._storage))
         return super().add(other)
 
     def eomonth(self):
         out = []
-        for d in self._underlying:
+        for d in self._storage:
             if d is None:
                 out.append(None)
                 continue
@@ -106,6 +106,7 @@ class _Date(Vector):
             out.append(last)
 
         return Vector(tuple(out))
+
 
 
 

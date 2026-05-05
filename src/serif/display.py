@@ -74,7 +74,7 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
         max_preview = _REPR_ROWS_DEFAULT // 2
     
     # Truncate with symmetric preview
-    vals = col._underlying
+    vals = col._storage.to_tuple()
     if len(vals) > max_preview * 2:
         preview = list(vals[:max_preview]) + ['...'] + list(vals[-max_preview:])
     else:

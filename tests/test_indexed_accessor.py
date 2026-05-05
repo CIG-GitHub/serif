@@ -20,7 +20,7 @@ def test_indexed_accessor_basic():
     assert t.sum__2 is t.sum_
     
     # All should return the same vector
-    assert all(t.total__0._underlying[i] == t.total._underlying[i] for i in range(3))
+    assert all(t.total__0._storage[i] == t.total._storage[i] for i in range(3))
 
 
 def test_indexed_accessor_duplicate_names():
@@ -36,7 +36,7 @@ def test_indexed_accessor_duplicate_names():
     
     # Second 'total' is at index 2 (uniquified to 'total__2' internally)
     # The sanitized name for column 2 should still be 'total'
-    col2 = t._underlying[2]
+    col2 = t._storage[2]
     assert col2._name == 'total__2'
 
 
@@ -85,7 +85,7 @@ def test_indexed_accessor_setattr():
     new_col = Vector([10, 20, 30])
     t.count__1 = new_col
     
-    assert all(t.count._underlying[i] == new_col._underlying[i] for i in range(3))
+    assert all(t.count._storage[i] == new_col._storage[i] for i in range(3))
     assert t.count._name == 'count'  # Name preserved
 
 
@@ -157,8 +157,8 @@ def test_regular_access_still_works():
     })
     
     # Regular access should return first match
-    assert t.total is t._underlying[0]
-    assert t.count is t._underlying[1]
+    assert t.total is t._storage[0]
+    assert t.count is t._storage[1]
 
 
 def test_indexed_accessor_with_special_chars():
@@ -173,3 +173,4 @@ def test_indexed_accessor_with_special_chars():
     assert t.total_amount__0._name == 'Total Amount'
     assert t.count__1._name == 'Count!'
     assert t.sum__2._name == 'Sum#'
+

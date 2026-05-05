@@ -2,7 +2,7 @@ import operator
 import warnings
 from collections.abc import Iterable
 
-from .vector import Vector
+from ._vector import Vector
 
 from .naming import _sanitize_user_name
 from ._vector.storage import TupleStorage
@@ -85,7 +85,7 @@ class Row(Vector):
 
     def __init__(self, table, index=0):
         # SNAPSHOT: Grab raw column lists for speed
-        self._raw_cols = [col._underlying for col in table._storage]
+        self._raw_cols = [col._storage.to_tuple() for col in table._storage]
         self._column_map = table._column_map
         self._index = index
         
@@ -324,7 +324,7 @@ class Table(Vector):
         result = {}
         for i, col in enumerate(self._storage):
             key = col._name if col._name is not None else f"col_{i}"
-            result[key] = list(col._underlying)
+            result[key] = list(col._storage)
         return result
 
     def __getattr__(self, attr):
@@ -1667,7 +1667,7 @@ class Table(Vector):
         pk_len = len(over)
         
         # Prebind key-cols for speed
-        over_data = [c._underlying for c in over]
+        over_data = [c._storage.to_tuple() for c in over]
         
         for row_idx in range(nrows):
             key = tuple(over_data[i][row_idx] for i in range(pk_len))
@@ -1719,7 +1719,7 @@ class Table(Vector):
         # 6. Column-major helper: aggregate one column for all groups
         # ------------------------------------------------------------------
         def aggregate_col(col, func, suffix):
-            data = col._underlying
+            data = col._storage.to_tuple()
             out = []
             
             for key, row_indices in group_items:
@@ -1741,7 +1741,7 @@ class Table(Vector):
             for col in sum_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 aggregate_col(
                     col,
                     lambda vals, d=d: sum(v for v in vals if v is not None),
@@ -1753,7 +1753,7 @@ class Table(Vector):
             for col in mean_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 def mean_func(vals, d=d):
                     clean = [v for v in vals if v is not None]
                     return sum(clean) / len(clean) if clean else None
@@ -1765,7 +1765,7 @@ class Table(Vector):
             for col in min_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 def min_func(vals, d=d):
                     clean = [v for v in vals if v is not None]
                     return min(clean) if clean else None
@@ -1777,7 +1777,7 @@ class Table(Vector):
             for col in max_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 def max_func(vals, d=d):
                     clean = [v for v in vals if v is not None]
                     return max(clean) if clean else None
@@ -1789,7 +1789,7 @@ class Table(Vector):
             for col in count_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 aggregate_col(
                     col,
                     lambda vals, d=d: sum(1 for v in vals if v is not None),
@@ -1801,7 +1801,7 @@ class Table(Vector):
             for col in stdev_over:
                 if len(col) != nrows:
                     raise SerifValueError(f"Aggregation column has wrong length")
-                d = col._underlying
+                d = col._storage.to_tuple()
                 
                 def stdev_func(vals, d=d):
                     clean = [v for v in vals if v is not None]
@@ -1822,7 +1822,7 @@ class Table(Vector):
                 resolved_col = self._resolve_column(col)
                 if len(resolved_col) != nrows:
                     raise SerifValueError(f"Custom aggregation column '{agg_name}' has wrong length")
-                d = resolved_col._underlying
+                d = resolved_col._storage.to_tuple()
                 out = []
                 for key, row_indices in group_items:
                     vals = [d[i] for i in row_indices]
@@ -1921,7 +1921,7 @@ class Table(Vector):
         # ----------------------------------------------------------------------
         partition_index = {}
         pk_len = len(over)
-        over_data = [c._underlying for c in over]
+        over_data = [c._storage.to_tuple() for c in over]
         
         # Build once; reused everywhere
         row_keys = [None] * nrows
@@ -1971,7 +1971,7 @@ class Table(Vector):
         # 6. Helper: compute group-level aggregation for one column
         # ----------------------------------------------------------------------
         def compute_group_values(col, fn):
-            data = col._underlying
+            data = col._storage.to_tuple()
             out = {}
             for key, rows in group_items:
                 vals = [data[i] for i in rows]
@@ -2078,7 +2078,7 @@ class Table(Vector):
                 resolved_col = self._resolve_column(col)
                 if len(resolved_col) != nrows:
                     raise ValueError(f"Custom aggregation column '{name}' has wrong length")
-                data = resolved_col._underlying
+                data = resolved_col._storage.to_tuple()
                 gm = {
                     key: fn([data[i] for i in rows])
                     for key, rows in group_items
@@ -2173,7 +2173,7 @@ class Table(Vector):
 
         # Stable sort: apply keys from last to first
         for col, rev in reversed(list(zip(resolved, rev_flags))):
-            data = col._underlying
+            data = col._storage.to_tuple()
 
             def key_fn(i, data=data, rev=rev, na_last=na_last):
                 v = data[i]
@@ -2199,7 +2199,7 @@ class Table(Vector):
         # --- 6. Rebuild columns in sorted order ---
         new_cols = []
         for col in self._storage:
-            src = col._underlying
+            src = col._storage.to_tuple()
             new_data = [src[i] for i in indices]
             new_cols.append(Vector(new_data, name=col._name))
 
@@ -2277,7 +2277,7 @@ class Table(Vector):
         max_value_str_len = 40  # mild truncation for display only
 
         for idx, col in enumerate(self._storage):
-            data = col._underlying
+            data = col._storage.to_tuple()
             col_name = col._name
 
             # Original name

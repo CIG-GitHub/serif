@@ -165,7 +165,7 @@ def test_Table_multi_column_selection():
 	# Multi-column selection
 	t2 = t['a', 'c']
 	assert isinstance(t2, Table)
-	assert len(t2._underlying) == 2
+	assert len(t2._storage) == 2
 	assert t2['a']._name == 'a'
 	assert t2['c']._name == 'c'
 	assert list(t2['a']) == [1, 2, 3]
@@ -175,9 +175,9 @@ def test_Table_multi_column_selection():
 	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
 		t3 = t['a', 'a', 'a']
 	assert isinstance(t3, Table)
-	assert len(t3._underlying) == 3
+	assert len(t3._storage) == 3
 	# All three should have the same name and values
-	for col in t3._underlying:
+	for col in t3._storage:
 		assert col._name == 'a'
 		assert list(col) == [1, 2, 3]
 
@@ -282,3 +282,4 @@ def test_name_property_setter():
 	# Can also set to None
 	v.name = None
 	assert v.name is None
+

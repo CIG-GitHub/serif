@@ -1,6 +1,6 @@
 """Test that aggregate preserves order of first appearance (stable sort behavior)."""
 import pytest
-from serif.vector import Vector
+from serif import Vector
 from serif.table import Table
 
 
@@ -70,6 +70,7 @@ class TestAggregateSortOrder:
 		# First appearance: A (index 0), None (index 1), B (index 2)
 		assert list(result.group) == ['A', None, 'B']
 		assert list(result.value_sum) == [6, 6, 3]  # A: 1+5, None: 2+4, B: 3
+
 
 
 

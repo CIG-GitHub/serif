@@ -233,3 +233,4 @@ class TestTableArithmeticEdgeCases:
         
         assert result.column_names() == [None]
         assert list(result.cols()[0]) == [11, 22]
+

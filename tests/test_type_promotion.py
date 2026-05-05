@@ -7,7 +7,7 @@ from datetime import date, datetime
 import pytest
 
 from serif import Vector
-from serif.typing import DataType, infer_dtype
+from serif._vector.dtype import DataType, infer_dtype
 
 
 class TestInferDtype:
@@ -334,31 +334,31 @@ class TestTypedSubclasses:
     """Typed subclasses: _Int, _Float, etc."""
 
     def test_int_vector_uses_Int_subclass(self):
-        from serif.vector import _Int
+        from serif._vector.numeric import _Int
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
         assert v.schema().kind is int
 
     def test_float_vector_uses_Float_subclass(self):
-        from serif.vector import _Float
+        from serif._vector.numeric import _Float
         v = Vector([1.5, 2.5])
         assert isinstance(v, _Float)
         assert v.schema().kind is float
 
     def test_string_vector_uses_String_subclass(self):
-        from serif.vector import _String
+        from serif._vector.string import _String
         v = Vector(["a", "b", "c"])
         assert isinstance(v, _String)
         assert v.schema().kind is str
 
     def test_date_vector_uses_Date_subclass(self):
-        from serif.vector import _Date
+        from serif._vector.dates import _Date
         v = Vector([date(2020, 1, 1), date(2020, 1, 2)])
         assert isinstance(v, _Date)
         assert v.schema().kind is date
 
     def test_promotion_does_not_change_class_but_changes_schema(self):
-        from serif.vector import _Int
+        from serif._vector.numeric import _Int
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
         assert v.schema().kind is int
@@ -367,6 +367,7 @@ class TestTypedSubclasses:
         # class stays the same, dtype changes
         assert isinstance(v, _Int)
         assert v.schema().kind is float
+
 
 
 

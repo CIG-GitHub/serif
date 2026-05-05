@@ -202,3 +202,4 @@ def test_sort_by_does_not_mutate_original():
 	assert list(t['name']) == original_names
 	# Result should be sorted
 	assert list(result['name']) == ['Alice', 'Bob', 'Charlie']
+

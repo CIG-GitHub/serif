@@ -11,7 +11,7 @@ def _get_reserved_names():
     Results are cached for performance.
     """
     if not hasattr(_get_reserved_names, '_cache'):
-        from .vector import Vector
+        from ._vector import Vector
         from .table import Table
         
         reserved = set()
