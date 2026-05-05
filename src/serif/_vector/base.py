@@ -614,13 +614,12 @@ class Vector():
             # Fast path: the null mask is already a packed byte array.
             # If there is no mask, no elements are null.
             if storage._mask is None:
-                from .storage import TupleStorage as _TS
                 return self._clone(
-                    _TS(tuple(False for _ in range(len(storage)))),
+                    TupleStorage((False,) * len(storage)),
                     dtype=Schema(bool, False),
                 )
             return self._clone(
-                TupleStorage(tuple(bool(b) for b in storage._mask._data)),
+                TupleStorage(tuple(b == 1 for b in storage._mask._data)),
                 dtype=Schema(bool, False),
             )
         return Vector._from_iterable_known_dtype(
