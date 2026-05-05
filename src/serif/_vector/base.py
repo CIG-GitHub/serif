@@ -1299,24 +1299,49 @@ class Vector():
         na_last : bool
             If True, None sorts after all valid values.
             If False, None sorts before all valid values.
-        
+
         Returns
         -------
         Vector
             Sorted vector with same dtype
         """
-        # Build key for each element
+        storage = self._storage
+        n = len(storage)
+
+        # Build sort order from indices — avoids materializing Python objects
+        # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
         if na_last:
-            key_fn = lambda x: (x is None, x if x is not None else 0)
+            key_fn = lambda i: (storage.is_null(i), storage[i] if not storage.is_null(i) else 0)
         else:
-            key_fn = lambda x: (0 if x is None else 1, x if x is not None else 0)
-        
-        new_values = tuple(sorted(self._storage, key=key_fn, reverse=reverse))
+            key_fn = lambda i: (0 if storage.is_null(i) else 1, storage[i] if not storage.is_null(i) else 0)
 
-        # dtype DOES NOT change — preserving nullability and kind
-        new_vector = Vector(new_values, dtype=self._dtype, name=self._name)
+        order = sorted(range(n), key=key_fn, reverse=reverse)
 
-        return new_vector
+        # Permute storage directly — no Vector() constructor, no type inference
+        if isinstance(storage, ArrayStorage):
+            from array import array as _array
+            from .nullable import ByteMask
+            tc = storage._data.typecode
+            new_data = _array(tc, (storage._data[i] for i in order))
+            if storage._mask is not None:
+                new_mask = ByteMask.from_iterable(storage._mask.is_null(i) for i in order)
+            else:
+                new_mask = None
+            new_storage = ArrayStorage(new_data, new_mask)
+        else:
+            new_storage = TupleStorage(tuple(storage._data[i] for i in order))
+
+        # Bypass Vector.__new__ — dtype is invariant under sort
+        instance = object.__new__(type(self))
+        instance._dtype = self._dtype
+        instance._name = self._name
+        instance._display_as_row = self._display_as_row
+        instance._wild = True
+        instance._fp = None
+        instance._fp_powers = None
+        instance._storage = new_storage
+        _ALIAS_TRACKER.register(instance, id(new_storage))
+        return instance
 
 
     def _check_duplicate(self, other):
