@@ -5,7 +5,7 @@ from .string import _String
 from .dates import _Date
 from .storage import ArrayStorage
 from .storage import TupleStorage
-from .dtype import DataType
+from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import validate_scalar
 
@@ -17,7 +17,7 @@ __all__ = [
     "_Date",
     "ArrayStorage",
     "TupleStorage",
-    "DataType",
+    "Schema",
     "infer_dtype",
     "validate_scalar",
 ]
