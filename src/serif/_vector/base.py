@@ -25,7 +25,6 @@ from copy import deepcopy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-from ..typeutils import slice_length
 
 from typing import Any
 from typing import Iterable
@@ -49,6 +48,10 @@ def _reverse_mod(y, x):
 
 def _reverse_pow(y, x):
     return x ** y
+
+def _slice_length(s: slice, sequence_length: int) -> int:
+    start, stop, step = s.indices(sequence_length)
+    return max(0, (stop - start + (step - (1 if step > 0 else -1))) // step)
 
 # ============================================================
 # Small helpers
@@ -685,7 +688,7 @@ class Vector():
         # CASE 2 — Slice assignment
         # =====================================================================
         elif isinstance(key, slice):
-            slice_len = slice_length(key, n)
+            slice_len = _slice_length(key, n)
             start, stop, step = key.indices(n)
 
             if is_seq_val:
