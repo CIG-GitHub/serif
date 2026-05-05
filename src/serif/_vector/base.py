@@ -195,6 +195,7 @@ class Vector():
     _name = None
     _display_as_row = False
     _wild = False  # Flag for name changes (used by Table column tracking)
+    _ndims = 1     # Class-level constant; Table overrides with 2
     
     # Fingerprint constants for O(1) change detection
     _FP_P = (1 << 61) - 1  # Mersenne prime (2^61 - 1)
@@ -674,7 +675,13 @@ class Vector():
 
     @property
     def T(self):
-        inverted = self.copy(name = self._name)
+        if self._dtype is not None:
+            # 1D typed vector: share immutable storage, just flip display flag.
+            instance = self._clone(self._storage)
+            instance._display_as_row = not self._display_as_row
+            return instance
+        # Table or untyped: full copy for correct class dispatch.
+        inverted = self.copy(name=self._name)
         inverted._display_as_row = not self._display_as_row
         return inverted
 
@@ -1217,7 +1224,7 @@ class Vector():
         return
 
     def ndims(self):
-        return len(self.shape)
+        return self._ndims
 
     def cols(self, key=None):
         if isinstance(key, int):

@@ -188,6 +188,7 @@ class Table(Vector):
     """ Multiple columns of the same length """
     _length = None
     _repr_rows = None  # Optional table-specific repr row count override
+    _ndims = 2
     
     def __new__(cls, initial=(), dtype=None, name=None, as_row=False):
         return super(Vector, cls).__new__(cls)
