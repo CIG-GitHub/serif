@@ -148,45 +148,37 @@ class TestAggregate:
 
 class TestWindow:
 	"""Tests for Table.window() method"""
-	
+
 	def test_window_maintains_row_count(self):
 		"""Window functions should return same number of rows"""
 		table = Table({
 			'customer': ['A', 'B', 'A', 'C', 'B', 'A'],
 			'sales': [100, 200, 150, 300, 250, 175]
 		})
-		
 		result = table.window(
-			over=table.customer,
-			sum_over=table.sales
+			groupby=table.customer,
+			aggregations={'sales_sum': table.sales.sum}
 		)
-		
-		# Should have same number of rows as input
 		assert len(result) == 6
 		assert len(result.customer) == 6
 		assert len(result.sales_sum) == 6
-	
+
 	def test_window_repeats_aggregated_values(self):
 		"""Aggregated values should repeat for each row in partition"""
 		table = Table({
 			'group': ['X', 'X', 'Y', 'Y', 'X'],
 			'amount': [10, 20, 30, 40, 50]
 		})
-		
 		result = table.window(
-			over=table.group,
-			sum_over=table.amount
+			groupby=table.group,
+			aggregations={'amount_sum': table.amount.sum}
 		)
-		
-		# Group X appears at indices 0, 1, 4 with sum 80
 		assert result.amount_sum[0] == 80
 		assert result.amount_sum[1] == 80
 		assert result.amount_sum[4] == 80
-		
-		# Group Y appears at indices 2, 3 with sum 70
 		assert result.amount_sum[2] == 70
 		assert result.amount_sum[3] == 70
-	
+
 	def test_window_multiple_partitions(self):
 		"""Window with multiple partition keys"""
 		table = Table({
@@ -194,134 +186,108 @@ class TestWindow:
 			'quarter': [1, 1, 1, 2, 1],
 			'revenue': [100, 200, 150, 300, 50]
 		})
-		
 		result = table.window(
-			over=[table.year, table.quarter],
-			sum_over=table.revenue
+			groupby=[table.year, table.quarter],
+			aggregations={'revenue_sum': table.revenue.sum}
 		)
-		
 		assert len(result) == 5
-		
-		# Rows 0, 1, 4 are (2023, Q1) with sum 350
 		assert result.revenue_sum[0] == 350
 		assert result.revenue_sum[1] == 350
 		assert result.revenue_sum[4] == 350
-		
-		# Row 2 is (2024, Q1) with sum 150
 		assert result.revenue_sum[2] == 150
-		
-		# Row 3 is (2024, Q2) with sum 300
 		assert result.revenue_sum[3] == 300
-	
+
 	def test_window_multiple_aggregations(self):
 		"""Multiple window functions simultaneously"""
 		table = Table({
 			'category': ['A', 'B', 'A', 'B'],
 			'value': [10, 20, 30, 40]
 		})
-		
 		result = table.window(
-			over=table.category,
-			sum_over=table.value,
-			mean_over=table.value,
-			count_over=table.value
+			groupby=table.category,
+			aggregations={
+				'value_sum':   table.value.sum,
+				'value_mean':  table.value.mean,
+				'value_count': table.value.count,
+			}
 		)
-		
-		# Category A at indices 0, 2
 		assert result.value_sum[0] == 40
-		assert result.value_mean[0] == 20
+		assert result.value_mean[0] == 20.0
 		assert result.value_count[0] == 2
-		
 		assert result.value_sum[2] == 40
-		assert result.value_mean[2] == 20
+		assert result.value_mean[2] == 20.0
 		assert result.value_count[2] == 2
-	
+
 	def test_window_running_total_example(self):
 		"""Practical example: running total per customer"""
 		table = Table({
 			'customer_id': [101, 102, 101, 101, 102],
 			'order_amount': [50, 100, 75, 25, 150]
 		})
-		
-		# Get total amount per customer repeated for each order
 		result = table.window(
-			over=table.customer_id,
-			sum_over=table.order_amount
+			groupby=table.customer_id,
+			aggregations={'order_amount_sum': table.order_amount.sum}
 		)
-		
-		# Customer 101 has total 150 (50+75+25) across 3 orders
 		for i in range(len(result)):
 			if result.customer_id[i] == 101:
 				assert result.order_amount_sum[i] == 150
-		
-		# Customer 102 has total 250 (100+150) across 2 orders
 		for i in range(len(result)):
 			if result.customer_id[i] == 102:
 				assert result.order_amount_sum[i] == 250
-	
-	def test_window_custom_apply(self):
-		"""Custom window function"""
+
+	def test_window_custom_callable(self):
+		"""Custom window function via callable-receives-Table"""
 		table = Table({
 			'team': ['A', 'B', 'A', 'B'],
 			'score': [10, 20, 30, 40]
 		})
-		
-		def product(values):
+
+		def product(g):
 			result = 1
-			for v in values:
+			for v in g.score:
 				if v is not None:
 					result *= v
 			return result
-		
+
 		result = table.window(
-			over=table.team,
-			apply={'score_product': (table.score, product)}
+			groupby=table.team,
+			aggregations={'score_product': product}
 		)
-		
-		# Team A at indices 0, 2: product is 300
 		assert result.score_product[0] == 300
 		assert result.score_product[2] == 300
-		
-		# Team B at indices 1, 3: product is 800
 		assert result.score_product[1] == 800
 		assert result.score_product[3] == 800
-	
+
 	def test_window_with_none_values(self):
 		"""Window functions should handle None correctly"""
 		table = Table({
 			'group': ['X', 'X', 'Y', 'Y'],
 			'amount': [10, None, 20, 30]
 		})
-		
 		result = table.window(
-			over=table.group,
-			sum_over=table.amount,
-			count_over=table.amount
+			groupby=table.group,
+			aggregations={
+				'amount_sum':   table.amount.sum,
+				'amount_count': table.amount.count,
+			}
 		)
-		
-		# Group X: sum is 10, count is 1 (None excluded)
 		assert result.amount_sum[0] == 10
 		assert result.amount_count[0] == 1
 		assert result.amount_sum[1] == 10
 		assert result.amount_count[1] == 1
-		
-		# Group Y: sum is 50, count is 2
 		assert result.amount_sum[2] == 50
 		assert result.amount_count[2] == 2
-	
+
 	def test_window_stdev(self):
 		"""Window standard deviation"""
 		table = Table({
 			'category': ['A', 'A', 'A', 'B', 'B'],
 			'value': [2, 4, 6, 10, 20]
 		})
-		
 		result = table.window(
-			over=table.category,
-			stdev_over=table.value
+			groupby=table.category,
+			aggregations={'value_stdev': table.value.stdev}
 		)
-		
-		# Category A: stdev is 2
 		for i in range(3):
 			assert abs(result.value_stdev[i] - 2.0) < 0.001
 
@@ -350,11 +316,9 @@ class TestAggregateWindowEdgeCases:
 			'a': [1, 2, 3],
 			'b': [4, 5, 6]
 		})
-		
 		bad_key = Vector([1, 2, 3, 4])  # Wrong length
-		
 		with pytest.raises(ValueError, match="Partition key.*has length 4.*table has 3 rows"):
-			table.window(over=bad_key, sum_over=table.b)
+			table.window(groupby=bad_key)
 	
 	def test_window_wrong_length_aggregation_column(self):
 		"""Window should raise error if aggregation column has wrong length"""
@@ -362,11 +326,12 @@ class TestAggregateWindowEdgeCases:
 			'a': [1, 1, 2],
 			'b': [4, 5, 6]
 		})
-		
 		bad_col = Vector([10])  # Wrong length
-		
-		with pytest.raises(ValueError, match="wrong length"):
-			table.window(over=table.a, sum_over=bad_col)
+		with pytest.raises(ValueError, match="vector length.*!= table length"):
+			table.window(
+				groupby=table.a,
+				aggregations={'x': bad_col.sum}
+			)
 	
 	def test_aggregate_empty_table(self):
 		table = Table({'x': [], 'y': []})
@@ -375,7 +340,7 @@ class TestAggregateWindowEdgeCases:
 
 	def test_window_empty_table(self):
 		table = Table({'x': [], 'y': []})
-		result = table.window(over=table.x, sum_over=table.y)
+		result = table.window(groupby=table.x)
 		assert len(result) == 0
 
 

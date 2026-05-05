@@ -1704,261 +1704,128 @@ class Table(Vector):
         # ------------------------------------------------------------------
         return Table(result_cols)
 
-    def window(
-        self,
-        # --- Partition keys ---
-        over,
-        
-        # --- Built-in aggregations ---
-        sum_over=None,
-        mean_over=None,
-        min_over=None,
-        max_over=None,
-        stdev_over=None,
-        count_over=None,
-        
-        # --- Custom aggregations ---
-        apply=None,
-    ):
+    def window(self, groupby, aggregations=None):
         """
         Compute window functions over partitions, returning the same number of rows.
-        
-        Similar to aggregate(), but repeats the aggregated value for each row in the group.
-        
+
+        Like aggregate(), but the aggregated value is broadcast back to every row
+        in the group instead of collapsing to one row per group.
+
         Args:
-            over: Vector(s) to partition/group by
-            sum_over: Vector(s) to sum within each group
-            mean_over: Vector(s) to average within each group
-            min_over: Vector(s) to find minimum within each group
-            max_over: Vector(s) to find maximum within each group
-            stdev_over: Vector(s) to compute standard deviation within each group
-            count_over: Vector(s) to count non-None values within each group
-            apply: Dict of {name: (column, function)} for custom aggregations
-        
+            groupby: Vector, str, or list — column(s) to partition by
+            aggregations: dict of {output_name: func}
+                - Bound method of a Vector (e.g. t.sales.sum): slices the source
+                  column per group and calls that method on the slice
+                - Callable: receives the group as a Table, must return a scalar
+
         Returns:
-            Table with same number of rows as input, with aggregated values repeated
-        
+            Table with the same number of rows as input
+
         Examples:
-            # Add running total per customer
-            table.window(over=table.customer_id, sum_over=table.order_total)
-            
-            # Multiple window functions
-            table.window(
-                over=[table.year, table.month],
-                sum_over=table.revenue,
-                count_over=table.transaction_id
+            t.window(
+                groupby=t.region,
+                aggregations={
+                    "region_total": t.sales.sum,
+                    "region_avg":   t.price.mean,
+                }
             )
         """
-        # ----------------------------------------------------------------------
-        # 1. Normalize inputs
-        # ----------------------------------------------------------------------
-        if isinstance(over, (str, Vector)):
-            over = [over]
-        
-        # Resolve string column names to Vectors
-        over = [self._resolve_column(col) for col in over]
-        
-        # Normalize aggregation lists and resolve column names
-        def norm(v):
-            if v is None:
-                return None
-            if isinstance(v, (str, Vector)):
-                return [self._resolve_column(v)]
-            # It's a list/tuple
-            return [self._resolve_column(col) for col in v]
-        
-        sum_over   = norm(sum_over)
-        mean_over  = norm(mean_over)
-        min_over   = norm(min_over)
-        max_over   = norm(max_over)
-        stdev_over = norm(stdev_over)
-        count_over = norm(count_over)
-        
-        # ----------------------------------------------------------------------
-        # 2. Validate column lengths
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 1. Normalize groupby
+        # ------------------------------------------------------------------
+        if isinstance(groupby, (str, Vector)):
+            groupby = [groupby]
+        groupby = [self._resolve_column(col) for col in groupby]
+
+        # ------------------------------------------------------------------
+        # 2. Validate lengths
+        # ------------------------------------------------------------------
         nrows = len(self)
-        for i, col in enumerate(over):
+        for i, col in enumerate(groupby):
             if len(col) != nrows:
-                raise ValueError(
+                raise SerifValueError(
                     f"Partition key at index {i} has length {len(col)}, "
                     f"but table has {nrows} rows."
                 )
-        
-        # ----------------------------------------------------------------------
-        # 3. Build partition index: key -> list[row indices]
-        # ----------------------------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # 3. Build partition index + per-row key lookup
+        # ------------------------------------------------------------------
         partition_index = {}
-        pk_len = len(over)
-        over_data = [c._storage.to_tuple() for c in over]
-        
-        # Build once; reused everywhere
+        pk_len = len(groupby)
+        over_data = [c._storage.to_tuple() for c in groupby]
         row_keys = [None] * nrows
-        
-        for i in range(nrows):
-            key = tuple(over_data[k][i] for k in range(pk_len))
-            row_keys[i] = key
+
+        for row_idx in range(nrows):
+            key = tuple(over_data[k][row_idx] for k in range(pk_len))
+            row_keys[row_idx] = key
             bucket = partition_index.get(key)
             if bucket is None:
-                partition_index[key] = [i]
+                partition_index[key] = [row_idx]
             else:
-                bucket.append(i)
-        
+                bucket.append(row_idx)
+
         group_items = list(partition_index.items())
-        
-        # ----------------------------------------------------------------------
-        # 4. Name logic
-        # ----------------------------------------------------------------------
-        used = set()
-        
-        def sanitize(col, suffix):
-            base = col._name or "col"
-            s = _sanitize_user_name(base) or "col"
-            return f"{s}_{suffix}"
-        
-        def uniquify(name):
-            if name not in used:
-                used.add(name)
-                return name
-            i = 2
-            while f"{name}{i}" in used:
-                i += 1
-            final = f"{name}{i}"
-            used.add(final)
-            return final
-        
-        # ----------------------------------------------------------------------
-        # 5. Start with partition key columns (copy directly)
-        # ----------------------------------------------------------------------
-        result_cols = []
-        for col in over:
-            result_cols.append(
-                Vector(list(col), name=uniquify(col._name or "key"))
-            )
-        
-        # ----------------------------------------------------------------------
-        # 6. Helper: compute group-level aggregation for one column
-        # ----------------------------------------------------------------------
-        def compute_group_values(col, fn):
-            data = col._storage.to_tuple()
-            out = {}
-            for key, rows in group_items:
-                vals = [data[i] for i in rows]
-                out[key] = fn(vals)
-            return out
-        
-        # ----------------------------------------------------------------------
-        # 7. Helper: expand group-level values back to all rows
-        # ----------------------------------------------------------------------
+
         def expand_to_rows(group_map):
             return [group_map[row_keys[i]] for i in range(nrows)]
-        
-        # ----------------------------------------------------------------------
-        # 8. Built-in aggregations
-        # ----------------------------------------------------------------------
-        # Each aggregator: compute group-level -> expand -> append column
-        
-        # SUM
-        if sum_over:
-            for col in sum_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    return sum(v for v in vals if v is not None)
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "sum")))
-                )
-        
-        # MEAN
-        if mean_over:
-            for col in mean_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    clean = [v for v in vals if v is not None]
-                    return sum(clean) / len(clean) if clean else None
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "mean")))
-                )
-        
-        # MIN
-        if min_over:
-            for col in min_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    clean = [v for v in vals if v is not None]
-                    return min(clean) if clean else None
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "min")))
-                )
-        
-        # MAX
-        if max_over:
-            for col in max_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    clean = [v for v in vals if v is not None]
-                    return max(clean) if clean else None
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "max")))
-                )
-        
-        # COUNT
-        if count_over:
-            for col in count_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    return sum(1 for v in vals if v is not None)
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "count")))
-                )
-        
-        # STDEV
-        if stdev_over:
-            for col in stdev_over:
-                if len(col) != nrows:
-                    raise ValueError(f"Aggregation column has wrong length")
-                def fn(vals):
-                    clean = [v for v in vals if v is not None]
-                    n = len(clean)
-                    if n <= 1:
-                        return None
-                    mean_val = sum(clean) / n
-                    return (sum((v - mean_val)**2 for v in clean) / (n - 1)) ** 0.5
-                
-                gm = compute_group_values(col, fn)
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(sanitize(col, "stdev")))
-                )
-        
-        # ----------------------------------------------------------------------
-        # 9. Custom aggregation(s)
-        # ----------------------------------------------------------------------
-        if apply:
-            for name, (col, fn) in apply.items():
-                resolved_col = self._resolve_column(col)
-                if len(resolved_col) != nrows:
-                    raise ValueError(f"Custom aggregation column '{name}' has wrong length")
-                data = resolved_col._storage.to_tuple()
-                gm = {
-                    key: fn([data[i] for i in rows])
-                    for key, rows in group_items
-                }
-                result_cols.append(
-                    Vector(expand_to_rows(gm), name=uniquify(name))
-                )
-        
-        # ----------------------------------------------------------------------
-        # 10. Final table
-        # ----------------------------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # 4. Groupby key columns (copied straight through)
+        # ------------------------------------------------------------------
+        result_cols = []
+        used_names = set()
+
+        def uniquify(name):
+            if name not in used_names:
+                used_names.add(name)
+                return name
+            i = 2
+            while f"{name}{i}" in used_names:
+                i += 1
+            new = f"{name}{i}"
+            used_names.add(new)
+            return new
+
+        for col in groupby:
+            result_cols.append(Vector(list(col), name=uniquify(col._name or "key")))
+
+        # ------------------------------------------------------------------
+        # 5. Aggregations
+        # ------------------------------------------------------------------
+        if aggregations:
+            for agg_name, func in aggregations.items():
+                if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
+                    source = func.__self__
+                    method_name = func.__name__
+                    if len(source) != nrows:
+                        raise SerifValueError(
+                            f"aggregations['{agg_name}']: vector length {len(source)} "
+                            f"!= table length {nrows}"
+                        )
+                    data = source._storage.to_tuple()
+                    group_map = {}
+                    for _key, row_indices in group_items:
+                        group_vec = Vector([data[i] for i in row_indices])
+                        group_map[_key] = getattr(group_vec, method_name)()
+                    result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
+                elif callable(func):
+                    group_map = {}
+                    for _key, row_indices in group_items:
+                        group_cols = [
+                            Vector([col._storage.to_tuple()[i] for i in row_indices], name=col._name)
+                            for col in self._storage
+                        ]
+                        group_map[_key] = func(Table(group_cols))
+                    result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
+                else:
+                    raise SerifTypeError(
+                        f"aggregations['{agg_name}'] must be a bound Vector method or callable"
+                    )
+
+        # ------------------------------------------------------------------
+        # 6. Final table (same row count as input)
+        # ------------------------------------------------------------------
         return Table(result_cols)
 
     def sort_by(self, by, reverse=False, na_last=True):
