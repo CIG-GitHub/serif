@@ -187,10 +187,10 @@ class Row(Vector):
         return super().__getitem__(key)
 
     def __iter__(self):
-        # Fast iteration for unpacking: x, y, z = row
+        # Return a list iterator so unpacking (a, b = row) uses C-level list_next
+        # rather than suspending a Python generator frame per element.
         idx = self._index
-        for col in self._raw_cols:
-            yield col[idx]
+        return iter([col[idx] for col in self._raw_cols])
 
     def __len__(self):
         return len(self._raw_cols)
