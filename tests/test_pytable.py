@@ -167,20 +167,23 @@ class TestListOfListsConstruction:
 
     def test_uniform_rows_transposes_to_columns(self):
         # 8 rows × 5 cols (row-major input → column-major table)
+        # Each row is distinct so we can verify transposition unambiguously
         data = [
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
+            [10, 20, 30, 40, 50],
+            [11, 21, 31, 41, 51],
+            [12, 22, 32, 42, 52],
+            [13, 23, 33, 43, 53],
+            [14, 24, 34, 44, 54],
+            [15, 25, 35, 45, 55],
+            [16, 26, 36, 46, 56],
+            [17, 27, 37, 47, 57],
         ]
         t = Table(data)
         assert t.shape == (8, 5)
-        assert list(t.cols()[0]) == [1, 6, 1, 6, 1, 6, 1, 6]
-        assert list(t.cols()[4]) == [5, 10, 5, 10, 5, 10, 5, 10]
+        # col0 should be the first element of each row
+        assert list(t.cols()[0]) == [10, 11, 12, 13, 14, 15, 16, 17]
+        # col4 should be the last element of each row
+        assert list(t.cols()[4]) == [50, 51, 52, 53, 54, 55, 56, 57]
 
     def test_uniform_small_matrix(self):
         t = Table([[1, 2], [3, 4], [5, 6]])
