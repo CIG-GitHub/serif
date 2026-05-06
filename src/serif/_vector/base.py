@@ -1526,14 +1526,18 @@ class Vector():
             warnings.warn(f"The behavior of >> and << have been overridden for concatenation. Use .bitshift() to shift bits.")
 
         if type(other).__name__ == 'Table':
-            return Vector((self,) + other.cols(),
-                dtype=self._dtype)
+            return Vector((self,) + other.cols())
         if isinstance(other, Vector):
-            return Vector((self,) + (other,),
-                dtype=self._dtype)
+            return Vector((self,) + (other,))
+        if isinstance(other, dict):
+            cols = [self]
+            for k, v in other.items():
+                if not isinstance(v, Vector):
+                    v = Vector(v)
+                cols.append(v.alias(k) if v._name != k else v)
+            return Vector(cols)
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return Vector([self, Vector(tuple(x for x in other))],
-                dtype=self._dtype)
+            return Vector([self, Vector(tuple(x for x in other))])
         elif not self:
             return Vector((other,),
                 dtype=self._dtype)

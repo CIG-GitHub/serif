@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from ._vector import Vector
 
 from .naming import _sanitize_user_name
-from ._vector.storage import TupleStorage
+from ._vector.storage import TupleStorage, ArrayStorage
 
 from .errors import SerifKeyError
 from .errors import SerifValueError
@@ -84,8 +84,20 @@ class Row(Vector):
         return object.__new__(cls)
 
     def __init__(self, table, index=0):
-        # SNAPSHOT: Grab raw column lists for speed
-        self._raw_cols = [col._storage.to_tuple() for col in table._storage]
+        # Grab the raw backing store for each column.
+        # For non-nullable ArrayStorage we use the array.array directly — this
+        # avoids materialising O(N) Python int/float objects upfront (which would
+        # happen inside to_tuple()).  Per-element access is slightly slower for
+        # array.array than for a plain tuple, but the savings from not having
+        # ~N*ncols live objects during iteration easily wins at any realistic N.
+        # For nullable ArrayStorage or TupleStorage, fall back to the existing
+        # tuple path so null-handling stays correct.
+        def _backing(storage):
+            if isinstance(storage, ArrayStorage) and storage._mask is None:
+                return storage._data  # array.array — O(1) index, lazy boxing
+            return storage.to_tuple()
+
+        self._raw_cols = [_backing(col._storage) for col in table._storage]
         self._column_map = table._column_map
         self._index = index
         
@@ -175,10 +187,10 @@ class Row(Vector):
         return super().__getitem__(key)
 
     def __iter__(self):
-        # Fast iteration for unpacking: x, y, z = row
+        # Return a list iterator so unpacking (a, b = row) uses C-level list_next
+        # rather than suspending a Python generator frame per element.
         idx = self._index
-        for col in self._raw_cols:
-            yield col[idx]
+        return iter([col[idx] for col in self._raw_cols])
 
     def __len__(self):
         return len(self._raw_cols)
