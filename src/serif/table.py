@@ -210,7 +210,21 @@ class Table(Vector):
         if isinstance(initial, dict):
             # Create Vectors with names from dict keys
             initial = [Vector(values, name=col_name) for col_name, values in initial.items()]
-        
+
+        # Handle list-of-lists (or list-of-iterables that aren't Vectors/Tables)
+        elif (
+            isinstance(initial, (list, tuple))
+            and initial
+            and all(isinstance(row, (list, tuple)) and not isinstance(row, Vector) for row in initial)
+        ):
+            inner_lengths = [len(row) for row in initial]
+            if len(set(inner_lengths)) == 1:
+                # Uniform inner lengths → treat as row-major, transpose to columns
+                initial = [Vector(list(col)) for col in zip(*initial)]
+            else:
+                # Jagged → treat as columns (invariant check will fire if lengths differ)
+                initial = [Vector(col) for col in initial]
+
         self._length = len(initial[0]) if initial else 0
         
         # Deep copy columns to enforce value semantics
