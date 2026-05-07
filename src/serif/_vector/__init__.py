@@ -3,6 +3,7 @@ from .numeric import _Int
 from .numeric import _Float
 from .string import _String
 from .dates import _Date
+from .categorical import _Categorical
 from .storage import ArrayStorage
 from .storage import TupleStorage
 from .dtype import Schema
@@ -15,6 +16,7 @@ __all__ = [
     "_Float",
     "_String",
     "_Date",
+    "_Categorical",
     "ArrayStorage",
     "TupleStorage",
     "Schema",

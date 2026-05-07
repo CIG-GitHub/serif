@@ -1,4 +1,5 @@
 from .base import Vector
+from ..errors import SerifTypeError
 
 
 class _String(Vector):
@@ -209,4 +210,39 @@ class _String(Vector):
     def after_last(self, sep):
         """Return the part of each string after the last occurrence of sep."""
         return Vector(tuple((s.rpartition(sep)[2] if s is not None else None) for s in self._storage))
+
+    def categorize(self, categories):
+        """
+        Convert this string vector into a categorical vector with an explicit,
+        ordered category list.
+
+        Parameters
+        ----------
+        categories : list | tuple | Vector of str
+            Defines both membership and sort order. No duplicates allowed.
+            None is not a valid category.
+
+        Returns
+        -------
+        _Categorical
+            A new vector backed by integer codes with category-aware comparisons
+            and sorting.
+
+        Raises
+        ------
+        SerifTypeError
+            If this vector is not a string vector, or if categories contain
+            non-string elements.
+        SerifValueError
+            If any non-None value in this vector is not in the category list,
+            or if the category list contains duplicates.
+
+        Notes
+        -----
+        ``v.categorize(v.unique())`` is valid but uses first-seen order, which
+        is rarely the intended sort order. Prefer an explicit list.
+        """
+        from .categorical import _Categorical
+        return _Categorical.from_values(self._storage, categories, name=self._name)
+
 
