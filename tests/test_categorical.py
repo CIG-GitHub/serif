@@ -1,7 +1,7 @@
-"""Tests for _Categorical vector — ordered string categories."""
+"""Tests for _Category vector — ordered string categories."""
 import pytest
 from serif import Vector
-from serif._vector.categorical import _Categorical
+from serif._vector.categorical import _Category
 from serif.errors import SerifValueError, SerifTypeError
 
 
@@ -16,7 +16,7 @@ def make_cat(values=('m', 'xl', 's', 'xs', 'l'), categories=None):
 class TestCategoricalConstruction:
     def test_basic_construction(self):
         c = make_cat()
-        assert isinstance(c, _Categorical)
+        assert isinstance(c, _Category)
         assert list(c) == ['m', 'xl', 's', 'xs', 'l']
 
     def test_categories_preserved(self):
@@ -112,19 +112,19 @@ class TestCategoricalComparisons:
         result = c == 's'
         assert list(result) == [True, False, False]
 
-    def test_two_categoricals_same_categories(self):
+    def test_two_Categorys_same_categories(self):
         a = make_cat(['s', 'm', 'l'])
         b = make_cat(['m', 'm', 'm'])
         result = a < b
         assert list(result) == [True, False, False]
 
-    def test_two_categoricals_different_categories_raises(self):
+    def test_two_Categorys_different_categories_raises(self):
         a = Vector(['s', 'm']).categorize(['s', 'm', 'l'])
         b = Vector(['s', 'm']).categorize(['m', 's', 'l'])
         with pytest.raises(SerifValueError, match="different category lists"):
             _ = a < b
 
-    def test_two_categoricals_different_categories_equality_by_label(self):
+    def test_two_Categorys_different_categories_equality_by_label(self):
         # == and != compare by label value regardless of category list
         a = Vector(['s', 'm']).categorize(['s', 'm', 'l'])
         b = Vector(['s', 'm']).categorize(['m', 's', 'l'])
@@ -204,7 +204,7 @@ class TestCategoricalIndexing:
     def test_slice(self):
         c = make_cat(['xs', 's', 'm', 'l', 'xl'])
         sliced = c[1:3]
-        assert isinstance(sliced, _Categorical)
+        assert isinstance(sliced, _Category)
         assert list(sliced) == ['s', 'm']
         assert sliced.categories == tuple(SIZES)
 
@@ -212,7 +212,7 @@ class TestCategoricalIndexing:
         c = make_cat(['xs', 's', 'm', 'l', 'xl'])
         mask = c > 's'
         filtered = c[mask]
-        assert isinstance(filtered, _Categorical)
+        assert isinstance(filtered, _Category)
         assert list(filtered) == ['m', 'l', 'xl']
 
 
@@ -233,7 +233,7 @@ class TestCategorizeNone:
     def test_none_infers_appearance_order(self):
         v = Vector(['m', 'l', 's', 'm', 'xs'])
         c = v.categorize(None)
-        assert isinstance(c, _Categorical)
+        assert isinstance(c, _Category)
         assert c.categories == ('m', 'l', 's', 'xs')  # first-seen order
         assert list(c) == ['m', 'l', 's', 'm', 'xs']
 

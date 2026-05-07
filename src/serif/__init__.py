@@ -24,7 +24,7 @@ from ._vector import _Int
 from ._vector import _Float
 from ._vector import _String
 from ._vector import _Date
-from ._vector import _Categorical
+from ._vector import _Category
 from .table import Table
 from .errors import SerifError
 from .errors import SerifKeyError

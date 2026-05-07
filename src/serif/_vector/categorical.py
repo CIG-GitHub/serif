@@ -1,7 +1,7 @@
 """
 Categorical vector: ordered string categories backed by integer codes.
 
-A _Categorical stores values as int codes into a fixed, ordered category list.
+A _Category stores values as int codes into a fixed, ordered category list.
 The user always sees strings; the int encoding is internal.
 
 Properties:
@@ -24,7 +24,7 @@ import operator as _op
 _ORDERING_OPS = frozenset({_op.lt, _op.le, _op.gt, _op.ge})
 
 
-class _Categorical(Vector):
+class _Category(Vector):
     """String vector with a fixed, ordered category list."""
 
     _categories: tuple  # ordered category strings
@@ -38,7 +38,7 @@ class _Categorical(Vector):
         return object.__new__(cls)
 
     def __init__(self, codes: ArrayStorage, categories: tuple, name=None, nullable=False):
-        """Internal constructor — use _Categorical.from_values() externally."""
+        """Internal constructor — use _Category.from_values() externally."""
         self._code_storage = codes
         self._categories = categories
         self._dtype = Schema(str, nullable)
@@ -48,7 +48,7 @@ class _Categorical(Vector):
         self._fp = None
         self._fp_powers = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
-        self._storage = _CategoricalStorage(codes, categories)
+        self._storage = _CategoryStorage(codes, categories)
 
     # ------------------------------------------------------------------
     # Construction
@@ -57,7 +57,7 @@ class _Categorical(Vector):
     @classmethod
     def from_values(cls, values, categories, *, name=None):
         """
-        Build a _Categorical from an iterable of string values and an ordered
+        Build a _Category from an iterable of string values and an ordered
         category list.
 
         Parameters
@@ -157,7 +157,7 @@ class _Categorical(Vector):
 
         if isinstance(key, slice):
             new_codes = self._code_storage.slice(key)
-            return _Categorical(new_codes, self._categories, name=self._name,
+            return _Category(new_codes, self._categories, name=self._name,
                                 nullable=self._dtype.nullable)
 
         if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
@@ -181,7 +181,7 @@ class _Categorical(Vector):
             raw = array('q', codes_list)
             mask = ByteMask.from_iterable(null_flags) if has_nulls else None
             new_codes = ArrayStorage(raw, mask)
-            return _Categorical(new_codes, self._categories, name=self._name,
+            return _Category(new_codes, self._categories, name=self._name,
                                 nullable=has_nulls)
 
         # Fallback: decode → base Vector handles it
@@ -190,7 +190,7 @@ class _Categorical(Vector):
     def copy(self, new_storage=None, **kwargs):
         if new_storage is None:
             import copy
-            return _Categorical(
+            return _Category(
                 copy.copy(self._code_storage),
                 self._categories,
                 name=self._name,
@@ -236,7 +236,7 @@ class _Categorical(Vector):
             return Vector._from_iterable_known_dtype(result, Schema(bool, False))
 
         # vs another categorical
-        if isinstance(other, _Categorical):
+        if isinstance(other, _Category):
             if self._categories != other._categories:
                 if is_ordering:
                     raise SerifValueError(
@@ -333,7 +333,7 @@ class _Categorical(Vector):
 
         Returns
         -------
-        _Categorical
+        _Category
 
         Raises
         ------
@@ -342,7 +342,7 @@ class _Categorical(Vector):
         SerifTypeError
             If categories is a set/frozenset or contains non-strings.
         """
-        return _Categorical.from_values(self._storage, categories, name=self._name)
+        return _Category.from_values(self._storage, categories, name=self._name)
 
     # ------------------------------------------------------------------
     # Sorting — respects category order
@@ -377,7 +377,7 @@ class _Categorical(Vector):
         raw = array('q', new_codes_list)
         mask = ByteMask.from_iterable(new_null_flags) if has_nulls else None
         new_code_storage = ArrayStorage(raw, mask)
-        return _Categorical(new_code_storage, self._categories, name=self._name,
+        return _Category(new_code_storage, self._categories, name=self._name,
                             nullable=self._dtype.nullable)
 
     # ------------------------------------------------------------------
@@ -408,7 +408,7 @@ class _Categorical(Vector):
         return self._dtype
 
 
-class _CategoricalStorage:
+class _CategoryStorage:
     """
     Thin read-only adapter that decodes int codes back to strings.
     Satisfies the storage protocol expected by Vector base methods.
@@ -442,4 +442,4 @@ class _CategoricalStorage:
         return tuple(self)
 
     def slice(self, slc: slice):
-        return _CategoricalStorage(self._codes.slice(slc), self._categories)
+        return _CategoryStorage(self._codes.slice(slc), self._categories)

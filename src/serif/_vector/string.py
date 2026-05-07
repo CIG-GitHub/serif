@@ -224,7 +224,7 @@ class _String(Vector):
 
         Returns
         -------
-        _Categorical
+        _Category
             A new vector backed by integer codes with category-aware comparisons
             and sorting.
 
@@ -244,7 +244,7 @@ class _String(Vector):
         about intent. The resulting category order reflects the first occurrence
         of each value in the vector.
         """
-        from .categorical import _Categorical
+        from .categorical import _Category
         if categories is None:
             seen = []
             seen_set = set()
@@ -253,6 +253,6 @@ class _String(Vector):
                     seen.append(v)
                     seen_set.add(v)
             categories = seen
-        return _Categorical.from_values(self._storage, categories, name=self._name)
+        return _Category.from_values(self._storage, categories, name=self._name)
 
 
