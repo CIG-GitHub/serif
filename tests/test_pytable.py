@@ -162,6 +162,43 @@ class TestTableOperations:
         assert list(result) == [1, 4]
 
 
+class TestListOfListsConstruction:
+    """Test Table construction from list-of-lists"""
+
+    def test_uniform_rows_transposes_to_columns(self):
+        # 8 rows × 5 cols (row-major input → column-major table)
+        # Each row is distinct so we can verify transposition unambiguously
+        data = [
+            [10, 20, 30, 40, 50],
+            [11, 21, 31, 41, 51],
+            [12, 22, 32, 42, 52],
+            [13, 23, 33, 43, 53],
+            [14, 24, 34, 44, 54],
+            [15, 25, 35, 45, 55],
+            [16, 26, 36, 46, 56],
+            [17, 27, 37, 47, 57],
+        ]
+        t = Table(data)
+        assert t.shape == (8, 5)
+        # col0 should be the first element of each row
+        assert list(t.cols()[0]) == [10, 11, 12, 13, 14, 15, 16, 17]
+        # col4 should be the last element of each row
+        assert list(t.cols()[4]) == [50, 51, 52, 53, 54, 55, 56, 57]
+
+    def test_uniform_small_matrix(self):
+        t = Table([[1, 2], [3, 4], [5, 6]])
+        assert t.shape == (3, 2)
+        assert list(t.cols()[0]) == [1, 3, 5]
+        assert list(t.cols()[1]) == [2, 4, 6]
+
+    def test_jagged_treated_as_columns(self):
+        # Inner lists of different lengths → columns, not rows
+        t = Table([[1, 2, 3], [4, 5]])
+        assert t.shape[1] == 2  # 2 columns
+        assert list(t.cols()[0]) == [1, 2, 3]
+        assert list(t.cols()[1]) == [4, 5]
+
+
 class TestConcatenation:
     """Test concatenating tables"""
     
