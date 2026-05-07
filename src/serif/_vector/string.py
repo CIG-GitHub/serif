@@ -239,10 +239,20 @@ class _String(Vector):
 
         Notes
         -----
-        ``v.categorize(v.unique())`` is valid but uses first-seen order, which
-        is rarely the intended sort order. Prefer an explicit list.
+        Pass ``None`` to infer categories from the data in appearance order.
+        This is equivalent to ``v.categorize(v.unique())`` but more explicit
+        about intent. The resulting category order reflects the first occurrence
+        of each value in the vector.
         """
         from .categorical import _Categorical
+        if categories is None:
+            seen = []
+            seen_set = set()
+            for v in self._storage:
+                if v is not None and v not in seen_set:
+                    seen.append(v)
+                    seen_set.add(v)
+            categories = seen
         return _Categorical.from_values(self._storage, categories, name=self._name)
 
 

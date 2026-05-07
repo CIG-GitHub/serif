@@ -315,6 +315,36 @@ class _Categorical(Vector):
         return self._elementwise_compare(other, operator.ge)
 
     # ------------------------------------------------------------------
+    # set_categories
+    # ------------------------------------------------------------------
+
+    def set_categories(self, categories):
+        """
+        Return a new categorical with a different category list.
+
+        The data values are unchanged. The new list may reorder, add, or
+        remove categories, subject to one constraint: any category currently
+        in use (has at least one non-null value) must appear in the new list.
+
+        Parameters
+        ----------
+        categories : list | tuple | Vector of str
+            New ordered category list. No duplicates. No sets.
+
+        Returns
+        -------
+        _Categorical
+
+        Raises
+        ------
+        SerifValueError
+            If any in-use category is absent from the new list.
+        SerifTypeError
+            If categories is a set/frozenset or contains non-strings.
+        """
+        return _Categorical.from_values(self._storage, categories, name=self._name)
+
+    # ------------------------------------------------------------------
     # Sorting — respects category order
     # ------------------------------------------------------------------
 

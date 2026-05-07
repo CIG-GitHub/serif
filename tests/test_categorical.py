@@ -229,6 +229,76 @@ class TestCategoricalIsin:
         assert list(result) == [True, False, True]
 
 
+class TestCategorizeNone:
+    def test_none_infers_appearance_order(self):
+        v = Vector(['m', 'l', 's', 'm', 'xs'])
+        c = v.categorize(None)
+        assert isinstance(c, _Categorical)
+        assert c.categories == ('m', 'l', 's', 'xs')  # first-seen order
+        assert list(c) == ['m', 'l', 's', 'm', 'xs']
+
+    def test_none_excludes_null_from_categories(self):
+        v = Vector(['m', None, 's', 'm'])
+        c = v.categorize(None)
+        assert None not in c.categories
+        assert c.categories == ('m', 's')
+        assert list(c) == ['m', None, 's', 'm']
+
+    def test_none_on_single_value(self):
+        v = Vector(['m', 'm', 'm'])
+        c = v.categorize(None)
+        assert c.categories == ('m',)
+
+    def test_none_sorting_uses_appearance_order(self):
+        # appearance order: 'l', 'xs', 'm'
+        v = Vector(['l', 'xs', 'm', 'l'])
+        c = v.categorize(None)
+        sorted_c = c.sort_by()
+        assert list(sorted_c) == ['l', 'l', 'xs', 'm']
+
+
+class TestSetCategories:
+    def test_reorder(self):
+        c = Vector(['s', 'm', 'l']).categorize(['s', 'm', 'l'])
+        c2 = c.set_categories(['l', 'm', 's'])
+        assert list(c2) == ['s', 'm', 'l']
+        assert c2.categories == ('l', 'm', 's')
+
+    def test_reorder_changes_sort_order(self):
+        c = Vector(['s', 'm', 'l']).categorize(['s', 'm', 'l'])
+        c2 = c.set_categories(['l', 'm', 's'])
+        assert list(c2.sort_by()) == ['l', 'm', 's']
+
+    def test_add_category(self):
+        c = Vector(['s', 'm']).categorize(['s', 'm'])
+        c2 = c.set_categories(['xs', 's', 'm', 'l', 'xl'])
+        assert list(c2) == ['s', 'm']
+        assert c2.categories == ('xs', 's', 'm', 'l', 'xl')
+
+    def test_remove_unused_category(self):
+        c = Vector(['s', 'm']).categorize(['xs', 's', 'm', 'l'])
+        c2 = c.set_categories(['s', 'm'])  # drop unused 'xs' and 'l'
+        assert list(c2) == ['s', 'm']
+        assert c2.categories == ('s', 'm')
+
+    def test_remove_in_use_category_raises(self):
+        c = Vector(['s', 'm', 'l']).categorize(['s', 'm', 'l'])
+        with pytest.raises(SerifValueError, match="not in the category list"):
+            c.set_categories(['s', 'm'])  # 'l' is in use
+
+    def test_preserves_nulls(self):
+        v = Vector(['s', None, 'm'])
+        c = v.categorize(['s', 'm'])
+        c2 = c.set_categories(['m', 's'])
+        assert list(c2) == ['s', None, 'm']
+        assert c2.schema().nullable is True
+
+    def test_set_rejects_set_type(self):
+        c = make_cat(['s', 'm'])
+        with pytest.raises(SerifTypeError, match="ordered"):
+            c.set_categories({'s', 'm', 'l'})
+
+
 class TestCategoricalSchema:
     def test_schema_kind_is_str(self):
         c = make_cat()
