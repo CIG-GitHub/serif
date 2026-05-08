@@ -211,7 +211,7 @@ class _String(Vector):
         """Return the part of each string after the last occurrence of sep."""
         return Vector(tuple((s.rpartition(sep)[2] if s is not None else None) for s in self._storage))
 
-    def categorize(self, categories):
+    def categorize(self, categories=None):
         """
         Convert this string vector into a categorical vector with an explicit,
         ordered category list.

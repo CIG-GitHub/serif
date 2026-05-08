@@ -2,7 +2,8 @@
 import pytest
 from serif import Vector
 from serif._vector.categorical import _Category
-from serif.errors import SerifValueError, SerifTypeError
+from serif.errors import SerifValueError
+from serif.errors import SerifTypeError
 
 
 SIZES = ['xs', 's', 'm', 'l', 'xl']
