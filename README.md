@@ -165,16 +165,18 @@ result
 t = Table({'customer': ['A', 'B', 'A'], 'amount': [100, 200, 150]})
 
 result = t.aggregate(
-    over=t.customer,
-    sum_over=t.amount,
-    count_over=t.amount
+    groupby=t.customer,
+    aggregations={
+        'amount_sum': t.amount.sum,
+        'amount_count': t.amount.count,
+    }
 )
 
 result
 # customer  amount_sum  amount_count
 #    [str]       [int]         [int]
-#      'A'         250             2
-#      'B'         200             1
+#       A           250             2
+#       B           200             1
 #
 # 2×3 table <mixed>
 ```

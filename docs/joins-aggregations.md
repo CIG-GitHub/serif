@@ -70,23 +70,34 @@ t = Table({
 })
 
 result = t.aggregate(
-    over=t.customer,
-    sum_over=t.amount,
-    mean_over=t.amount,
-    count_over=t.amount
+    groupby=t.customer,
+    aggregations={
+        'amount_sum': t.amount.sum,
+        'amount_mean': t.amount.mean,
+        'amount_count': t.amount.count,
+    }
 )
 # Returns 3 rows (one per unique customer)
 # Columns: customer, amount_sum, amount_mean, amount_count
 ```
 
+Output column names are always explicit — whatever keys you provide in `aggregations`.
+
+To aggregate the entire table without grouping, omit `groupby` (or pass `None`):
+
+```python
+result = t.aggregate(aggregations={'grand_total': t.amount.sum})
+# Returns a single-row Table
+```
+
 ### Window: Running Aggregations
 
-Returns **same row count** as input, with aggregated values repeated per group.
+Returns **same row count** as input, with aggregated values broadcast back per group.
 
 ```python
 result = t.window(
-    over=t.customer,
-    sum_over=t.amount
+    groupby=t.customer,
+    aggregations={'amount_sum': t.amount.sum}
 )
 # Returns 5 rows (original row count)
 # Each row gets the group's total in amount_sum
@@ -96,23 +107,22 @@ result = t.window(
 
 ```python
 result = t.aggregate(
-    over=[t.year, t.month],
-    sum_over=t.revenue
+    groupby=[t.year, t.month],
+    aggregations={'total_revenue': t.revenue.sum}
 )
 ```
 
 ### Custom Aggregation
 
+Pass any callable as an aggregation value. It receives the group as a `Table` and must return a scalar.
+
 ```python
 from functools import reduce
 from operator import mul
 
-def prod(vals):
-    return reduce(mul, vals, 1)
-
 result = t.aggregate(
-    over=t.category,
-    apply={'product': (t.value, lambda vals: prod(vals))}
+    groupby=t.category,
+    aggregations={'product': lambda group: reduce(mul, group.value, 1)}
 )
 ```
 
@@ -131,8 +141,8 @@ customers = Table({'id': [1, 2, 3], 'region': ['East', 'West', 'East']})
 
 joined = sales.join(customers, left_on='customer_id', right_on='id')
 result = joined.aggregate(
-    over=joined.region,
-    sum_over=joined.amount
+    groupby=joined.region,
+    aggregations={'total': joined.amount.sum}
 )
 ```
 
@@ -144,10 +154,10 @@ t = Table({
     'sales': [100, 200, 150, 300, 250]
 })
 
-# Cumulative sum (window over entire table)
+# Window over entire table (single partition via constant key)
 result = t.window(
-    over=Vector([1] * len(t)),  # Single partition
-    sum_over=t.sales
+    groupby=Vector([1] * len(t)),
+    aggregations={'sales_total': t.sales.sum}
 )
 ```
 

@@ -46,3 +46,25 @@
 
 ### Added
 - `Table.to_dict()` method for converting tables to dictionaries
+
+## 0.1.4 – Aggregation Redesign & Categorical Vectors
+
+### Added
+- `category` vector type with null behavior, string-vs-category comparisons, and `set_category()`
+- Table construction from 2D lists of lists
+- No-groupby aggregations — omit `groupby` to aggregate the entire table as one group
+
+### Changed
+- Aggregation API redesigned: `aggregate()` and `window()` now use `groupby=` and `aggregations=` dict instead of the old keyword-per-aggregation style
+- More expressive errors for incorrect aggregation syntax
+- Row iterator optimized to avoid materializing intermediate objects
+
+### Fixed
+- Tables can now be constructed from dissimilar (mixed-type) vectors
+- Documentation: corrected `aggregate()` and `window()` examples in README and docs that showed a non-existent API (`over=`, `sum_over=`, etc.)
+
+### Internal
+- Storage backend refactored and renamed (`_underlying` removed in favor of `storage`)
+- Performance: fast-path vectors when type is known, reduced allocations, walk iterables once, removed deepcopy
+- Data-type refactor; precomputed output types
+- Removed alias tracker; cleaned up unreferenced files; tabs/spaces normalized
