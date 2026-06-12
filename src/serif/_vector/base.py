@@ -937,7 +937,7 @@ class Vector():
     """
     def _elementwise_compare(self, other, op):
         other = self._check_duplicate(other)
-        
+
         # CASE A: Self is 2D (Table on Left)
         # T == v -> [C1==v, C2==v, ...]
         if self.ndims() == 2:

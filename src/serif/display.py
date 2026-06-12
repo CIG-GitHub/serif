@@ -140,9 +140,13 @@ def _compute_headers(cols, col_indices):
 
         # Dtype (with nullable indicator)
         if col._dtype:
-            dtype_str = col._dtype.kind.__name__
+            from serif._vector.categorical import _Category
+            if isinstance(col, _Category):
+                dtype_str = 'category'
+            else:
+                dtype_str = col._dtype.kind.__name__
             if col._dtype.nullable:
-                dtype_str += "?"
+                dtype_str += '?'
             dtypes.append(dtype_str)
         else:
             dtypes.append("object")
@@ -255,7 +259,12 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
         return "# empty"
     
     if len(shape) == 1:
-        if pv._dtype:
+        from serif._vector.categorical import _Category
+        if isinstance(pv, _Category):
+            dt = 'category'
+            if pv._dtype and pv._dtype.nullable:
+                dt += '?'
+        elif pv._dtype:
             dt = pv._dtype.kind.__name__
             if pv._dtype.nullable:
                 dt += "?"
