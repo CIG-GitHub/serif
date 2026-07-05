@@ -1242,12 +1242,14 @@ class Vector():
     def max(self):
         if self.ndims() == 2:
             return self.copy((c.max() for c in self.cols()), name=None).T
-        return max(self)
+        non_none = [v for v in self._storage if v is not None]
+        return max(non_none) if non_none else None
 
     def min(self):
         if self.ndims() == 2:
             return self.copy((c.min() for c in self.cols()), name=None).T
-        return min(self)
+        non_none = [v for v in self._storage if v is not None]
+        return min(non_none) if non_none else None
 
     def sum(self):
         if self.ndims() == 2:
