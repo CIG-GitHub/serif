@@ -703,27 +703,18 @@ class Table(Vector):
 
         if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
             assert (len(self) == len(key))
-            return Vector(tuple(x[key] for x in self._storage),
-                dtype = self._dtype
-            )
+            return Table(tuple(x[key] for x in self._storage))
         if isinstance(key, list) and {type(e) for e in key} == {bool}:
             assert (len(self) == len(key))
-            return Vector(tuple(x[key] for x in self._storage),
-                dtype = self._dtype
-            )
+            return Table(tuple(x[key] for x in self._storage))
         if isinstance(key, slice):
-            return Vector(tuple(x[key] for x in self._storage), 
-                dtype = self._dtype,
-                name=self._name
-            )
+            return Table(tuple(x[key] for x in self._storage), name=self._name)
 
         # NOT RECOMMENDED
         if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
             if len(self) > 1000:
                 warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
-            return Vector(tuple(x[key] for x in self._storage),
-                dtype = self._dtype
-            )
+            return Table(tuple(x[key] for x in self._storage))
 
     def __setitem__(self, key, value):
         """
@@ -937,10 +928,10 @@ class Table(Vector):
         if isinstance(other, Table):
             if len(self.cols()) != len(other.cols()):
                 raise ValueError(f"Column count mismatch: {len(self.cols())} != {len(other.cols())}")
-            return Vector(tuple(x << y for x, y in zip(self.cols(), other.cols(), strict=True)))
+            return Table(tuple(x << y for x, y in zip(self.cols(), other.cols(), strict=True)))
         if len(self.cols()) != len(other):
             raise ValueError(f"Column count mismatch: {len(self.cols())} != {len(other)}")
-        return Vector(tuple(x << y for x, y in zip(self.cols(), other, strict=True)))
+        return Table(tuple(x << y for x, y in zip(self.cols(), other, strict=True)))
 
     def _table_elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
         """
