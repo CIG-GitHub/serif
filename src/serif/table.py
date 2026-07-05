@@ -603,45 +603,11 @@ class Table(Vector):
         
         # Handle tuple of strings for multi-column selection
         if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
-            # Multiple column selection by names
-            selected_cols = []
-            for col_name in key:
-                found = False
-                # Try exact match first
-                for col in self._storage:
-                    if col._name == col_name:
-                        selected_cols.append(col.copy())  # Copy to preserve original
-                        found = True
-                        break
-                
-                # Try sanitized match (case-insensitive)
-                if not found:
-                    col_name_lower = col_name.lower()
-                    seen = set()
-                    for idx, col in enumerate(self._storage):
-                        if col._name is not None:
-                            base = _sanitize_user_name(col._name)
-                            if base is None:
-                                if f'col{idx}_' == col_name_lower:
-                                    selected_cols.append(col.copy())
-                                    found = True
-                                    break
-                            else:
-                                unique_name = f"{base }__{idx}"
-                                seen.add(unique_name)
-                                if unique_name == col_name_lower:
-                                    selected_cols.append(col.copy())
-                                    found = True
-                                    break
-                        else:
-                            if f'col{idx}_' == col_name_lower:
-                                selected_cols.append(col.copy())
-                                found = True
-                                break
-
-                                if not found:
-                                    raise _missing_col_error(col_name)
-            return Table(selected_cols)
+            # Reuse the single-column lookup above for each name so selection
+            # semantics stay identical (exact / sanitized / disambiguated /
+            # unnamed) and a missing name raises SerifKeyError instead of being
+            # silently dropped. Table() copies its inputs, so no aliasing.
+            return Table([self[col_name] for col_name in key])
         
         if isinstance(key, tuple):
             if len(key) != len(self.shape):
