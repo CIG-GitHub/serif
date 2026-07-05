@@ -384,21 +384,26 @@ class Table(Vector):
             
             return col
 
-        # Fallback: col<N>_ accessor (e.g., col5_ for column index 5)
-        elif attr.startswith('col') and attr.endswith('_'):
+        # col<N>_ accessor for unnamed columns (e.g. col5_). Only claim the
+        # attribute when <N> is all digits; anything else (e.g. a real column
+        # 'cols' → 'cols_', or 'column_names' → 'column_names_') must fall
+        # through to the regular name lookup below.
+        if attr.startswith('col') and attr.endswith('_'):
             middle = attr[3:-1]  # Extract between 'col' and '_'
             if middle.isdigit():
                 idx = int(middle)
                 if 0 <= idx < len(self._storage):
                     return self._storage[idx]
                 raise AttributeError(f"Column index {idx} out of range")
-        
-        else:
-            # Regular access: look up by sanitized name
-            col_idx_lookup = self._column_map.get(attr) or self._column_map.get(attr.lower())
-            if col_idx_lookup is not None:
-                return self._storage[col_idx_lookup]
-        
+
+        # Regular access: look up by sanitized name. Explicit None checks —
+        # a column at index 0 is a valid (falsy) lookup result.
+        col_idx_lookup = self._column_map.get(attr)
+        if col_idx_lookup is None:
+            col_idx_lookup = self._column_map.get(attr.lower())
+        if col_idx_lookup is not None:
+            return self._storage[col_idx_lookup]
+
         # Fall back to parent class attributes (e.g., .T for transpose)
         try:
             return super().__getattribute__(attr)
@@ -1573,8 +1578,16 @@ class Table(Vector):
                      If None, the entire table is treated as one group.
             aggregations: dict of {output_name: func}
                 - Bound method of a Vector (e.g. t.sales.sum): slices the source
-                  column per group and calls that method on the slice
-                - Callable: receives the group as a Table, must return a scalar
+                  column per group and calls that method on the slice → 1 column.
+                - Bound method of a block selection (e.g. t['a', 'b'].first):
+                  fans out to one column per selected column, each named by
+                  raw-prepending output_name to that column's own name
+                  (e.g. output_name 'latest_' → 'latest_a', 'latest_b').
+                - Callable: receives the group as a Table, must return a scalar.
+
+            aggregate() is flat-only: every produced cell must be a scalar. An
+            aggregation that returns a Vector (a lambda returning a column, or a
+            collection method like .unique()) raises SerifTypeError.
 
         Returns:
             Table with one row per unique group, preserving first-appearance order.
@@ -1583,6 +1596,14 @@ class Table(Vector):
         Examples:
             t.aggregate(t.region, {"total": t.sales.sum, "avg": t.price.mean})
             t.aggregate(groupby=t.region, aggregations={"total": t.sales.sum})
+            # most-recent event block per deal. Sort first, then bind the block
+            # to the SORTED table — the source columns must be the same table
+            # aggregate() groups, or row order won't line up:
+            ts = t.sort_by('date')
+            ts.aggregate(
+                groupby='deal_id',
+                aggregations={'latest_': ts['date', 'valuation', 'source'].last},
+            )
             t.aggregate(aggregations={"grand_total": t.sales.sum})  # whole table
         """
         nrows = len(self)
@@ -1658,10 +1679,23 @@ class Table(Vector):
         # ------------------------------------------------------------------
         # 6. Aggregations
         # ------------------------------------------------------------------
+        def _reject_nonscalar(agg_name, value, detail):
+            # aggregate() is flat-only: every produced cell must be a scalar.
+            # A Vector coming back means either a lambda returned a column, or a
+            # method like .unique() produced a collection — both are ambiguous
+            # here, so we puke loudly instead of silently nesting.
+            if isinstance(value, Vector):
+                raise SerifTypeError(
+                    f"aggregations['{agg_name}']: {detail} returned a non-scalar "
+                    f"(Vector) value. aggregate() is flat-only — every cell must be "
+                    f"a scalar. For a per-column block use t[cols].<method>."
+                )
+
         if aggregations:
             for agg_name, func in aggregations.items():
                 if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
-                    # Bound method of a column vector (e.g. t.sales.sum)
+                    # Bound method of a column vector (e.g. t.sales.sum) or of a
+                    # block selection (e.g. t['a', 'b'].first / .sum).
                     source = func.__self__
                     method_name = func.__name__
                     if len(source) != nrows:
@@ -1669,12 +1703,41 @@ class Table(Vector):
                             f"aggregations['{agg_name}']: vector length {len(source)} "
                             f"!= table length {nrows}"
                         )
-                    data = source._storage.to_tuple()
-                    out = []
-                    for _key, row_indices in group_items:
-                        group_vec = Vector([data[i] for i in row_indices])
-                        out.append(getattr(group_vec, method_name)())
-                    result_cols.append(Vector(out, name=agg_name))
+
+                    if source.ndims() == 2:
+                        # Block aggregation: declared width = source column count.
+                        # Apply the method to each selected column independently
+                        # and fan out to one output column per source column,
+                        # named by raw-prepending the dict key (the prefix) to
+                        # each source column's own name. Per-column application
+                        # (rather than assembling a row) means a mixed-type block
+                        # never materialises a heterogeneous Vector, which would
+                        # otherwise warn about degrading to object.
+                        sub_names = source.column_names()
+                        width = len(sub_names)
+                        col_data = [c._storage.to_tuple() for c in source.cols()]
+                        fanned = [[] for _ in range(width)]
+                        for _key, row_indices in group_items:
+                            for j in range(width):
+                                col_slice = Vector(
+                                    [col_data[j][i] for i in row_indices],
+                                    name=sub_names[j],
+                                )
+                                v = getattr(col_slice, method_name)()
+                                _reject_nonscalar(agg_name, v, f"block method '{method_name}'")
+                                fanned[j].append(v)
+                        for j in range(width):
+                            base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
+                            result_cols.append(Vector(fanned[j], name=uniquify(f"{agg_name}{base}")))
+                    else:
+                        data = source._storage.to_tuple()
+                        out = []
+                        for _key, row_indices in group_items:
+                            group_vec = Vector([data[i] for i in row_indices])
+                            val = getattr(group_vec, method_name)()
+                            _reject_nonscalar(agg_name, val, f"'{method_name}'")
+                            out.append(val)
+                        result_cols.append(Vector(out, name=agg_name))
                 elif callable(func):
                     # Callable receives the group as a Table
                     out = []
@@ -1683,7 +1746,9 @@ class Table(Vector):
                             Vector([col._storage.to_tuple()[i] for i in row_indices], name=col._name)
                             for col in self._storage
                         ]
-                        out.append(func(Table(group_cols)))
+                        val = func(Table(group_cols))
+                        _reject_nonscalar(agg_name, val, "callable")
+                        out.append(val)
                     result_cols.append(Vector(out, name=agg_name))
                 else:
                     hint = (
@@ -1799,11 +1864,27 @@ class Table(Vector):
                             f"aggregations['{agg_name}']: vector length {len(source)} "
                             f"!= table length {nrows}"
                         )
+                    if source.ndims() == 2:
+                        # Block (fan-out) aggregations are supported by aggregate()
+                        # but not yet by window(). Refuse rather than silently
+                        # index columns by row number and return garbage.
+                        raise SerifTypeError(
+                            f"aggregations['{agg_name}']: block aggregations "
+                            f"(t[cols].<method>) are not supported in window() yet; "
+                            f"use a single-column aggregation or aggregate()."
+                        )
                     data = source._storage.to_tuple()
                     group_map = {}
                     for _key, row_indices in group_items:
                         group_vec = Vector([data[i] for i in row_indices])
-                        group_map[_key] = getattr(group_vec, method_name)()
+                        val = getattr(group_vec, method_name)()
+                        if isinstance(val, Vector):
+                            raise SerifTypeError(
+                                f"aggregations['{agg_name}']: '{method_name}' returned a "
+                                f"non-scalar (Vector). window() is flat-only — every cell "
+                                f"must be a scalar."
+                            )
+                        group_map[_key] = val
                     result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
                 elif callable(func):
                     group_map = {}

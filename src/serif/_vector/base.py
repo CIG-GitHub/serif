@@ -1251,6 +1251,33 @@ class Vector():
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
+    def first(self):
+        """
+        First element by position. Returns None if empty.
+
+        Unlike sum/min/mean, this is positional, NOT null-skipping: if the
+        element at position 0 is None you get None. Use .dropna().first() to
+        skip leading nulls.
+
+        On a 2-D block, returns the first element of each column (i.e. the
+        first row), fanning out the same way min()/max() do.
+        """
+        if self.ndims() == 2:
+            return self.copy((c.first() for c in self.cols()), name=None).T
+        return self._storage[0] if len(self._storage) else None
+
+    def last(self):
+        """
+        Last element by position. Returns None if empty.
+
+        Positional, NOT null-skipping (mirror of first()). On a 2-D block,
+        returns the last element of each column (i.e. the last row).
+        """
+        if self.ndims() == 2:
+            return self.copy((c.last() for c in self.cols()), name=None).T
+        n = len(self._storage)
+        return self._storage[n - 1] if n else None
+
     def sum(self):
         if self.ndims() == 2:
             return self.copy((c.sum() for c in self.cols()), name=None).T
