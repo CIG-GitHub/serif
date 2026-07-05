@@ -191,19 +191,43 @@ class TestAggregation:
     def test_sum(self):
         v = Vector([1, 2, 3, 4, 5])
         assert v.sum() == 15
-    
+
+    def test_sum_skips_nulls(self):
+        assert Vector([1, None, 6]).sum() == 7
+
     def test_mean(self):
         v = Vector([1, 2, 3, 4, 5])
         assert v.mean() == 3.0
-    
+
+    def test_mean_skips_nulls(self):
+        assert Vector([1, None, 3]).mean() == 2.0
+
+    def test_mean_all_nulls_returns_none(self):
+        assert Vector([None, None]).mean() is None
+
+    def test_stdev_skips_nulls(self):
+        assert Vector([2, None, 4, None, 6, 8]).stdev() == Vector([2, 4, 6, 8]).stdev()
+
     def test_min(self):
         v = Vector([5, 2, 8, 1, 9])
         assert v.min() == 1
-    
+
     def test_max(self):
         v = Vector([5, 2, 8, 1, 9])
         assert v.max() == 9
-    
+
+    def test_min_skips_nulls(self):
+        assert Vector([5, None, 1, None, 3]).min() == 1
+
+    def test_max_skips_nulls(self):
+        assert Vector([1, None, 6]).max() == 6
+
+    def test_min_all_nulls_returns_none(self):
+        assert Vector([None, None]).min() is None
+
+    def test_max_all_nulls_returns_none(self):
+        assert Vector([None, None]).max() is None
+
     def test_stdev(self):
         v = Vector([2, 4, 6, 8])
         stdev = v.stdev()
