@@ -3,6 +3,7 @@ import warnings
 from collections.abc import Iterable
 
 from ._vector import Vector
+from ._vector import _OrderedPick
 
 from .naming import _sanitize_user_name
 from ._vector.storage import TupleStorage, ArrayStorage
@@ -1583,6 +1584,11 @@ class Table(Vector):
                   fans out to one column per selected column, each named by
                   raw-prepending output_name to that column's own name
                   (e.g. output_name 'latest_' → 'latest_a', 'latest_b').
+                - Ordered pick from first_by(order)/last_by(order) on a column
+                  or block: per group, sorts by the order key(s) (ascending,
+                  nulls last) and emits the first/last row's value(s). Correlated
+                  — a block's whole output row comes from one record. Localizes
+                  ordering per aggregation (no global pre-sort needed).
                 - Callable: receives the group as a Table, must return a scalar.
 
             aggregate() is flat-only: every produced cell must be a scalar. An
@@ -1693,7 +1699,54 @@ class Table(Vector):
 
         if aggregations:
             for agg_name, func in aggregations.items():
-                if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
+                if isinstance(func, _OrderedPick):
+                    # Correlated row-pick: within each group, sort by the order
+                    # key(s) (ascending, nulls last) and emit the source row's
+                    # value(s). Block source fans out; scalar source → 1 column.
+                    source = func.source
+                    if len(source) != nrows:
+                        raise SerifValueError(
+                            f"aggregations['{agg_name}']: source length {len(source)} "
+                            f"!= table length {nrows}"
+                        )
+                    order_spec = func.order_by
+                    order_specs = list(order_spec) if isinstance(order_spec, (list, tuple)) else [order_spec]
+                    order_data = []
+                    for o in order_specs:
+                        oc = self._resolve_column(o)
+                        if len(oc) != nrows:
+                            raise SerifValueError(
+                                f"aggregations['{agg_name}']: order_by key length "
+                                f"{len(oc)} != table length {nrows}"
+                            )
+                        order_data.append(oc._storage.to_tuple())
+
+                    def _pick(row_indices, _order_data=order_data, _last=(func.which == 'last')):
+                        # sort ascending, nulls last; stable → ties keep row order
+                        key = lambda i: tuple((od[i] is None, od[i]) for od in _order_data)
+                        ordered = sorted(row_indices, key=key)
+                        return ordered[-1] if _last else ordered[0]
+
+                    if source.ndims() == 2:
+                        sub_names = source.column_names()
+                        width = len(sub_names)
+                        col_data = [c._storage.to_tuple() for c in source.cols()]
+                        fanned = [[] for _ in range(width)]
+                        for _key, row_indices in group_items:
+                            pick = _pick(row_indices) if row_indices else None
+                            for j in range(width):
+                                fanned[j].append(col_data[j][pick] if pick is not None else None)
+                        for j in range(width):
+                            base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
+                            result_cols.append(Vector(fanned[j], name=uniquify(f"{agg_name}{base}")))
+                    else:
+                        data = source._storage.to_tuple()
+                        out = []
+                        for _key, row_indices in group_items:
+                            pick = _pick(row_indices) if row_indices else None
+                            out.append(data[pick] if pick is not None else None)
+                        result_cols.append(Vector(out, name=agg_name))
+                elif hasattr(func, '__self__') and isinstance(func.__self__, Vector):
                     # Bound method of a column vector (e.g. t.sales.sum) or of a
                     # block selection (e.g. t['a', 'b'].first / .sum).
                     source = func.__self__

@@ -129,6 +129,25 @@ class MethodProxy:
         return Vector(results)
 
 
+class _OrderedPick:
+    """
+    Deferred first/last-by-order aggregation, produced by first_by()/last_by()
+    for use as a value in Table.aggregate(aggregations={...}).
+
+    Captures the source column or block, whether to take the first or last row,
+    and the order key(s). aggregate() sorts each group by the order key(s)
+    (ascending, nulls last) and emits the source values from the picked row.
+    This is a *correlated* pick: for a block source, the whole output row comes
+    from one record, unlike per-column reductions which are independent.
+    """
+    __slots__ = ('source', 'which', 'order_by')
+
+    def __init__(self, source, which, order_by):
+        self.source = source        # Vector (scalar out) or Table (block → fan-out)
+        self.which = which          # 'first' or 'last'
+        self.order_by = order_by    # column name, Vector, or list of these
+
+
 # ============================================================
 # Vector construction helpers
 # ============================================================
@@ -1277,6 +1296,24 @@ class Vector():
             return self.copy((c.last() for c in self.cols()), name=None).T
         n = len(self._storage)
         return self._storage[n - 1] if n else None
+
+    def first_by(self, order_by):
+        """
+        Deferred aggregation: within each aggregate() group, emit the value(s)
+        from the row with the SMALLEST order_by key (ascending, nulls last).
+
+        Correlated — for a block source (t[cols]) the whole output row comes
+        from one record. order_by is a column name, Vector, or list of these
+        (multi-key sort). Only meaningful as an aggregations={} value.
+        """
+        return _OrderedPick(self, 'first', order_by)
+
+    def last_by(self, order_by):
+        """
+        Deferred aggregation: the row with the LARGEST order_by key per group
+        (ascending sort, take last). Mirror of first_by(); see it for details.
+        """
+        return _OrderedPick(self, 'last', order_by)
 
     def sum(self):
         if self.ndims() == 2:
