@@ -1468,24 +1468,6 @@ class Vector():
         return other
 
 
-    def _check_native_typesafe(self, other):
-        """ Ensure native type conversions (python) will not affect underlying type """
-        dtype_kind = self._dtype.kind
-        if not dtype_kind:
-            return True
-        if dtype_kind == type(other):
-            return True
-        if dtype_kind == Vector:
-            return True
-        if not (not self._dtype.nullable or isinstance(other, Iterable)):
-            return True
-        if dtype_kind == float and type(other) == int: # includes bool since isinstance(True, int) returns True
-            return True
-        if dtype_kind == complex and type(other) in (int, float): # ditto
-            return True
-        return False
-
-
     def __matmul__(self, other):
         """
         Universal Matrix Multiplication / Dot Product.
@@ -1553,7 +1535,6 @@ class Vector():
         if len(self) != len(other):
             raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
         return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
-        raise SerifTypeError(f"Unsupported operand type(s) for '*': '{self._dtype.__name__}' and '{type(other).__name__}'.")
 
 
     def __bool__(self):
