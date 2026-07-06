@@ -1,13 +1,15 @@
 """
-Ordered correlated row-picks in aggregate() via first_by(order)/last_by(order).
+Ordered / correlated row-picks.
 
-Unlike per-column reductions (.max fans out independent column maxima), an
-ordered pick selects ONE row per group by the order key and emits that row's
-value(s) — so a block's output row is internally consistent.
+Two ways to get "the row that sorts first/last by some key":
+  1. Standalone: first(order_by=...) / last(order_by=...) sort by the key and
+     return that element (1-D) or row (block). Correlated — a block's whole
+     row comes from one record.
+  2. In aggregate: pre-sort the table, then use positional first/last. A stable
+     global sort carries into every group, so no per-group ordering code exists.
 """
 import pytest
 from serif import Table, Vector
-from serif._vector import _OrderedPick
 
 
 def _deals():
@@ -19,103 +21,68 @@ def _deals():
 
 
 # ---------------------------------------------------------------------------
-# first_by / last_by build deferred specs, they do not compute standalone
+# Standalone order_by on a block (column-name key)
 # ---------------------------------------------------------------------------
 
-def test_builders_return_specs():
-    assert isinstance(Vector([1, 2, 3]).last_by('x'), _OrderedPick)
-    assert isinstance(Table({'a': [1]}).first_by('a'), _OrderedPick)
+class TestBlockOrderBy:
+    def test_last_with_order_by_name(self):
+        block = _deals()['date', 'valuation']
+        assert list(block.last(order_by='date')) == ['2024-05', 260]
+
+    def test_first_with_order_by_name(self):
+        block = _deals()['date', 'valuation']
+        assert list(block.first(order_by='date')) == ['2024-01', 100]
+
+    def test_multi_key_order(self):
+        t = Table({'day': [1, 2, 2], 'val': [10, 20, 30]})
+        # sort by (day, val); last → (2, 30)
+        assert list(t['day', 'val'].last(order_by=['day', 'val'])) == [2, 30]
+
+    def test_order_by_none_is_positional(self):
+        block = _deals()['date', 'valuation']
+        assert list(block.first()) == ['2024-01', 100]   # first row as stored
+        assert list(block.last()) == ['2024-04', 240]    # last row as stored
 
 
 # ---------------------------------------------------------------------------
-# Scalar source
+# Standalone order_by on a 1-D vector via an external key Vector.
+# This is genuinely additive: sort_by() sorts a vector by its OWN values, so
+# "the valuation on the latest date" can't be expressed without order_by.
 # ---------------------------------------------------------------------------
 
-class TestScalarOrderedPick:
-    def test_last_by_is_most_recent(self):
-        deals = _deals()  # NOT pre-sorted
-        res = deals.aggregate('deal_id', {'latest_val': deals.valuation.last_by('date')})
-        by = {res.deal_id[i]: res.latest_val[i] for i in range(len(res))}
-        assert by[1] == 150   # 2024-03
-        assert by[2] == 260   # 2024-05
-
-    def test_first_by_is_earliest(self):
+class TestVectorOrderBy:
+    def test_scalar_pick_by_external_key(self):
         deals = _deals()
-        res = deals.aggregate('deal_id', {'first_val': deals.valuation.first_by('date')})
-        by = {res.deal_id[i]: res.first_val[i] for i in range(len(res))}
-        assert by[1] == 100   # 2024-01
-        assert by[2] == 200   # 2024-02
+        assert deals.valuation.last(order_by=deals.date) == 260   # 2024-05 (max date)
+        assert deals.valuation.first(order_by=deals.date) == 100  # 2024-01 (min date)
 
-    def test_order_by_accepts_vector(self):
-        t = Table({'g': ['a', 'a'], 'x': [10, 20]})
-        key = Vector([5, 1])  # row with x=10 has the larger key
-        res = t.aggregate('g', {'v': t.x.last_by(key)})
-        assert res.v[0] == 10
+    def test_string_order_by_on_bare_vector_raises(self):
+        with pytest.raises(TypeError, match="column name"):
+            Vector([1, 2, 3]).first(order_by='x')
 
 
 # ---------------------------------------------------------------------------
-# Block source — correlated fan-out
+# In-aggregate ordered pick = pre-sort + positional first/last
 # ---------------------------------------------------------------------------
 
-class TestBlockOrderedPick:
-    def test_latest_block_no_presort(self):
-        deals = _deals()
-        res = deals.aggregate(
-            'deal_id',
-            {'latest_': deals['date', 'valuation'].last_by('date')},
-        )
-        assert set(res.column_names()) == {'deal_id', 'latest_date', 'latest_valuation'}
+class TestPreSortAggregate:
+    def test_most_recent_block_per_group(self):
+        ts = _deals().sort_by('date')  # ascending → positional .last = most recent
+        res = ts.aggregate('deal_id', {'latest_': ts['date', 'valuation'].last})
         by = {res.deal_id[i]: (res.latest_date[i], res.latest_valuation[i])
               for i in range(len(res))}
         assert by[1] == ('2024-03', 150)
         assert by[2] == ('2024-05', 260)
 
     def test_pick_is_correlated_not_columnwise_max(self):
-        # THE distinction: the max valuation (999) is NOT on the latest date.
-        # last_by('date') must return the valuation ON the latest-date row.
+        # Max valuation (999) is NOT on the latest date. Pre-sort by date, then
+        # positional .last must return the valuation ON the latest-date row.
         deals = Table({
             'deal_id':   [1, 1, 1],
             'date':      ['2024-01', '2024-03', '2024-02'],
-            'valuation': [100, 150, 999],  # 999 is on 2024-02, not the latest
+            'valuation': [100, 150, 999],
         })
-        res = deals.aggregate(
-            'deal_id',
-            {'latest_': deals['date', 'valuation'].last_by('date')},
-        )
+        ts = deals.sort_by('date')
+        res = ts.aggregate('deal_id', {'latest_': ts['date', 'valuation'].last})
         assert res.latest_date[0] == '2024-03'
         assert res.latest_valuation[0] == 150   # NOT 999
-
-    def test_multi_key_order(self):
-        # tie on 'day' broken by 'val'; last_by → largest (day, val)
-        t = Table({
-            'g':   ['a', 'a', 'a'],
-            'day': [1, 2, 2],
-            'val': [10, 20, 30],
-        })
-        res = t.aggregate('g', {'pick_': t['day', 'val'].last_by(['day', 'val'])})
-        assert res.pick_day[0] == 2
-        assert res.pick_val[0] == 30
-
-
-# ---------------------------------------------------------------------------
-# Tie-breaking is stable (ties keep table row order)
-# ---------------------------------------------------------------------------
-
-class TestOrderedPickTies:
-    def test_stable_ties(self):
-        t = Table({'g': ['a', 'a', 'a'], 'k': [1, 1, 1], 'id': [100, 200, 300]})
-        # all keys equal → stable sort preserves order
-        last = t.aggregate('g', {'x': t.id.last_by('k')})
-        first = t.aggregate('g', {'x': t.id.first_by('k')})
-        assert last.x[0] == 300
-        assert first.x[0] == 100
-
-
-# ---------------------------------------------------------------------------
-# window() does not support ordered picks yet — must reject, not misbehave
-# ---------------------------------------------------------------------------
-
-def test_window_rejects_ordered_pick():
-    t = Table({'g': ['a', 'a'], 'x': [1, 2]})
-    with pytest.raises(TypeError):
-        t.window('g', {'v': t.x.last_by('x')})

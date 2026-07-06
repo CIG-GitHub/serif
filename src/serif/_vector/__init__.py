@@ -1,5 +1,4 @@
 from .base import Vector
-from .base import _OrderedPick
 from .numeric import _Int
 from .numeric import _Float
 from .string import _String
@@ -13,7 +12,6 @@ from .dtype import validate_scalar
 
 __all__ = [
     "Vector",
-    "_OrderedPick",
     "_Int",
     "_Float",
     "_String",
