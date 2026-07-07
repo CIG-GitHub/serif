@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.5 – First/Last Aggregations & Nullable Fixes
+
+### Added
+- `first()` and `last()` aggregation functions
+- Fanning — broadcast aggregation results back over the source table
+- `ordered_pick()` for selecting values by ordering criteria
+
+### Fixed
+- `max()` and `min()` raising errors on `None` values in nullable vectors
+
+### Internal
+- Derived tables now track their source type
+- Removed unreachable/dead code paths
+
 ## 0.0.1 – Namespace Reservation
 - Placeholder release to reserve package name while finalizing implementation.
 
