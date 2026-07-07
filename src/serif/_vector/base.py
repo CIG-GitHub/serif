@@ -1251,6 +1251,28 @@ class Vector():
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
+    def first(self):
+        """
+        First element by position. Returns None if empty.
+
+        Positional, NOT null-skipping: a leading None yields None (use
+        .dropna().first() to skip nulls). On a 2-D block, returns the first
+        element of each column (the first row). For an ordered pick, sort first:
+        t.sort_by('date').first().
+        """
+        if self.ndims() == 2:
+            return self.copy((c.first() for c in self.cols()), name=None).T
+        return self._storage[0] if len(self._storage) else None
+
+    def last(self):
+        """
+        Last element by position (mirror of first()). Returns None if empty.
+        """
+        if self.ndims() == 2:
+            return self.copy((c.last() for c in self.cols()), name=None).T
+        n = len(self._storage)
+        return self._storage[n - 1] if n else None
+
     def sum(self):
         if self.ndims() == 2:
             return self.copy((c.sum() for c in self.cols()), name=None).T
@@ -1404,24 +1426,6 @@ class Vector():
         return other
 
 
-    def _check_native_typesafe(self, other):
-        """ Ensure native type conversions (python) will not affect underlying type """
-        dtype_kind = self._dtype.kind
-        if not dtype_kind:
-            return True
-        if dtype_kind == type(other):
-            return True
-        if dtype_kind == Vector:
-            return True
-        if not (not self._dtype.nullable or isinstance(other, Iterable)):
-            return True
-        if dtype_kind == float and type(other) == int: # includes bool since isinstance(True, int) returns True
-            return True
-        if dtype_kind == complex and type(other) in (int, float): # ditto
-            return True
-        return False
-
-
     def __matmul__(self, other):
         """
         Universal Matrix Multiplication / Dot Product.
@@ -1489,7 +1493,6 @@ class Vector():
         if len(self) != len(other):
             raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
         return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
-        raise SerifTypeError(f"Unsupported operand type(s) for '*': '{self._dtype.__name__}' and '{type(other).__name__}'.")
 
 
     def __bool__(self):

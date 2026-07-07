@@ -23,16 +23,20 @@ def test_stale_column_name_after_vector_rename():
 def test_stale_column_name_after_multiple_renames():
 	"""Test that multiple renames invalidate previous names"""
 	t = Table({
-		'first': [1, 2, 3]
+		'alpha': [1, 2, 3]
 	})
-	
-	# Rename multiple times
-	t.first.name = 'second'
+
+	# Rename multiple times.
+	# ('first'/'last' are reserved Vector method names, so a column named 'first'
+	#  sanitizes to 'first_' for dot-access; this test uses a plain name to stay
+	#  focused on rename invalidation. Collision handling is covered in
+	#  test_reserved_name_collisions.py.)
+	t.alpha.name = 'second'
 	t.second.name = 'third'
-	
+
 	# Both old names should fail
 	with pytest.raises(AttributeError):
-		_ = t.first
+		_ = t.alpha
 	
 	with pytest.raises(AttributeError):
 		_ = t.second
