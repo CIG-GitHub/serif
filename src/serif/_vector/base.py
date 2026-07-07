@@ -1251,79 +1251,27 @@ class Vector():
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
-    def first(self, order_by=None):
+    def first(self):
         """
-        First element, by position or by an explicit order.
+        First element by position. Returns None if empty.
 
-        order_by=None (default): positional. NOT null-skipping — a leading None
-        yields None (use .dropna().first() to skip nulls). On a 2-D block,
-        returns the first element of each column (the first row).
-
-        order_by given: sort by the key(s) ascending (nulls last) and return the
-        element/row that sorts first — a correlated pick, so a block's whole row
-        comes from one record. Keys are a column name or list of names (2-D
-        only), a Vector, or a list of Vectors, each the same length as self.
-        For ordered aggregation, pre-sort the table (t.sort_by(k).aggregate(...))
-        and use positional first/last — global order carries into each group.
+        Positional, NOT null-skipping: a leading None yields None (use
+        .dropna().first() to skip nulls). On a 2-D block, returns the first
+        element of each column (the first row). For an ordered pick, sort first:
+        t.sort_by('date').first().
         """
-        return self._ordered_pick(order_by, take_last=False)
+        if self.ndims() == 2:
+            return self.copy((c.first() for c in self.cols()), name=None).T
+        return self._storage[0] if len(self._storage) else None
 
-    def last(self, order_by=None):
+    def last(self):
         """
-        Last element, by position or the row that sorts last by order_by.
-        Mirror of first(); see it for details.
+        Last element by position (mirror of first()). Returns None if empty.
         """
-        return self._ordered_pick(order_by, take_last=True)
-
-    def _resolve_order_keys(self, order_by):
-        """Resolve order_by into a list of value tuples aligned to self's rows.
-
-        Accepts a column name, a Vector, or a list/tuple mixing those. Column
-        names require a 2-D block/table (a bare Vector has no columns to name).
-        """
-        specs = order_by if isinstance(order_by, (list, tuple)) else [order_by]
-        n = len(self)
-        keys = []
-        for spec in specs:
-            if isinstance(spec, str):
-                if self.ndims() != 2:
-                    raise SerifTypeError(
-                        "order_by by column name requires a 2-D block/table; "
-                        "pass a Vector key to order a 1-D vector."
-                    )
-                key_col = self[spec]
-            elif isinstance(spec, Vector):
-                key_col = spec
-            else:
-                raise SerifTypeError(
-                    f"order_by must be a column name or Vector, got {type(spec).__name__}"
-                )
-            if len(key_col) != n:
-                raise SerifValueError(f"order_by key length {len(key_col)} != length {n}")
-            keys.append(key_col._storage.to_tuple())
-        return keys
-
-    def _ordered_pick(self, order_by, take_last):
-        is_block = self.ndims() == 2
-        n = len(self)
-        if order_by is None:
-            if is_block:
-                return self.copy(
-                    (c.last() if take_last else c.first() for c in self.cols()), name=None
-                ).T
-            return None if n == 0 else self._storage[n - 1 if take_last else 0]
-
-        # Explicit order key(s): sort ascending (nulls last), pick first/last row.
-        if n == 0:
-            if is_block:
-                return self.copy((c.first() for c in self.cols()), name=None).T
-            return None
-        keys = self._resolve_order_keys(order_by)
-        order = sorted(range(n), key=lambda i: tuple((k[i] is None, k[i]) for k in keys))
-        idx = order[-1] if take_last else order[0]
-        if is_block:
-            return self.copy((c[idx] for c in self.cols()), name=None).T
-        return self._storage[idx]
+        if self.ndims() == 2:
+            return self.copy((c.last() for c in self.cols()), name=None).T
+        n = len(self._storage)
+        return self._storage[n - 1] if n else None
 
     def sum(self):
         if self.ndims() == 2:
