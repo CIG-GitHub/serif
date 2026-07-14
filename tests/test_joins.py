@@ -95,7 +95,7 @@ def test_many_to_one_cardinality():
 		'name': ['Alice', 'Alice2', 'Bob']
 	})
 	
-	with pytest.raises(ValueError, match="many_to_one.*violated.*Right side has duplicate keys"):
+	with pytest.raises(ValueError, match="expect_right_unique=True violated.*right side has duplicate key"):
 		left.inner_join(right, left_on='customer_id', right_on='customer_id')
 
 
@@ -110,8 +110,8 @@ def test_one_to_one_cardinality():
 		'right_val': ['X', 'Y']
 	})
 	
-	with pytest.raises(ValueError, match="one_to_one.*violated.*Left side has duplicate key"):
-		left.inner_join(right, left_on='id', right_on='id', expect='one_to_one')
+	with pytest.raises(ValueError, match="expect_left_unique=True violated.*left side has duplicate key"):
+		left.inner_join(right, left_on='id', right_on='id', expect_left_unique=True, expect_right_unique=True)
 
 
 def test_many_to_many_allows_duplicates():
@@ -125,7 +125,7 @@ def test_many_to_many_allows_duplicates():
 		'right_val': ['X', 'Y', 'Z']
 	})
 	
-	result = left.inner_join(right, left_on='key', right_on='key', expect='many_to_many')
+	result = left.inner_join(right, left_on='key', right_on='key', expect_left_unique=False, expect_right_unique=False)
 
 	# 1 matches 1 twice = 4 combinations (A-X, A-Y, B-X, B-Y)
 	# 2 matches 2 once = 1 combination (C-Z)
@@ -143,7 +143,7 @@ def test_one_to_many_cardinality():
 		'order': ['Order1', 'Order2', 'Order3']
 	})
 	
-	result = left.inner_join(right, left_on='id', right_on='id', expect='one_to_many')
+	result = left.inner_join(right, left_on='id', right_on='id', expect_left_unique=True, expect_right_unique=False)
 
 	assert len(result) == 3
 	assert list(result['name']) == ['Alice', 'Alice', 'Bob']
@@ -196,7 +196,7 @@ def test_left_join_with_multiple_right_matches():
 		'order': ['Order1', 'Order2']
 	})
 	
-	result = left.join(right, left_on='id', right_on='id', expect='one_to_many')
+	result = left.join(right, left_on='id', right_on='id', expect_left_unique=True, expect_right_unique=False)
 
 	assert len(result) == 2
 	assert list(result['name']) == ['Alice', 'Alice']
@@ -322,7 +322,7 @@ def test_join_with_constant_vector():
 	constant_key = Vector([1, 1])
 	
 	# This creates a cartesian-like product where every left row matches every right row
-	result = left.inner_join(right, left_on=constant_key, right_on=right['flag'], expect='many_to_many')
+	result = left.inner_join(right, left_on=constant_key, right_on=right['flag'], expect_left_unique=False, expect_right_unique=False)
 	
 	assert len(result) == 6  # 2 left rows * 3 right rows
 
