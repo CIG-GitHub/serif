@@ -1142,6 +1142,8 @@ class Table(Vector):
         pairs = self._validate_join_keys(other, left_on, right_on)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Determine if we need to validate hashability (only for object dtype columns)
         validate_hashable = any(
@@ -1248,10 +1250,11 @@ class Table(Vector):
         for col_idx, orig_col in enumerate(left_cols):
             result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
         
-        # Right columns (preserve name)
+        # Right columns (preserve name, drop same-name key columns)
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
-            result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
         
         return Table(result_cols)
 
@@ -1283,6 +1286,8 @@ class Table(Vector):
         # Extract join key columns (Vectors)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Check if any key columns have object dtype (need runtime validation)
         validate_hashable = any(
@@ -1389,10 +1394,11 @@ class Table(Vector):
             col_data = result_data[col_idx]
             result_cols.append(Vector(col_data, name=orig_col._name))
         
-        # Right table columns
+        # Right table columns (drop same-name key columns)
         for j, orig_col in enumerate(right_cols):
-            col_data = result_data[n_left_cols + j]
-            result_cols.append(Vector(col_data, name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                col_data = result_data[n_left_cols + j]
+                result_cols.append(Vector(col_data, name=orig_col._name))
         
         return Table(result_cols)
 
@@ -1426,6 +1432,8 @@ class Table(Vector):
         pairs = self._validate_join_keys(other, left_on, right_on)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Determine if we need to validate hashability (only for object dtype columns)
         validate_hashable = any(
@@ -1562,10 +1570,11 @@ class Table(Vector):
         for col_idx, orig_col in enumerate(left_cols):
             result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
         
-        # Right columns
+        # Right columns (drop same-name key columns)
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
-            result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
         
         return Table(result_cols)
     
