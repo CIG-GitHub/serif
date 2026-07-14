@@ -4,7 +4,7 @@ Null bitmaps for Vector storage backends.
 
 Two implementations are provided:
 
-ByteMask — one byte per element (0=valid, 1=null).
+ByteMask — one byte per element (1=valid, 0=null).
     Straightforward random access and copy-on-write mutation.
     Memory cost: n bytes for n elements.
     Preferred for small or frequently-mutated vectors.
@@ -12,8 +12,8 @@ ByteMask — one byte per element (0=valid, 1=null).
 BitMask  — one bit per element, packed into bytes (ceil(n/8) bytes total).
     8x more memory-efficient; slightly more CPU work per access.
     Bit layout: LSB-first within each byte (bit i lives in byte i//8 at
-    position i%8). Compatible with the Apache Arrow validity bitmap
-    convention (Arrow uses 1=valid; invert if bridging to Arrow).
+    position i%8). Matches the Apache Arrow validity bitmap convention
+    (1=valid, 0=null). Compatible with Arrow buffers without inversion.
     Preferred for large, mostly-read vectors or when handing buffers
     to external tools that expect packed bitmaps.
 
@@ -36,7 +36,7 @@ class ByteMask:
     Null bitmap using one byte per element.
 
     Stores an ``array('B', ...)`` of the same length as the data array.
-    A value of 1 means the corresponding element is null; 0 means valid.
+    A value of 1 means the corresponding element is valid; 0 means null.
 
     Copy-on-write: every mutating operation returns a *new* ``ByteMask``
     rather than modifying the receiver, so storage objects can share masks
@@ -62,14 +62,14 @@ class ByteMask:
         nulls:
             One True/False per element — True means the element is null.
         """
-        return cls(array('B', (1 if n else 0 for n in nulls)))
+        return cls(array('B', (0 if n else 1 for n in nulls)))
 
     @classmethod
     def from_size(cls, n: int) -> ByteMask:
         """
         Allocate an all-valid (no nulls) mask of length n.
         """
-        return cls(array('B', [0] * n))
+        return cls(array('B', [1] * n))
 
     # ------------------------------------------------------------------
     # Query
@@ -80,15 +80,15 @@ class ByteMask:
 
     def is_null(self, idx: int) -> bool:
         """Return True if element at idx is null."""
-        return bool(self._data[idx])
+        return not bool(self._data[idx])
 
     def any_null(self) -> bool:
         """Return True if at least one element is null."""
-        return any(self._data)
+        return not all(self._data)
 
     def __iter__(self) -> Iterator[bool]:
         """Yield True for each null position, False for each valid position."""
-        return (bool(b) for b in self._data)
+        return (not bool(b) for b in self._data)
 
     # ------------------------------------------------------------------
     # Slicing
@@ -105,13 +105,13 @@ class ByteMask:
     def mark_null(self, idx: int) -> ByteMask:
         """Return a new ByteMask with element idx marked null."""
         new_data = array('B', self._data)
-        new_data[idx] = 1
+        new_data[idx] = 0
         return ByteMask(new_data)
 
     def mark_valid(self, idx: int) -> ByteMask:
         """Return a new ByteMask with element idx marked valid."""
         new_data = array('B', self._data)
-        new_data[idx] = 0
+        new_data[idx] = 1
         return ByteMask(new_data)
 
 
@@ -121,7 +121,7 @@ class BitMask:
 
     Allocates ceil(n/8) bytes regardless of how many nulls exist.
     Bit i lives in byte i//8 at bit position i%8 (LSB-first).
-    A set bit (1) means null; a clear bit (0) means valid.
+    A set bit (1) means valid; a clear bit (0) means null.
 
     Copy-on-write: every mutating operation returns a *new* ``BitMask``.
     """
@@ -151,7 +151,7 @@ class BitMask:
         nbytes = ceil(n / 8) if n else 0
         data = array('B', [0] * nbytes)
         for i, flag in enumerate(null_list):
-            if flag:
+            if not flag:  # set bit = valid
                 data[i // 8] |= (1 << (i % 8))
         return cls(data, n)
 
@@ -161,7 +161,9 @@ class BitMask:
         Allocate an all-valid (no nulls) BitMask for n elements.
         """
         nbytes = ceil(n / 8) if n else 0
-        return cls(array('B', [0] * nbytes), n)
+        # 0xFF = all bits set = all valid (1=valid). Padding bits in the last
+        # byte are also set but are never queried (idx is always < length).
+        return cls(array('B', [0xFF] * nbytes), n)
 
     # ------------------------------------------------------------------
     # Query
@@ -172,16 +174,16 @@ class BitMask:
 
     def is_null(self, idx: int) -> bool:
         """Return True if element at idx is null."""
-        return bool((self._data[idx // 8] >> (idx % 8)) & 1)
+        return not bool((self._data[idx // 8] >> (idx % 8)) & 1)
 
     def any_null(self) -> bool:
         """Return True if at least one element is null."""
-        return any(self._data)
+        return any(not ((self._data[i // 8] >> (i % 8)) & 1) for i in range(self._length))
 
     def __iter__(self) -> Iterator[bool]:
         """Yield True for each null position, False for each valid position."""
         for i in range(self._length):
-            yield bool((self._data[i // 8] >> (i % 8)) & 1)
+            yield not bool((self._data[i // 8] >> (i % 8)) & 1)
 
     # ------------------------------------------------------------------
     # Slicing
@@ -190,7 +192,7 @@ class BitMask:
     def __getitem__(self, slc: slice) -> BitMask:
         """Return a new BitMask covering the slice."""
         indices = range(self._length)[slc]
-        nulls = [bool((self._data[i // 8] >> (i % 8)) & 1) for i in indices]
+        nulls = [self.is_null(i) for i in indices]  # True=null, abstraction-safe
         return BitMask.from_iterable(nulls)
 
     # ------------------------------------------------------------------
@@ -200,11 +202,11 @@ class BitMask:
     def mark_null(self, idx: int) -> BitMask:
         """Return a new BitMask with element idx marked null."""
         new_data = array('B', self._data)
-        new_data[idx // 8] |= (1 << (idx % 8))
+        new_data[idx // 8] &= ~(1 << (idx % 8))  # clear bit = null
         return BitMask(new_data, self._length)
 
     def mark_valid(self, idx: int) -> BitMask:
         """Return a new BitMask with element idx marked valid."""
         new_data = array('B', self._data)
-        new_data[idx // 8] &= ~(1 << (idx % 8))
+        new_data[idx // 8] |= (1 << (idx % 8))  # set bit = valid
         return BitMask(new_data, self._length)
