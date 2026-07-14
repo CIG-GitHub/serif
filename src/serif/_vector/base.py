@@ -233,7 +233,8 @@ class Vector():
             if len({len(x) for x in data}) == 1:
                 from ..table import Table
                 return Table(initial=data, dtype=dtype, name=name, as_row=as_row)
-            warnings.warn('Passing vectors of different length will not produce a Table.')
+            from ..errors import SerifValueError
+            raise SerifValueError('Passing vectors of different length will not produce a Table.')
 
         # Dispatch to the right subclass
         target_class = _pick_target_class(dtype)
