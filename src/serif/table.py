@@ -289,7 +289,8 @@ class Table(Vector):
                     other = seen[base]
                     if col._wild or other._wild:
                         warnings.warn(
-                            f"Duplicate column name '{base}' detected. "
+                            f"Duplicate column name '{base}' "
+                            f"(from '{other._name}' and '{col._name}') detected. "
                             "Dot access will be disambiguated with indexed suffixes.",
                             UserWarning,
                             stacklevel=2
@@ -1115,7 +1116,7 @@ class Table(Vector):
         
         return normalized
 
-    def inner_join(self, other, left_on, right_on, expect='many_to_one'):
+    def inner_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
         """
         Inner join two Tables on specified key columns.
         Only returns rows where keys match in both tables.
@@ -1124,24 +1125,20 @@ class Table(Vector):
             other: Table to join with
             left_on: Column name(s) or Vector(s) from left table
             right_on: Column name(s) or Vector(s) from right table
-            expect: Cardinality expectation - 'one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'
+            expect_left_unique: If True, raises if any left key appears more than once
+            expect_right_unique: If True, raises if any right key appears more than once (default True)
         
         Returns:
             Table with joined results
         """
-        # Validate cardinality flag early
-        if expect not in ('one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'):
-            raise SerifValueError(
-                f"Invalid expect='{expect}'. "
-                "Must be one of 'one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'."
-            )
-        
         # ------------------------------------------------------------------
         # 1. Validate and extract join keys
         # ------------------------------------------------------------------
         pairs = self._validate_join_keys(other, left_on, right_on)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Determine if we need to validate hashability (only for object dtype columns)
         validate_hashable = any(
@@ -1163,7 +1160,7 @@ class Table(Vector):
         right_index = {}
         right_index_get = right_index.get
         
-        check_right_unique = expect in ('one_to_one', 'many_to_one')
+        check_right_unique = expect_right_unique
         if check_right_unique:
             duplicates = {}
         
@@ -1183,18 +1180,18 @@ class Table(Vector):
                 if check_right_unique:
                     duplicates[key] = bucket
         
-        # Cardinality check on right (one-to-one, many-to-one)
+        # Cardinality check on right
         if check_right_unique and duplicates:
             example_key, example_indices = next(iter(duplicates.items()))
             raise SerifValueError(
-                f"Join expectation '{expect}' violated: Right side has duplicate keys.\n"
-                f"Example: {example_key} appears {len(example_indices)} times."
+                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
+                f"(appears {len(example_indices)} times)."
             )
         
         # ------------------------------------------------------------------
         # 3. Left-side uniqueness enforcement
         # ------------------------------------------------------------------
-        check_left_unique = expect in ('one_to_one', 'one_to_many')
+        check_left_unique = expect_left_unique
         if check_left_unique:
             left_keys_seen = set()
         
@@ -1216,7 +1213,7 @@ class Table(Vector):
             if check_left_unique:
                 if key in left_keys_seen:
                     raise SerifValueError(
-                        f"Join expectation '{expect}' violated: Left side has duplicate key {key}"
+                        f"expect_left_unique=True violated: left side has duplicate key {key}."
                     )
                 left_keys_seen.add(key)
             
@@ -1248,14 +1245,15 @@ class Table(Vector):
         for col_idx, orig_col in enumerate(left_cols):
             result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
         
-        # Right columns (preserve name)
+        # Right columns (preserve name, drop same-name key columns)
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
-            result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
         
         return Table(result_cols)
 
-    def join(self, other, left_on, right_on, expect='many_to_one'):
+    def join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
         """
         Left join two Tables on specified key columns.
         Returns all rows from left table, with matching rows from right (or None for no match).
@@ -1264,25 +1262,20 @@ class Table(Vector):
             other: Table to join with
             left_on: Column name(s) or Vector(s) from left table
             right_on: Column name(s) or Vector(s) from right table
-            expect: Cardinality expectation - 'one_to_one', 'many_to_one',
-                    'one_to_many', or 'many_to_many'
+            expect_left_unique: If True, raises if any left key appears more than once
+            expect_right_unique: If True, raises if any right key appears more than once (default True)
         
         Returns:
             Table with joined results
         """
-        # Validate expectation value early
-        if expect not in ('one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'):
-            raise SerifValueError(
-                f"Invalid expect value '{expect}'. "
-                "Must be one of 'one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'."
-            )
-        
         # Validate and normalize join keys
         pairs = self._validate_join_keys(other, left_on, right_on)
         
         # Extract join key columns (Vectors)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Check if any key columns have object dtype (need runtime validation)
         validate_hashable = any(
@@ -1299,7 +1292,7 @@ class Table(Vector):
         
         # Build hash map on right: key_tuple -> list of row indices
         right_index = {}
-        check_right_unique = expect in ('one_to_one', 'many_to_one')
+        check_right_unique = expect_right_unique
         if check_right_unique:
             duplicates = {}
         
@@ -1322,13 +1315,12 @@ class Table(Vector):
         if check_right_unique and duplicates:
             example_key, example_indices = next(iter(duplicates.items()))
             raise SerifValueError(
-                f"Join expectation '{expect}' violated: Right side has duplicate keys.\n"
-                f"Found at least {len(duplicates)} duplicate key(s), e.g., {example_key} "
-                f"appears {len(example_indices)} times."
+                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
+                f"(appears {len(example_indices)} times)."
             )
         
         # Prepare left-side uniqueness tracking if needed
-        check_left_unique = expect in ('one_to_one', 'many_to_one')
+        check_left_unique = expect_left_unique
         if check_left_unique:
             left_keys_seen = set()
         
@@ -1351,7 +1343,7 @@ class Table(Vector):
             if check_left_unique:
                 if key in left_keys_seen:
                     raise SerifValueError(
-                        f"Join expectation '{expect}' violated: Left side has duplicate key {key}"
+                        f"expect_left_unique=True violated: left side has duplicate key {key}."
                     )
                 left_keys_seen.add(key)
             
@@ -1389,14 +1381,15 @@ class Table(Vector):
             col_data = result_data[col_idx]
             result_cols.append(Vector(col_data, name=orig_col._name))
         
-        # Right table columns
+        # Right table columns (drop same-name key columns)
         for j, orig_col in enumerate(right_cols):
-            col_data = result_data[n_left_cols + j]
-            result_cols.append(Vector(col_data, name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                col_data = result_data[n_left_cols + j]
+                result_cols.append(Vector(col_data, name=orig_col._name))
         
         return Table(result_cols)
 
-    def full_join(self, other, left_on, right_on, expect='many_to_many'):
+    def full_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=False):
         """
         Full outer join of two Tables. Includes:
             - All rows from left table
@@ -1408,24 +1401,20 @@ class Table(Vector):
             other: Table to join with
             left_on: Column name(s) or Vector(s) from left table
             right_on: Column name(s) or Vector(s) from right table
-            expect: Cardinality expectation - 'one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'
+            expect_left_unique: If True, raises if any left key appears more than once
+            expect_right_unique: If True, raises if any right key appears more than once (default False)
         
         Returns:
             Table with joined results
         """
-        # Validate expectation string
-        if expect not in ('one_to_one', 'many_to_one', 'one_to_many', 'many_to_many'):
-            raise SerifValueError(
-                f"Invalid expect='{expect}'. "
-                "Must be 'one_to_one', 'many_to_one', 'one_to_many', or 'many_to_many'."
-            )
-        
         # ------------------------------------------------------------------
         # 1. Validate join keys and extract columns
         # ------------------------------------------------------------------
         pairs = self._validate_join_keys(other, left_on, right_on)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
+        # Drop right key column when it shares a name with the left key column
+        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
         
         # Determine if we need to validate hashability (only for object dtype columns)
         validate_hashable = any(
@@ -1447,7 +1436,7 @@ class Table(Vector):
         right_index = {}
         right_index_get = right_index.get
         
-        check_right_unique = expect in ('one_to_one', 'many_to_one')
+        check_right_unique = expect_right_unique
         if check_right_unique:
             duplicates = {}
         
@@ -1470,14 +1459,14 @@ class Table(Vector):
         if check_right_unique and duplicates:
             example_key, example_inds = next(iter(duplicates.items()))
             raise SerifValueError(
-                f"Join expectation '{expect}' violated: Right side has duplicate keys.\n"
-                f"Example: {example_key} appears {len(example_inds)} times."
+                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
+                f"(appears {len(example_inds)} times)."
             )
         
         # ------------------------------------------------------------------
         # 3. Prepare left-side cardinality tracking
         # ------------------------------------------------------------------
-        check_left_unique = expect in ('one_to_one', 'one_to_many')
+        check_left_unique = expect_left_unique
         if check_left_unique:
             left_keys_seen = set()
         
@@ -1506,7 +1495,7 @@ class Table(Vector):
             if check_left_unique:
                 if key in left_keys_seen:
                     raise SerifValueError(
-                        f"Join expectation '{expect}' violated: Left side has duplicate key {key}"
+                        f"expect_left_unique=True violated: left side has duplicate key {key}."
                     )
                 left_keys_seen.add(key)
             
@@ -1562,10 +1551,11 @@ class Table(Vector):
         for col_idx, orig_col in enumerate(left_cols):
             result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
         
-        # Right columns
+        # Right columns (drop same-name key columns)
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
-            result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
+            if orig_col._name not in right_key_drop:
+                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
         
         return Table(result_cols)
     

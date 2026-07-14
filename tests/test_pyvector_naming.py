@@ -172,7 +172,7 @@ def test_Table_multi_column_selection():
 	assert list(t2['c']) == [7, 8, 9]
 	
 	# Duplicate column selection (should create copies) - duplicate 'a' warning expected
-	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
+	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
 		t3 = t['a', 'a', 'a']
 	assert isinstance(t3, Table)
 	assert len(t3._storage) == 3
