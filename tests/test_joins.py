@@ -339,7 +339,8 @@ def test_join_sanitized_column_name_lookup():
 	})
 	
 	# Should find column using sanitized name (case-insensitive)
-	result = left.inner_join(right, left_on='customer_id', right_on='customer_id')
+	with pytest.warns(UserWarning, match="Duplicate column name 'customer_id'.*from 'Customer ID' and 'CUSTOMER_ID'"):
+		result = left.inner_join(right, left_on='customer_id', right_on='customer_id')
 
 	assert len(result) == 2
 	assert list(result['Name']) == ['Bob', 'Charlie']

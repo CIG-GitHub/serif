@@ -215,7 +215,7 @@ def test_table_getitem_priority():
 	# Create a table where sanitized name might conflict - warning expected
 	col1 = Vector([1, 2, 3], name='first_name')
 	col2 = Vector([4, 5, 6], name='first name')  # Sanitizes to same thing
-	with pytest.warns(UserWarning, match="Duplicate column name 'first_name' detected"):
+	with pytest.warns(UserWarning, match="Duplicate column name 'first_name'"):
 		t = Table([col1, col2])
 	
 	# Exact matches should work

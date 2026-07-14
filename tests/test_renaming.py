@@ -145,7 +145,7 @@ def test_Table_duplicate_column_names():
 	col1 = Vector([1, 2, 3], name='a')
 	col2 = Vector([4, 5, 6], name='a')
 	col3 = Vector([7, 8, 9], name='b')
-	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
+	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
 		t = Table([col1, col2, col3])
 	
 	# Should have two columns named 'a' and one named 'b'
@@ -173,7 +173,7 @@ def test_Table_rename_all_duplicates():
 	col1 = Vector([1, 2, 3], name='a')
 	col2 = Vector([4, 5, 6], name='a')
 	col3 = Vector([7, 8, 9], name='a')
-	with pytest.warns(UserWarning, match="Duplicate column name 'a' detected"):
+	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
 		t = Table([col1, col2, col3])
 	
 	# All three columns named 'a'
@@ -194,7 +194,7 @@ def test_Table_rename_duplicate_columns_separately():
 	col1 = Vector([1, 2, 3], name='data')
 	col2 = Vector([4, 5, 6], name='data')
 	col3 = Vector([7, 8, 9], name='label')
-	with pytest.warns(UserWarning, match="Duplicate column name 'data' detected"):
+	with pytest.warns(UserWarning, match="Duplicate column name 'data'"):
 		t = Table([col1, col2, col3])
 	
 	# We want to rename both 'data' columns to different names

@@ -289,7 +289,8 @@ class Table(Vector):
                     other = seen[base]
                     if col._wild or other._wild:
                         warnings.warn(
-                            f"Duplicate column name '{base}' detected. "
+                            f"Duplicate column name '{base}' "
+                            f"(from '{other._name}' and '{col._name}') detected. "
                             "Dot access will be disambiguated with indexed suffixes.",
                             UserWarning,
                             stacklevel=2
