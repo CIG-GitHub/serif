@@ -32,17 +32,20 @@ from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
 from .csv import read_csv
+from .parquet import read_parquet, write_parquet
 from .display import set_repr_rows
 
 __version__ = "0.1.2"
 __all__ = [
-    "Vector", 
+    "Vector",
     "Table",
     "read_csv",
+    "read_parquet",
+    "write_parquet",
     "set_repr_rows",
     "SerifError",
     "SerifKeyError",
     "SerifValueError",
     "SerifTypeError",
-    "SerifIndexError"
+    "SerifIndexError",
 ]

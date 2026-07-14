@@ -2029,6 +2029,17 @@ class Table(Vector):
 
         return Table(new_cols)
 
+    def to_parquet(self, path: str) -> None:
+        """Write this Table to a Parquet file. See serif.write_parquet for details."""
+        from .parquet import write_parquet
+        write_parquet(self, path)
+
+    @classmethod
+    def from_parquet(cls, path: str) -> 'Table':
+        """Read a Parquet file into a Table. See serif.read_parquet for details."""
+        from .parquet import read_parquet
+        return read_parquet(path)
+
     def peek(self, sample=1000, top_k=3):
         """
         Summarize columns: one row per column, with dtype, null %, and top values.
