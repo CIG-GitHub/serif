@@ -624,7 +624,7 @@ class Vector():
                     dtype=Schema(bool, False),
                 )
             return self._clone(
-                TupleStorage(tuple(b == 1 for b in storage._mask._data)),
+                TupleStorage(tuple(b == 0 for b in storage._mask._data)),
                 dtype=Schema(bool, False),
             )
         return Vector._from_iterable_known_dtype(
