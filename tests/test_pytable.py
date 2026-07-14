@@ -2,6 +2,7 @@
 import pytest
 from serif import Vector
 from serif import Table
+from serif.errors import SerifValueError
 
 
 class TestTableCreation:
@@ -14,11 +15,11 @@ class TestTableCreation:
         assert isinstance(table, Table)
         assert table.shape == (3, 2)
     
-    def test_create_from_unequal_vectors_warns(self):
+    def test_create_from_unequal_vectors_raises(self):
         col1 = Vector([1, 2, 3])
         col2 = Vector([4, 5])
-        with pytest.warns(UserWarning):
-            table = Vector([col1, col2])
+        with pytest.raises(SerifValueError):
+            Vector([col1, col2])
     
     def test_empty_table(self):
         col1 = Vector([])
