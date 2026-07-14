@@ -28,9 +28,9 @@ from __future__ import annotations
 import struct as _struct
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 
-from .errors import SerifTypeError, SerifValueError
-from ._vector import Vector
-from ._vector.storage import ArrayStorage
+from ..errors import SerifTypeError, SerifValueError
+from .._vector import Vector
+from .._vector.storage import ArrayStorage
 
 # ---------------------------------------------------------------------------
 # File-level constants
@@ -715,7 +715,7 @@ def write_parquet(table, path: str) -> None:
         If any column has an unsupported type (object, complex, etc.) or
         if an int column is not backed by ArrayStorage('q').
     """
-    from .table import Table as _Table
+    from ..table import Table as _Table
     if not isinstance(table, _Table):
         raise SerifTypeError("write_parquet expects a Table")
 
@@ -1281,7 +1281,7 @@ def read_parquet(path: str):
     -------
     Table
     """
-    from .table import Table
+    from ..table import Table
 
     with open(path, 'rb') as f:
         raw = f.read()
