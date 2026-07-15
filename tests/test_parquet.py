@@ -292,7 +292,10 @@ class TestEdgeCases:
 class TestErrorCases:
 
     def test_object_column_raises(self):
-        t = Table({'mixed': ['string', 42, True]})
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            t = Table({'mixed': ['string', 42, True]})
         path = tempfile.mktemp(suffix='.parquet')
         try:
             with pytest.raises(SerifTypeError, match="object"):
