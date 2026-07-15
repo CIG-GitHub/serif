@@ -38,6 +38,23 @@ from .._vector import Vector
 from .._vector.storage import ArrayStorage, StringStorage
 
 # ---------------------------------------------------------------------------
+# Optional pyarrow acceleration (read side) — EXPERIMENT
+# ---------------------------------------------------------------------------
+# serif stays zero-dependency: pyarrow is never required. When it happens to
+# be installed, _arrow.py may decode a supported file faster and must hand
+# back an IDENTICAL Table (python in → python out; see
+# tests/test_parquet_arrow.py). Accelerators may widen TRANSPORT (codecs,
+# encodings), never SEMANTICS (types serif rejects still reject — the
+# accelerator declines and this module's errors surface).
+# _USE_ARROW is a private switch for tests/benchmarks, not API.
+try:
+    from . import _arrow as _arrow_accel
+except ImportError:            # pyarrow not installed
+    _arrow_accel = None
+
+_USE_ARROW = _arrow_accel is not None
+
+# ---------------------------------------------------------------------------
 # File-level constants
 # ---------------------------------------------------------------------------
 
@@ -1511,6 +1528,13 @@ def read_parquet(path: str):
     """
     from ..table import Table
     from .._vector.dtype import Schema as _Schema
+
+    if _USE_ARROW and _arrow_accel is not None:
+        result = _arrow_accel.try_read(path)
+        if result is not None:
+            return result
+        # Declined (unsupported column type, parse error, …): fall through
+        # to the pure reader, whose errors are the ones users should see.
 
     with open(path, 'rb') as f:
         raw = f.read()

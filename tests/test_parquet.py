@@ -18,6 +18,17 @@ from serif import Table, Vector
 from serif.errors import SerifTypeError
 
 
+@pytest.fixture(autouse=True)
+def _force_pure_reader(monkeypatch):
+    """This suite round-trips serif's OWN zero-dependency reader/writer.
+    With pyarrow installed, the optional accelerator would take over reads
+    of int/float/str files and this suite would silently stop covering the
+    pure reader. Pin the pure path; the arrow path has its own conformance
+    suite (test_parquet_arrow.py)."""
+    import serif.io.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, '_USE_ARROW', False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
