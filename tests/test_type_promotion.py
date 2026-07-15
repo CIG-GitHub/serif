@@ -183,13 +183,16 @@ class TestArithmeticPromotion:
         # Define tri-value comparison as: None compared to anything -> False
         assert list(mask) == [False, False, True]
 
-    def test_mixed_incompatible_types_fall_back_to_object(self):
+    def test_mixed_incompatible_types_raise(self):
+        # Decided in the arithmetic-edges pass: incompatible element types
+        # raise (SerifTypeError, a TypeError subclass — Python semantics)
+        # instead of silently producing an object vector of (x, y) pairs.
+        # Full coverage lives in test_arithmetic_edges.py.
         v = Vector([1, 2, 3])
         w = Vector(["a", "b", "c"])
 
-        out = v + w  # whatever behavior you choose, dtype should be object
-        s = out.schema()
-        assert s.kind is object
+        with pytest.raises(TypeError):
+            v + w
 
 
 class TestSchemaPromotionInternal:

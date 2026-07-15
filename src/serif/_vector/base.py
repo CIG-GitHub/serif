@@ -34,6 +34,9 @@ from typing import Tuple
 # Reverse arithmetic operation helpers
 ## This section looks ok
 # ============================================================
+def _reverse_add(y, x):
+    return x + y
+
 def _reverse_sub(y, x):
     return x - y
 
@@ -1066,8 +1069,13 @@ class Vector():
                     for x, y in zip(self, other, strict=True)
                 )
             except TypeError:
-                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
+                rhs_schema = other.schema()
+                rhs = rhs_schema.kind.__name__ if rhs_schema is not None else 'object'
+                raise SerifTypeError(
+                    f"Unsupported operand type(s) for '{op_symbol}': "
+                    f"Vector<{lhs}> and Vector<{rhs}>."
+                )
             if result_dtype is None:
                 result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
@@ -1081,8 +1089,11 @@ class Vector():
                     for x, y in zip(self, other, strict=True)
                 )
             except TypeError:
-                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
+                raise SerifTypeError(
+                    f"Unsupported operand type(s) for '{op_symbol}': "
+                    f"Vector<{lhs}> and {type(other).__name__} elements."
+                )
             result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
 
@@ -1097,9 +1108,10 @@ class Vector():
                 result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
         except TypeError:
+            lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
             raise SerifTypeError(
                 f"Unsupported operand type(s) for '{op_symbol}': "
-                f"'{self._dtype.kind.__name__}' and '{type(other).__name__}'."
+                f"'{lhs}' and '{type(other).__name__}'."
             )
 
     def _unary_operation(self, op_func, op_name: str):
@@ -1155,38 +1167,14 @@ class Vector():
         return self._elementwise_operation(other, operator.pow, '__pow__', '**')
 
     def __radd__(self, other):
-        """Reverse addition: other + self (handles strings specially)"""
-        other = self._check_duplicate(other)
-        
-        # Vector + Vector
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return Vector._from_iterable_known_dtype(
-                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        # Scalar + Vector
-        if not isinstance(other, Iterable) or isinstance(other, (str, bytes, bytearray)):
-            return Vector._from_iterable_known_dtype(
-                (None if x is None else other + x for x in self),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        # Iterable + Vector
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return Vector._from_iterable_known_dtype(
-                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        raise SerifTypeError(f"Unsupported operand type: {type(other).__name__}")
+        """Reverse addition: other + self.
+
+        Routed through _elementwise_operation like every other reverse op so
+        the result dtype is properly promoted — the old hand-rolled path
+        stamped results with self's dtype, so 1.5 + Vector([1, 2]) produced
+        floats labeled int and crashed the int storage backend.
+        """
+        return self._elementwise_operation(other, _reverse_add, '__radd__', '+')
 
     def __rmul__(self, other):
         return self.__mul__(other)
