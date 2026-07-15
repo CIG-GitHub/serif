@@ -1,6 +1,7 @@
 """Display and repr logic for Vector and Table."""
 
 from __future__ import annotations
+import math
 from datetime import date
 from typing import List
 from .naming import _get_reserved_names
@@ -88,7 +89,10 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
         elif v is None:
             out.append('None')
         elif col._dtype and col._dtype.kind is float:
-            out.append(f"{v:.1f}" if v == int(v) else f"{v:g}")
+            if not math.isfinite(v):
+                out.append(str(v))  # 'nan', 'inf', '-inf' — int(v) would raise
+            else:
+                out.append(f"{v:.1f}" if v == int(v) else f"{v:g}")
         elif col._dtype and col._dtype.kind is int:
             out.append(str(v))
         elif col._dtype and col._dtype.kind is date:

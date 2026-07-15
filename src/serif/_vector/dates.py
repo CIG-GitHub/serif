@@ -78,7 +78,7 @@ class _Date(Vector):
 
     def __add__(self, other):
         """ adding integers is adding days """
-        if isinstance(other, Vector) and other.schema().kind == int:
+        if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
@@ -88,7 +88,25 @@ class _Date(Vector):
 
         if isinstance(other, int):
             return Vector(tuple((date.fromordinal(s.toordinal() + other) if s is not None else None) for s in self._storage))
-        return super().add(other)
+        # Everything else — timedelta scalars/vectors especially — goes
+        # through the base elementwise machinery (date + timedelta is core
+        # Python and must work).
+        return super().__add__(other)
+
+    def __sub__(self, other):
+        """ subtracting integers is subtracting days (mirror of __add__) """
+        if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
+            if len(self) != len(other):
+                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            return Vector(tuple(
+                (date.fromordinal(s.toordinal() - y) if s is not None and y is not None else None)
+                for s, y in zip(self._storage, other, strict=True)
+            ))
+
+        if isinstance(other, int):
+            return Vector(tuple((date.fromordinal(s.toordinal() - other) if s is not None else None) for s in self._storage))
+        # date - timedelta → date, date - date → timedelta: base machinery.
+        return super().__sub__(other)
 
     def eomonth(self):
         out = []

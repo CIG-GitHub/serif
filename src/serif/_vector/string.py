@@ -20,7 +20,18 @@ class _String(Vector):
         return Vector(tuple((s.center(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def count(self, *args, **kwargs):
-        """ Call the internal count method on string """
+        """
+        Two personalities, disambiguated by arity — both Python-faithful:
+
+        - count()           → number of non-null elements (the Vector
+                              aggregate, same as every other dtype)
+        - count(sub[, ...]) → per-element str.count(sub, ...)
+
+        Zero-arg str.count doesn't exist in Python (always a TypeError), so
+        no previously-valid call changes meaning.
+        """
+        if not args and not kwargs:
+            return super().count()
         return Vector(tuple((s.count(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def encode(self, *args, **kwargs):
