@@ -2030,6 +2030,32 @@ class Table(Vector):
         from .io.parquet import read_parquet
         return read_parquet(path)
 
+    @classmethod
+    def _from_columns_nocopy(cls, columns: list) -> 'Table':
+        """
+        Assemble a Table from pre-built, freshly-owned Vector columns without
+        deep-copying them.  The caller guarantees that no external reference to
+        any column exists (i.e. the caller just constructed them).
+
+        Used by read_parquet to skip the O(n*cols) copy that Table.__init__
+        normally performs for aliasing safety.
+        """
+        t = object.__new__(cls)
+        # Mirror every attribute that Table.__setattr__ guards
+        object.__setattr__(t, '_dtype',         None)
+        object.__setattr__(t, '_name',          None)
+        object.__setattr__(t, '_display_as_row', False)
+        object.__setattr__(t, '_wild',          False)
+        object.__setattr__(t, '_fp',            None)
+        object.__setattr__(t, '_fp_powers',     None)
+        object.__setattr__(t, '_repr_rows',     None)
+        object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
+        object.__setattr__(t, '_column_map',    None)
+        object.__setattr__(t, '_storage',
+            TupleStorage.from_iterable(tuple(columns), nullable=False))
+        object.__setattr__(t, '_column_map',    t._build_column_map())
+        return t
+
     def peek(self, sample=1000, top_k=3):
         """
         Summarize columns: one row per column, with dtype, null %, and top values.

@@ -25,6 +25,7 @@ External files with dictionary encoding or nested schemas are not supported.
 
 from __future__ import annotations
 
+import array as _pyarray
 import struct as _struct
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 
@@ -593,20 +594,22 @@ def _decode_plain(data, pos: int, kind: type, phys_type: int,
             size = count * 4
             values = list(_struct.unpack_from(f'<{count}i', data, pos))
             return values, pos + size
-        else:  # INT64
+        else:  # INT64 — frombytes: direct memcpy, zero boxing
             size = count * 8
-            values = list(_struct.unpack_from(f'<{count}q', data, pos))
-            return values, pos + size
+            a = _pyarray.array('q')
+            a.frombytes(data[pos:pos + size])
+            return a, pos + size
 
     if kind is float:
         if phys_type == _T_FLOAT:
             size = count * 4
             values = list(_struct.unpack_from(f'<{count}f', data, pos))
             return values, pos + size
-        else:  # DOUBLE
+        else:  # DOUBLE — frombytes: direct memcpy, zero boxing
             size = count * 8
-            values = list(_struct.unpack_from(f'<{count}d', data, pos))
-            return values, pos + size
+            a = _pyarray.array('d')
+            a.frombytes(data[pos:pos + size])
+            return a, pos + size
 
     if kind is str:
         values = []
@@ -1200,7 +1203,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
     # If the file has a dictionary page before the data page, it would be at
     # dict_page_off. We start reading from data_page_off so it's fine.
 
-    values    = []
+    values    = None   # None = not yet initialised; may become list or array.array
     remaining = num_values
 
     while remaining > 0:
@@ -1251,14 +1254,24 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
 
         if null_flags is not None:
             it = iter(page_values)
-            merged = [None if f else next(it) for f in null_flags]
+            page_result = [None if f else next(it) for f in null_flags]
         else:
-            merged = page_values
+            page_result = page_values  # may be array.array (DOUBLE/INT64 fast path)
 
-        values.extend(merged)
+        # Accumulate — keep array.array alive to avoid boxing
+        if values is None:
+            values = (page_result
+                      if isinstance(page_result, _pyarray.array)
+                      else list(page_result))
+        elif isinstance(values, _pyarray.array) and isinstance(page_result, _pyarray.array):
+            values += page_result          # pure array concatenation, no boxing
+        else:
+            if isinstance(values, _pyarray.array):     # first page was fast, rest aren't
+                values = list(values)
+            values.extend(page_result)
         remaining -= page_num_values
 
-    return values
+    return values if values is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -1282,6 +1295,7 @@ def read_parquet(path: str):
     Table
     """
     from ..table import Table
+    from .._vector.dtype import Schema as _Schema
 
     with open(path, 'rb') as f:
         raw = f.read()
@@ -1331,7 +1345,7 @@ def read_parquet(path: str):
         })
 
     # Accumulate values per column across all row groups
-    col_values = {m['name']: [] for m in col_meta}
+    col_values = {m['name']: None for m in col_meta}
 
     for rg in row_groups:
         for cc in rg.get('columns', []):
@@ -1357,10 +1371,29 @@ def read_parquet(path: str):
                 is_optional= meta_entry['is_optional'],
                 col_name   = col_name,
             )
-            col_values[col_name].extend(chunk_values)
+            existing = col_values[col_name]
+            if existing is None:
+                col_values[col_name] = chunk_values
+            elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
+                col_values[col_name] = existing + chunk_values
+            else:
+                if isinstance(existing, _pyarray.array):
+                    col_values[col_name] = list(existing)
+                col_values[col_name].extend(chunk_values)
 
-    result_cols = [
-        Vector(col_values[m['name']], name=m['name'])
-        for m in col_meta
-    ]
-    return Table(result_cols)
+    result_cols = []
+    for m in col_meta:
+        raw   = col_values[m['name']] or []
+        dtype = _Schema(m['kind'], m['is_optional'])
+
+        if isinstance(raw, _pyarray.array):
+            # Non-nullable float or int: storage is already a packed C array.
+            # Wrap it directly — zero extra iteration, zero boxing.
+            storage = ArrayStorage(raw, None)
+            col     = Vector._from_storage(storage, dtype, name=m['name'])
+        else:
+            col = Vector._from_iterable_known_dtype(raw, dtype, name=m['name'])
+
+        result_cols.append(col)
+
+    return Table._from_columns_nocopy(result_cols)
