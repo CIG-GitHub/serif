@@ -70,6 +70,18 @@ def _sanitize_user_name(name) -> str | None:
     # Conflicts with reserved name → append _
     if sanitized in _get_reserved_names():
         sanitized = sanitized + '_'
-    
+
     return sanitized
+
+
+def _disambiguate(base: str, idx: int) -> str:
+    """
+    Canonical suffix for duplicate sanitized column names: the column at
+    position idx gets '<base>__<idx>' (single separator when base already
+    ends with '_'). This is THE one rule — Table._build_column_map,
+    Table.__getitem__, and display._compute_headers must all agree, or a
+    name shown in one place won't resolve in another.
+    """
+    sep = "" if base.endswith("_") else "_"
+    return f"{base}{sep}_{idx}"
 

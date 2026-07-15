@@ -1,9 +1,11 @@
 from .base import Vector
+from .base import _elementwise_proxy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from collections.abc import Iterable
 from .dtype import Schema
+
 
 class _Date(Vector):
     def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
@@ -49,49 +51,6 @@ class _Date(Vector):
             ])
         # finally,
         return super()._elementwise_compare(other, op)
-
-
-    def ctime(self, *args, **kwargs):
-        return Vector(tuple((s.ctime(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromisocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.fromisocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromisoformat(self, *args, **kwargs):
-        return Vector(tuple((s.fromisoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromordinal(self, *args, **kwargs):
-        return Vector(tuple((s.fromordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromtimestamp(self, *args, **kwargs):
-        return Vector(tuple((s.fromtimestamp(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.isocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isoformat(self, *args, **kwargs):
-        return Vector(tuple((s.isoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isoweekday(self, *args, **kwargs):
-        return Vector(tuple((s.isoweekday(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def replace(self, *args, **kwargs):
-        return Vector(tuple((s.replace(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def strftime(self, *args, **kwargs):
-        return Vector(tuple((s.strftime(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def timetuple(self, *args, **kwargs):
-        return Vector(tuple((s.timetuple(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def today(self, *args, **kwargs):
-        return Vector(tuple((s.today(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def toordinal(self, *args, **kwargs):
-        return Vector(tuple((s.toordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def weekday(self, *args, **kwargs):
-        return Vector(tuple((s.weekday(*args, **kwargs) if s is not None else None) for s in self._storage))
 
     def __add__(self, other):
         """ adding integers is adding days """
@@ -169,6 +128,16 @@ class _Date(Vector):
         return Vector(tuple(out))
 
 
+# Plain per-element date methods, stamped onto the class at definition time
+# (see string.py for the rationale). date's class/static constructors
+# (today, fromordinal, fromtimestamp, fromisoformat, fromisocalendar) are
+# deliberately not stamped — mapping a constructor across elements ignores
+# the element and is meaningless as a column operation.
+_DATE_PROXY_METHODS = (
+    'ctime', 'isocalendar', 'isoformat', 'isoweekday', 'replace',
+    'strftime', 'timetuple', 'toordinal', 'weekday',
+)
 
-
-
+for _m in _DATE_PROXY_METHODS:
+    setattr(_Date, _m, _elementwise_proxy(_m))
+del _m

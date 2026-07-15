@@ -146,7 +146,7 @@ class MethodProxy:
     def __init__(self, vector, method_name):
         self._vector = vector
         self._method_name = method_name
-    
+
     def __call__(self, *args, **kwargs):
         method = self._method_name
         results = []
@@ -156,6 +156,26 @@ class MethodProxy:
             else:
                 results.append(getattr(elem, method)(*args, **kwargs))
         return Vector(results)
+
+
+def _elementwise_proxy(method_name):
+    """
+    Build a per-element proxy method: None passes through, every other
+    element has `method_name` called on it, results collected into a Vector.
+
+    Used by the typed subclasses (_String, _Date) to stamp element methods
+    onto the class at definition time — same semantics as the MethodProxy
+    that Vector.__getattr__ falls back to, but visible to dir() and
+    tab-completion.
+    """
+    def proxy(self, *args, **kwargs):
+        return Vector(tuple(
+            (getattr(s, method_name)(*args, **kwargs) if s is not None else None)
+            for s in self._storage
+        ))
+    proxy.__name__ = method_name
+    proxy.__doc__ = f"Element-wise {method_name}() on each value (None passes through)."
+    return proxy
 
 
 # ============================================================
@@ -647,18 +667,18 @@ class Vector():
         Vector([False, True, False])
         """
         storage = self._storage
-        if isinstance(storage, ArrayStorage):
-            # Fast path: the null mask is already a packed byte array.
-            # If there is no mask, no elements are null.
+        from .storage import StringStorage
+        if isinstance(storage, (ArrayStorage, StringStorage)):
+            # Fast path: the null mask is already a packed byte array —
+            # avoids unboxing numerics / decoding UTF-8 just to test None.
+            # If there is no mask, no elements are null. Built via
+            # _from_storage (not _clone) so the result is a plain unnamed
+            # bool Vector, per the naming invariant for derived vectors.
             if storage._mask is None:
-                return self._clone(
-                    TupleStorage((False,) * len(storage)),
-                    dtype=Schema(bool, False),
-                )
-            return self._clone(
-                TupleStorage(tuple(b == 0 for b in storage._mask._data)),
-                dtype=Schema(bool, False),
-            )
+                mask_tuple = (False,) * len(storage)
+            else:
+                mask_tuple = tuple(b == 0 for b in storage._mask._data)
+            return Vector._from_storage(TupleStorage(mask_tuple), Schema(bool, False))
         return Vector._from_iterable_known_dtype(
             (elem is None for elem in storage),
             Schema(bool, False),
@@ -737,11 +757,11 @@ class Vector():
             return self._storage[key]
 
         if isinstance(key, tuple):
+            # 1-D vectors accept only single-element tuples; deeper indexing
+            # belongs to Table (nested vectors are not a supported shape).
             if len(key) != len(self.shape):
                 raise SerifKeyError(f"Matrix indexing must provide an index in each dimension: {self.shape}")
-            if len(key) == 1:
-                return self[key[0]]
-            return self._storage[key[-1]][key[:-1]]
+            return self[key[0]]
 
         key = self._check_duplicate(key)
         if isinstance(key, Vector) and key.schema().kind == bool:

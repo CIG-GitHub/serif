@@ -3,8 +3,10 @@ import warnings
 from collections.abc import Iterable
 
 from ._vector import Vector
+from ._vector import Schema
 
 from .naming import _sanitize_user_name
+from .naming import _disambiguate
 from ._vector.storage import TupleStorage, ArrayStorage
 
 from .errors import SerifKeyError
@@ -273,20 +275,17 @@ class Table(Vector):
         self._column_map = self._build_column_map()
 
     def __len__(self):
+        # Nested tables are forbidden (docs/invariants.md #2), so length is
+        # always the shared column length.
         if len(self._storage) == 0:
             return 0
-        if isinstance(self._storage[0], Table):
-            return len(self._storage)
         return self._length
 
     @property
     def shape(self):
-        n_rows = len(self)
-        if n_rows == 0:
-            # Empty table - need to check column count
-            n_cols = len(self._storage) if hasattr(self, '_storage') else 0
-            return (0, n_cols)
-        return (n_rows,) + self[0].shape
+        # Always 2-D: (rows, columns). No Row construction needed.
+        n_cols = len(self._storage) if hasattr(self, '_storage') else 0
+        return (len(self) if n_cols else 0, n_cols)
 
     def _build_column_map(self):
         """Build mapping from sanitized column names to column indices.
@@ -313,9 +312,7 @@ class Table(Vector):
                             stacklevel=2
                         )
                     
-                    # dont triple underscore if already ends with _
-                    sep = "" if base.endswith("_") else "_"
-                    sanitized = f"{base}{sep}_{idx}"
+                    sanitized = _disambiguate(base, idx)
                 else:
                     sanitized = base
                     seen[base] = col
@@ -579,16 +576,15 @@ class Table(Vector):
 
     @property
     def T(self):
-        if len(self.shape)==2:
-            # Transpose 2D table: columns become rows
-            num_rows = self._length
-            num_cols = len(self._storage)
-            rows = []
-            for row_idx in range(num_rows):
-                row = Vector(tuple(col[row_idx] for col in self._storage))
-                rows.append(row)
-            return Table(rows)
-        return self.copy((tuple(x.T for x in self))) # higher dimensions
+        # Transpose 2D table: columns become rows. Tables are always 2-D
+        # (docs/invariants.md #2 forbids nesting).
+        num_rows = self._length
+        num_cols = len(self._storage)
+        rows = []
+        for row_idx in range(num_rows):
+            row = Vector(tuple(col[row_idx] for col in self._storage))
+            rows.append(row)
+        return Table(rows)
 
     def __getitem__(self, key):
         key = self._check_duplicate(key)
@@ -600,9 +596,10 @@ class Table(Vector):
                 if col._name == key:
                     return col
             
-            # Try sanitized match (case-insensitive)
+            # Try sanitized match (case-insensitive). Uses the same
+            # _disambiguate rule as _build_column_map so any key visible in
+            # the column map (or repr) resolves here too.
             key_lower = key.lower()
-            seen = set()
             for idx, col in enumerate(self._storage):
                 if col._name is not None:
                     base = _sanitize_user_name(col._name)
@@ -612,11 +609,8 @@ class Table(Vector):
                             return col
                     elif base == key_lower:
                         return col
-                    else:
-                        unique_name = f"{base}__{idx}"
-                        seen.add(unique_name)
-                        if unique_name == key_lower:
-                            return col
+                    elif _disambiguate(base, idx) == key_lower:
+                        return col
                 else:
                     # Unnamed columns: match col{idx}_ pattern
                     if f'col{idx}_' == key_lower:
@@ -686,8 +680,6 @@ class Table(Vector):
 
         if isinstance(key, int):
             # Effectively a different input type (single not a list). Returning a value, not a vector.
-            if isinstance(self._storage[0], Table):
-                return self._storage[key]
             return Row(self, key)
 
         if isinstance(key, Vector) and key.schema().kind == bool:
@@ -1134,20 +1126,18 @@ class Table(Vector):
         
         return normalized
 
-    def inner_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+    def _join_impl(self, other, left_on, right_on, *,
+                   expect_left_unique, expect_right_unique,
+                   keep_unmatched_left, keep_unmatched_right):
         """
-        Inner join two Tables on specified key columns.
-        Only returns rows where keys match in both tables.
-        
-        Args:
-            other: Table to join with
-            left_on: Column name(s) or Vector(s) from left table
-            right_on: Column name(s) or Vector(s) from right table
-            expect_left_unique: If True, raises if any left key appears more than once
-            expect_right_unique: If True, raises if any right key appears more than once (default True)
-        
-        Returns:
-            Table with joined results
+        Shared core for inner_join / join / full_join.
+
+        The three joins differ only in which unmatched rows they keep:
+        inner keeps none, left join keeps unmatched left rows (None-padded
+        right side), full join keeps unmatched rows from both sides.
+        Everything else -- key validation, hashability checks, cardinality
+        enforcement, column-major emission, name-preserving wrap-up -- is
+        identical and lives here so it cannot drift between join flavors.
         """
         # ------------------------------------------------------------------
         # 1. Validate and extract join keys
@@ -1157,255 +1147,195 @@ class Table(Vector):
         right_keys = [rk for _, rk in pairs]
         # Drop right key column when it shares a name with the left key column
         right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
-        
-        # Determine if we need to validate hashability (only for object dtype columns)
+
+        # Hashability needs runtime validation only for object/untyped key
+        # columns; typed keys are already guaranteed hashable by dtype rules.
         validate_hashable = any(
             (col.schema() is None or col.schema().kind is object)
             for col in (left_keys + right_keys)
         )
-        
-        # Pre-bind lengths and columns
+
         left_nrows = len(self)
         right_nrows = len(other)
         left_cols = self._storage
         right_cols = other._storage
         n_left_cols = len(left_cols)
         n_right_cols = len(right_cols)
-        
+
+        # Materialize key columns once -- per-row storage access would pay
+        # unboxing/decoding costs inside the hot loops below.
+        left_key_data = [k._storage.to_tuple() for k in left_keys]
+        right_key_data = [k._storage.to_tuple() for k in right_keys]
+
         # ------------------------------------------------------------------
-        # 2. Build hash map on right side
+        # 2. Build hash index on the right side (+ cardinality check)
         # ------------------------------------------------------------------
         right_index = {}
         right_index_get = right_index.get
-        
-        check_right_unique = expect_right_unique
-        if check_right_unique:
-            duplicates = {}
-        
-        # Build key → [indices]
+        first_duplicate_key = None
+
         for row_idx in range(right_nrows):
-            key = tuple(col[row_idx] for col in right_keys)
-            
-            # Validate hashability for object dtype columns
+            key = tuple(kd[row_idx] for kd in right_key_data)
             if validate_hashable:
                 Table._validate_key_tuple_hashable(key, right_keys, row_idx)
-            
             bucket = right_index_get(key)
             if bucket is None:
                 right_index[key] = [row_idx]
             else:
                 bucket.append(row_idx)
-                if check_right_unique:
-                    duplicates[key] = bucket
-        
-        # Cardinality check on right
-        if check_right_unique and duplicates:
-            example_key, example_indices = next(iter(duplicates.items()))
+                if expect_right_unique and first_duplicate_key is None:
+                    first_duplicate_key = key
+
+        if expect_right_unique and first_duplicate_key is not None:
             raise SerifValueError(
-                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
-                f"(appears {len(example_indices)} times)."
+                f"expect_right_unique=True violated: right side has duplicate key {first_duplicate_key} "
+                f"(appears {len(right_index[first_duplicate_key])} times)."
             )
-        
+
         # ------------------------------------------------------------------
-        # 3. Left-side uniqueness enforcement
+        # 3. Cardinality/match tracking state
         # ------------------------------------------------------------------
-        check_left_unique = expect_left_unique
-        if check_left_unique:
-            left_keys_seen = set()
-        
+        left_keys_seen = set() if expect_left_unique else None
+        matched_right_rows = set() if keep_unmatched_right else None
+
         # ------------------------------------------------------------------
-        # 4. Build RESULT in column-major order
+        # 4. Emit result rows in column-major order
         # ------------------------------------------------------------------
         result_data = [[] for _ in range(n_left_cols + n_right_cols)]
         append_cols = [col.append for col in result_data]
-        
-        # Perform join
+        n_out = 0
+
         for left_idx in range(left_nrows):
-            key = tuple(col[left_idx] for col in left_keys)
-            
-            # Validate hashability for object dtype columns
+            key = tuple(kd[left_idx] for kd in left_key_data)
             if validate_hashable:
                 Table._validate_key_tuple_hashable(key, left_keys, left_idx)
-            
-            # Enforce left-side cardinality (if needed)
-            if check_left_unique:
+
+            if left_keys_seen is not None:
                 if key in left_keys_seen:
                     raise SerifValueError(
                         f"expect_left_unique=True violated: left side has duplicate key {key}."
                     )
                 left_keys_seen.add(key)
-            
+
             matches = right_index_get(key)
-            if not matches:
-                continue  # INNER JOIN → skip non-matches
-            
-            # Emit each match
-            for right_idx in matches:
-                # Left columns
+            if matches:
+                for right_idx in matches:
+                    if matched_right_rows is not None:
+                        matched_right_rows.add(right_idx)
+                    for c_idx, col in enumerate(left_cols):
+                        append_cols[c_idx](col[left_idx])
+                    base = n_left_cols
+                    for offset, col in enumerate(right_cols):
+                        append_cols[base + offset](col[right_idx])
+                    n_out += 1
+            elif keep_unmatched_left:
+                # Unmatched left row: left values + None-padded right side
                 for c_idx, col in enumerate(left_cols):
                     append_cols[c_idx](col[left_idx])
-                
-                # Right columns
                 base = n_left_cols
-                for offset, col in enumerate(right_cols):
-                    append_cols[base + offset](col[right_idx])
-        
-        # Handle empty result
-        if all(len(col) == 0 for col in result_data):
+                for offset in range(n_right_cols):
+                    append_cols[base + offset](None)
+                n_out += 1
+
+        # ------------------------------------------------------------------
+        # 5. Unmatched right rows (full join only)
+        # ------------------------------------------------------------------
+        if keep_unmatched_right:
+            for right_idx in range(right_nrows):
+                if right_idx not in matched_right_rows:
+                    for c_idx in range(n_left_cols):
+                        append_cols[c_idx](None)
+                    base = n_left_cols
+                    for offset, col in enumerate(right_cols):
+                        append_cols[base + offset](col[right_idx])
+                    n_out += 1
+
+        # ------------------------------------------------------------------
+        # 6. Wrap into name-preserving Vectors
+        # ------------------------------------------------------------------
+        if n_out == 0:
             return Table(())
-        
-        # ------------------------------------------------------------------
-        # 5. Wrap result_data in Vectors
-        # ------------------------------------------------------------------
+
+        # A side only gains injected None rows when the OTHER side keeps its
+        # unmatched rows.
+        left_nullable_pad = keep_unmatched_right
+        right_nullable_pad = keep_unmatched_left
+
         result_cols = []
-        
-        # Left columns (preserve name)
         for col_idx, orig_col in enumerate(left_cols):
-            result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
-        
-        # Right columns (preserve name, drop same-name key columns)
+            result_cols.append(Table._wrap_join_column(
+                result_data[col_idx], orig_col, left_nullable_pad))
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
             if orig_col._name not in right_key_drop:
-                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
-        
+                result_cols.append(Table._wrap_join_column(
+                    result_data[base + offset], orig_col, right_nullable_pad))
+
         return Table(result_cols)
 
-    def join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+    @staticmethod
+    def _wrap_join_column(values, orig_col, nullable_pad):
         """
-        Left join two Tables on specified key columns.
-        Returns all rows from left table, with matching rows from right (or None for no match).
-        
+        Wrap join output values into a Vector, preserving the source column's
+        name and (when known) its schema -- one storage walk, no per-element
+        re-inference. The result schema is the source schema, widened to
+        nullable when the join can inject None rows into this side.
+        object/untyped sources fall back to full inference.
+        """
+        schema = orig_col.schema()
+        if schema is None or schema.kind is object:
+            return Vector(values, name=orig_col._name)
+        return Vector._from_iterable_known_dtype(
+            values,
+            Schema(schema.kind, schema.nullable or nullable_pad),
+            name=orig_col._name,
+        )
+
+    def inner_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+        """
+        Inner join two Tables on specified key columns.
+        Only returns rows where keys match in both tables.
+
         Args:
             other: Table to join with
             left_on: Column name(s) or Vector(s) from left table
             right_on: Column name(s) or Vector(s) from right table
             expect_left_unique: If True, raises if any left key appears more than once
             expect_right_unique: If True, raises if any right key appears more than once (default True)
-        
+
         Returns:
             Table with joined results
         """
-        # Validate and normalize join keys
-        pairs = self._validate_join_keys(other, left_on, right_on)
-        
-        # Extract join key columns (Vectors)
-        left_keys = [lk for lk, _ in pairs]
-        right_keys = [rk for _, rk in pairs]
-        # Drop right key column when it shares a name with the left key column
-        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
-        
-        # Check if any key columns have object dtype (need runtime validation)
-        validate_hashable = any(
-            (col.schema() is None or col.schema().kind is object)
-            for col in (left_keys + right_keys)
+        return self._join_impl(
+            other, left_on, right_on,
+            expect_left_unique=expect_left_unique,
+            expect_right_unique=expect_right_unique,
+            keep_unmatched_left=False,
+            keep_unmatched_right=False,
         )
-        
-        left_nrows = len(self)
-        right_nrows = len(other)
-        left_cols = self._storage
-        right_cols = other._storage
-        n_left_cols = len(left_cols)
-        n_right_cols = len(right_cols)
-        
-        # Build hash map on right: key_tuple -> list of row indices
-        right_index = {}
-        check_right_unique = expect_right_unique
-        if check_right_unique:
-            duplicates = {}
-        
-        for row_idx in range(right_nrows):
-            key = tuple(col[row_idx] for col in right_keys)
-            
-            # Validate hashability for object dtype columns
-            if validate_hashable:
-                self._validate_key_tuple_hashable(key, right_keys, row_idx)
-            
-            bucket = right_index.get(key)
-            if bucket is None:
-                right_index[key] = [row_idx]
-            else:
-                bucket.append(row_idx)
-                if check_right_unique and key not in duplicates:
-                    duplicates[key] = bucket
-        
-        # Enforce right-side uniqueness if required
-        if check_right_unique and duplicates:
-            example_key, example_indices = next(iter(duplicates.items()))
-            raise SerifValueError(
-                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
-                f"(appears {len(example_indices)} times)."
-            )
-        
-        # Prepare left-side uniqueness tracking if needed
-        check_left_unique = expect_left_unique
-        if check_left_unique:
-            left_keys_seen = set()
-        
-        # Perform left join, building result in COLUMN-MAJOR form
-        total_cols = n_left_cols + n_right_cols
-        result_data = [[] for _ in range(total_cols)]
-        
-        # Local binds for speed
-        result_append_cols = [col.append for col in result_data]
-        right_index_get = right_index.get
-        
-        for left_idx in range(left_nrows):
-            key = tuple(col[left_idx] for col in left_keys)
-            
-            # Validate hashability for object dtype columns
-            if validate_hashable:
-                self._validate_key_tuple_hashable(key, left_keys, left_idx)
-            
-            # Enforce left-side uniqueness if needed
-            if check_left_unique:
-                if key in left_keys_seen:
-                    raise SerifValueError(
-                        f"expect_left_unique=True violated: left side has duplicate key {key}."
-                    )
-                left_keys_seen.add(key)
-            
-            matches = right_index_get(key)
-            
-            if matches:
-                # For each matching right row, append combined row
-                for right_idx in matches:
-                    # Append left columns
-                    for c_idx, col in enumerate(left_cols):
-                        result_append_cols[c_idx](col[left_idx])
-                    
-                    # Append right columns
-                    base = n_left_cols
-                    for offset, col in enumerate(right_cols):
-                        result_append_cols[base + offset](col[right_idx])
-            else:
-                # No match: left row with None for all right columns
-                for c_idx, col in enumerate(left_cols):
-                    result_append_cols[c_idx](col[left_idx])
-                
-                base = n_left_cols
-                for offset in range(n_right_cols):
-                    result_append_cols[base + offset](None)
-        
-        # Handle completely empty result
-        if left_nrows == 0:
-            return Table(())
-        
-        # Wrap result_data into Vectors, preserving column names
-        result_cols = []
-        
-        # Left table columns
-        for col_idx, orig_col in enumerate(left_cols):
-            col_data = result_data[col_idx]
-            result_cols.append(Vector(col_data, name=orig_col._name))
-        
-        # Right table columns (drop same-name key columns)
-        for j, orig_col in enumerate(right_cols):
-            if orig_col._name not in right_key_drop:
-                col_data = result_data[n_left_cols + j]
-                result_cols.append(Vector(col_data, name=orig_col._name))
-        
-        return Table(result_cols)
+
+    def join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+        """
+        Left join two Tables on specified key columns.
+        Returns all rows from left table, with matching rows from right (or None for no match).
+
+        Args:
+            other: Table to join with
+            left_on: Column name(s) or Vector(s) from left table
+            right_on: Column name(s) or Vector(s) from right table
+            expect_left_unique: If True, raises if any left key appears more than once
+            expect_right_unique: If True, raises if any right key appears more than once (default True)
+
+        Returns:
+            Table with joined results
+        """
+        return self._join_impl(
+            other, left_on, right_on,
+            expect_left_unique=expect_left_unique,
+            expect_right_unique=expect_right_unique,
+            keep_unmatched_left=True,
+            keep_unmatched_right=False,
+        )
 
     def full_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=False):
         """
@@ -1414,187 +1344,224 @@ class Table(Vector):
             - All rows from right table
             - Matching rows combined
             - None where no match exists
-        
+
         Args:
             other: Table to join with
             left_on: Column name(s) or Vector(s) from left table
             right_on: Column name(s) or Vector(s) from right table
             expect_left_unique: If True, raises if any left key appears more than once
             expect_right_unique: If True, raises if any right key appears more than once (default False)
-        
+
         Returns:
             Table with joined results
         """
-        # ------------------------------------------------------------------
-        # 1. Validate join keys and extract columns
-        # ------------------------------------------------------------------
-        pairs = self._validate_join_keys(other, left_on, right_on)
-        left_keys = [lk for lk, _ in pairs]
-        right_keys = [rk for _, rk in pairs]
-        # Drop right key column when it shares a name with the left key column
-        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
-        
-        # Determine if we need to validate hashability (only for object dtype columns)
-        validate_hashable = any(
-            (col.schema() is None or col.schema().kind is object)
-            for col in (left_keys + right_keys)
+        return self._join_impl(
+            other, left_on, right_on,
+            expect_left_unique=expect_left_unique,
+            expect_right_unique=expect_right_unique,
+            keep_unmatched_left=True,
+            keep_unmatched_right=True,
         )
-        
-        left_nrows = len(self)
-        right_nrows = len(other)
-        
-        left_cols = self._storage
-        right_cols = other._storage
-        n_left_cols = len(left_cols)
-        n_right_cols = len(right_cols)
-        
-        # ------------------------------------------------------------------
-        # 2. Build hash index for right table
-        # ------------------------------------------------------------------
-        right_index = {}
-        right_index_get = right_index.get
-        
-        check_right_unique = expect_right_unique
-        if check_right_unique:
-            duplicates = {}
-        
-        for right_idx in range(right_nrows):
-            key = tuple(col[right_idx] for col in right_keys)
-            
-            # Validate hashability for object dtype columns
-            if validate_hashable:
-                Table._validate_key_tuple_hashable(key, right_keys, right_idx)
-            
-            bucket = right_index_get(key)
+
+    @staticmethod
+    def _make_uniquifier():
+        """Return a uniquify(name) function that suffixes repeats: x, x2, x3..."""
+        used_names = set()
+
+        def uniquify(name):
+            if name not in used_names:
+                used_names.add(name)
+                return name
+            i = 2
+            while f"{name}{i}" in used_names:
+                i += 1
+            new = f"{name}{i}"
+            used_names.add(new)
+            return new
+
+        return uniquify
+
+    def _build_partition_index(self, groupby, *, track_row_keys=False,
+                               key_label="groupby key"):
+        """
+        Normalize groupby specs to resolved columns and bucket row indices
+        by key tuple. Shared by aggregate() and window().
+
+        Returns (groupby_cols, partition_index, row_keys) where row_keys is
+        a per-row key list when track_row_keys=True (window needs it to
+        broadcast group values back to rows), else None.
+        """
+        nrows = len(self)
+        if isinstance(groupby, (str, Vector)):
+            groupby = [groupby]
+        groupby = [self._resolve_column(col) for col in groupby]
+
+        for i, col in enumerate(groupby):
+            if len(col) != nrows:
+                raise SerifValueError(
+                    f"{key_label} at index {i} has length {len(col)}, "
+                    f"but table has {nrows} rows."
+                )
+
+        partition_index = {}
+        pk_len = len(groupby)
+        over_data = [c._storage.to_tuple() for c in groupby]
+        row_keys = [None] * nrows if track_row_keys else None
+
+        for row_idx in range(nrows):
+            key = tuple(over_data[i][row_idx] for i in range(pk_len))
+            if row_keys is not None:
+                row_keys[row_idx] = key
+            bucket = partition_index.get(key)
             if bucket is None:
-                right_index[key] = [right_idx]
+                partition_index[key] = [row_idx]
             else:
-                bucket.append(right_idx)
-                if check_right_unique:
-                    duplicates[key] = bucket
-        
-        # Enforce right-side cardinality if necessary
-        if check_right_unique and duplicates:
-            example_key, example_inds = next(iter(duplicates.items()))
-            raise SerifValueError(
-                f"expect_right_unique=True violated: right side has duplicate key {example_key} "
-                f"(appears {len(example_inds)} times)."
+                bucket.append(row_idx)
+
+        return groupby, partition_index, row_keys
+
+    @staticmethod
+    def _group_slice(data, row_indices, source_col, name):
+        """
+        Build the per-group slice of a column with the source column's known
+        schema -- one walk, no per-element re-inference. object/untyped
+        sources fall back to full inference.
+        """
+        values = [data[i] for i in row_indices]
+        schema = source_col.schema()
+        if schema is None or schema.kind is object:
+            return Vector(values, name=name)
+        return Vector._from_iterable_known_dtype(
+            values, Schema(schema.kind, schema.nullable), name=name)
+
+    @staticmethod
+    def _reject_nonscalar(agg_name, value, detail, fn_name):
+        # aggregate()/window() are flat-only: every produced cell must be a
+        # scalar. A Vector coming back means either a lambda returned a
+        # column, or a method like .unique() produced a collection -- both
+        # are ambiguous here, so we puke loudly instead of silently nesting.
+        if isinstance(value, Vector):
+            raise SerifTypeError(
+                f"aggregations['{agg_name}']: {detail} returned a non-scalar "
+                f"(Vector) value. {fn_name}() is flat-only -- every cell must be "
+                f"a scalar. For a per-column block use t[cols].<method>."
             )
-        
-        # ------------------------------------------------------------------
-        # 3. Prepare left-side cardinality tracking
-        # ------------------------------------------------------------------
-        check_left_unique = expect_left_unique
-        if check_left_unique:
-            left_keys_seen = set()
-        
-        # Track which right rows are matched
-        matched_right_rows = set()
-        matched_right_add = matched_right_rows.add
-        
-        # ------------------------------------------------------------------
-        # 4. Build RESULT in column-major form
-        # ------------------------------------------------------------------
-        total_cols = n_left_cols + n_right_cols
-        result_data = [[] for _ in range(total_cols)]
-        append_cols = [col.append for col in result_data]
-        
-        # ------------------------------------------------------------------
-        # 5. Process LEFT table (major phase of full join)
-        # ------------------------------------------------------------------
-        for left_idx in range(left_nrows):
-            key = tuple(col[left_idx] for col in left_keys)
-            
-            # Validate hashability for object dtype columns
-            if validate_hashable:
-                Table._validate_key_tuple_hashable(key, left_keys, left_idx)
-            
-            # Enforce left-side cardinality
-            if check_left_unique:
-                if key in left_keys_seen:
+
+    def _apply_aggregations(self, aggregations, group_items, nrows, uniquify,
+                            *, allow_blocks, fn_name):
+        """
+        Compute per-group scalar values for each aggregation spec.
+
+        Yields (output_name, values) pairs with one value per group, in
+        group_items order. Shared dispatch for aggregate() and window():
+        bound Vector methods slice the source column per group; bound block
+        methods fan out one output column per source column (aggregate only);
+        plain callables receive each group as a Table.
+        """
+        for agg_name, func in aggregations.items():
+            if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
+                source = func.__self__
+                method_name = func.__name__
+                if len(source) != nrows:
                     raise SerifValueError(
-                        f"expect_left_unique=True violated: left side has duplicate key {key}."
+                        f"aggregations['{agg_name}']: vector length {len(source)} "
+                        f"!= table length {nrows}"
                     )
-                left_keys_seen.add(key)
-            
-            matches = right_index_get(key)
-            if matches:
-                # Emit matched combinations
-                for right_idx in matches:
-                    matched_right_add(right_idx)
-                    
-                    # Left
-                    for c_idx, col in enumerate(left_cols):
-                        append_cols[c_idx](col[left_idx])
-                    
-                    # Right
-                    base = n_left_cols
-                    for offset, col in enumerate(right_cols):
-                        append_cols[base + offset](col[right_idx])
+
+                if source.ndims() == 2:
+                    if not allow_blocks:
+                        # Block (fan-out) aggregations are supported by
+                        # aggregate() but not yet by window(). Refuse rather
+                        # than silently index columns by row number.
+                        raise SerifTypeError(
+                            f"aggregations['{agg_name}']: block aggregations "
+                            f"(t[cols].<method>) are not supported in window() yet; "
+                            f"use a single-column aggregation or aggregate()."
+                        )
+                    # Block aggregation: declared width = source column count.
+                    # Apply the method to each selected column independently and
+                    # fan out to one output column per source column, named by
+                    # raw-prepending the dict key (the prefix) to each source
+                    # column's own name. Per-column application (rather than
+                    # assembling a row) means a mixed-type block never
+                    # materialises a heterogeneous Vector.
+                    sub_names = source.column_names()
+                    sub_cols = source.cols()
+                    width = len(sub_names)
+                    col_data = [c._storage.to_tuple() for c in sub_cols]
+                    fanned = [[] for _ in range(width)]
+                    for _key, row_indices in group_items:
+                        for j in range(width):
+                            col_slice = Table._group_slice(
+                                col_data[j], row_indices, sub_cols[j], name=sub_names[j])
+                            v = getattr(col_slice, method_name)()
+                            Table._reject_nonscalar(
+                                agg_name, v, f"block method '{method_name}'", fn_name)
+                            fanned[j].append(v)
+                    for j in range(width):
+                        base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
+                        yield (uniquify(f"{agg_name}{base}"), fanned[j])
+                else:
+                    data = source._storage.to_tuple()
+                    out = []
+                    for _key, row_indices in group_items:
+                        group_vec = Table._group_slice(data, row_indices, source, name=None)
+                        val = getattr(group_vec, method_name)()
+                        Table._reject_nonscalar(agg_name, val, f"'{method_name}'", fn_name)
+                        out.append(val)
+                    yield (agg_name, out)
+            elif callable(func):
+                # Callable receives the group as a Table. Materialize each
+                # column once (not once per group).
+                col_data = [(col, col._storage.to_tuple()) for col in self._storage]
+                out = []
+                for _key, row_indices in group_items:
+                    group_cols = [
+                        Table._group_slice(data, row_indices, col, name=col._name)
+                        for col, data in col_data
+                    ]
+                    val = func(Table(group_cols))
+                    Table._reject_nonscalar(agg_name, val, "callable", fn_name)
+                    out.append(val)
+                yield (agg_name, out)
             else:
-                # No match → left row + None right
-                for c_idx, col in enumerate(left_cols):
-                    append_cols[c_idx](col[left_idx])
-                
-                base = n_left_cols
-                for offset in range(n_right_cols):
-                    append_cols[base + offset](None)
-        
-        # ------------------------------------------------------------------
-        # 6. Add unmatched RIGHT rows
-        # ------------------------------------------------------------------
-        for right_idx in range(right_nrows):
-            if right_idx not in matched_right_rows:
-                # Left side: all None
-                for c_idx in range(n_left_cols):
-                    append_cols[c_idx](None)
-                
-                # Right side: real values
-                base = n_left_cols
-                for offset, col in enumerate(right_cols):
-                    append_cols[base + offset](col[right_idx])
-        
-        # ------------------------------------------------------------------
-        # 7. If empty, return empty table
-        # ------------------------------------------------------------------
-        if left_nrows == 0 and right_nrows == 0:
-            return Table(())
-        
-        # ------------------------------------------------------------------
-        # 8. Wrap into Vectors with names preserved
-        # ------------------------------------------------------------------
-        result_cols = []
-        
-        # Left columns
-        for col_idx, orig_col in enumerate(left_cols):
-            result_cols.append(Vector(result_data[col_idx], name=orig_col._name))
-        
-        # Right columns (drop same-name key columns)
-        base = n_left_cols
-        for offset, orig_col in enumerate(right_cols):
-            if orig_col._name not in right_key_drop:
-                result_cols.append(Vector(result_data[base + offset], name=orig_col._name))
-        
-        return Table(result_cols)
-    
+                hint = (
+                    f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
+                    f" Use t.col.sum not t.col.sum())"
+                    if not callable(func) else ""
+                )
+                raise SerifTypeError(
+                    f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
+                )
+
+    @staticmethod
+    def _wrap_group_key_column(values, source_col, name):
+        """Wrap groupby key values with the source column's known schema;
+        object/untyped sources fall back to inference."""
+        schema = source_col.schema()
+        if schema is None or schema.kind is object:
+            return Vector(values, name=name)
+        return Vector._from_iterable_known_dtype(
+            values, Schema(schema.kind, schema.nullable), name=name)
+
     def aggregate(self, groupby=None, aggregations=None):
         """
         Group rows by partition key(s) and compute aggregations.
 
         Args:
-            groupby: Vector, str, or list of these — column(s) to group by.
+            groupby: Vector, str, or list of these -- column(s) to group by.
                      If None, the entire table is treated as one group.
             aggregations: dict of {output_name: func}
                 - Bound method of a Vector (e.g. t.sales.sum): slices the source
-                  column per group and calls that method on the slice → 1 column.
+                  column per group and calls that method on the slice -> 1 column.
                 - Bound method of a block selection (e.g. t['a', 'b'].first):
                   fans out to one column per selected column, each named by
                   raw-prepending output_name to that column's own name
-                  (e.g. output_name 'latest_' → 'latest_a', 'latest_b').
+                  (e.g. output_name 'latest_' -> 'latest_a', 'latest_b').
                 - Callable: receives the group as a Table, must return a scalar.
 
             For an ordered/correlated pick (e.g. each deal's most-recent event),
-            pre-sort the table and use positional first/last — a stable global
+            pre-sort the table and use positional first/last -- a stable global
             sort carries into every group. Bind the block to the SORTED table:
                 ts = t.sort_by('date')
                 ts.aggregate('deal_id', {'latest_': ts['date', 'valuation'].last})
@@ -1611,7 +1578,7 @@ class Table(Vector):
             t.aggregate(t.region, {"total": t.sales.sum, "avg": t.price.mean})
             t.aggregate(groupby=t.region, aggregations={"total": t.sales.sum})
             # most-recent event block per deal. Sort first, then bind the block
-            # to the SORTED table — the source columns must be the same table
+            # to the SORTED table -- the source columns must be the same table
             # aggregate() groups, or row order won't line up:
             ts = t.sort_by('date')
             ts.aggregate(
@@ -1622,9 +1589,6 @@ class Table(Vector):
         """
         nrows = len(self)
 
-        # ------------------------------------------------------------------
-        # 1. Normalize groupby
-        # ------------------------------------------------------------------
         # Allow passing the aggregations dict as the first positional arg
         if isinstance(groupby, dict):
             aggregations = groupby
@@ -1635,148 +1599,25 @@ class Table(Vector):
             partition_index = {(): list(range(nrows))}
             groupby = []
         else:
-            if isinstance(groupby, (str, Vector)):
-                groupby = [groupby]
-            groupby = [self._resolve_column(col) for col in groupby]
-
-            # ------------------------------------------------------------------
-            # 2. Validate lengths
-            # ------------------------------------------------------------------
-            for i, col in enumerate(groupby):
-                if len(col) != nrows:
-                    raise SerifValueError(
-                        f"groupby key at index {i} has length {len(col)}, "
-                        f"but table has {nrows} rows."
-                    )
-
-            # ------------------------------------------------------------------
-            # 3. Build partition index: key_tuple -> list of row indices
-            # ------------------------------------------------------------------
-            partition_index = {}
-            pk_len = len(groupby)
-            over_data = [c._storage.to_tuple() for c in groupby]
-
-            for row_idx in range(nrows):
-                key = tuple(over_data[i][row_idx] for i in range(pk_len))
-                bucket = partition_index.get(key)
-                if bucket is None:
-                    partition_index[key] = [row_idx]
-                else:
-                    bucket.append(row_idx)
+            groupby, partition_index, _ = self._build_partition_index(groupby)
 
         group_items = list(partition_index.items())
+        uniquify = Table._make_uniquifier()
 
-        # ------------------------------------------------------------------
-        # 4. Uniquify helper (for groupby key columns only)
-        # ------------------------------------------------------------------
-        used_names = set()
-
-        def uniquify(name):
-            if name not in used_names:
-                used_names.add(name)
-                return name
-            i = 2
-            while f"{name}{i}" in used_names:
-                i += 1
-            new = f"{name}{i}"
-            used_names.add(new)
-            return new
-
-        # ------------------------------------------------------------------
-        # 5. Groupby key columns
-        # ------------------------------------------------------------------
+        # Groupby key columns
         result_cols = []
         for idx, col in enumerate(groupby):
             values = [key[idx] for key, _ in group_items]
-            result_cols.append(Vector(values, name=uniquify(col._name or "key")))
+            result_cols.append(Table._wrap_group_key_column(
+                values, col, name=uniquify(col._name or "key")))
 
-        # ------------------------------------------------------------------
-        # 6. Aggregations
-        # ------------------------------------------------------------------
-        def _reject_nonscalar(agg_name, value, detail):
-            # aggregate() is flat-only: every produced cell must be a scalar.
-            # A Vector coming back means either a lambda returned a column, or a
-            # method like .unique() produced a collection — both are ambiguous
-            # here, so we puke loudly instead of silently nesting.
-            if isinstance(value, Vector):
-                raise SerifTypeError(
-                    f"aggregations['{agg_name}']: {detail} returned a non-scalar "
-                    f"(Vector) value. aggregate() is flat-only — every cell must be "
-                    f"a scalar. For a per-column block use t[cols].<method>."
-                )
-
+        # Aggregations
         if aggregations:
-            for agg_name, func in aggregations.items():
-                if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
-                    # Bound method of a column vector (e.g. t.sales.sum) or of a
-                    # block selection (e.g. t['a', 'b'].first / .sum).
-                    source = func.__self__
-                    method_name = func.__name__
-                    if len(source) != nrows:
-                        raise SerifValueError(
-                            f"aggregations['{agg_name}']: vector length {len(source)} "
-                            f"!= table length {nrows}"
-                        )
+            for out_name, out_values in self._apply_aggregations(
+                    aggregations, group_items, nrows, uniquify,
+                    allow_blocks=True, fn_name='aggregate'):
+                result_cols.append(Vector(out_values, name=out_name))
 
-                    if source.ndims() == 2:
-                        # Block aggregation: declared width = source column count.
-                        # Apply the method to each selected column independently
-                        # and fan out to one output column per source column,
-                        # named by raw-prepending the dict key (the prefix) to
-                        # each source column's own name. Per-column application
-                        # (rather than assembling a row) means a mixed-type block
-                        # never materialises a heterogeneous Vector, which would
-                        # otherwise warn about degrading to object.
-                        sub_names = source.column_names()
-                        width = len(sub_names)
-                        col_data = [c._storage.to_tuple() for c in source.cols()]
-                        fanned = [[] for _ in range(width)]
-                        for _key, row_indices in group_items:
-                            for j in range(width):
-                                col_slice = Vector(
-                                    [col_data[j][i] for i in row_indices],
-                                    name=sub_names[j],
-                                )
-                                v = getattr(col_slice, method_name)()
-                                _reject_nonscalar(agg_name, v, f"block method '{method_name}'")
-                                fanned[j].append(v)
-                        for j in range(width):
-                            base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
-                            result_cols.append(Vector(fanned[j], name=uniquify(f"{agg_name}{base}")))
-                    else:
-                        data = source._storage.to_tuple()
-                        out = []
-                        for _key, row_indices in group_items:
-                            group_vec = Vector([data[i] for i in row_indices])
-                            val = getattr(group_vec, method_name)()
-                            _reject_nonscalar(agg_name, val, f"'{method_name}'")
-                            out.append(val)
-                        result_cols.append(Vector(out, name=agg_name))
-                elif callable(func):
-                    # Callable receives the group as a Table
-                    out = []
-                    for _key, row_indices in group_items:
-                        group_cols = [
-                            Vector([col._storage.to_tuple()[i] for i in row_indices], name=col._name)
-                            for col in self._storage
-                        ]
-                        val = func(Table(group_cols))
-                        _reject_nonscalar(agg_name, val, "callable")
-                        out.append(val)
-                    result_cols.append(Vector(out, name=agg_name))
-                else:
-                    hint = (
-                        f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
-                        f" Use t.col.sum not t.col.sum())"
-                        if not callable(func) else ""
-                    )
-                    raise SerifTypeError(
-                        f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
-                    )
-
-        # ------------------------------------------------------------------
-        # 7. Final table
-        # ------------------------------------------------------------------
         return Table(result_cols)
 
     def window(self, groupby, aggregations=None):
@@ -1787,7 +1628,7 @@ class Table(Vector):
         in the group instead of collapsing to one row per group.
 
         Args:
-            groupby: Vector, str, or list — column(s) to partition by
+            groupby: Vector, str, or list -- column(s) to partition by
             aggregations: dict of {output_name: func}
                 - Bound method of a Vector (e.g. t.sales.sum): slices the source
                   column per group and calls that method on the slice
@@ -1805,123 +1646,29 @@ class Table(Vector):
                 }
             )
         """
-        # ------------------------------------------------------------------
-        # 1. Normalize groupby
-        # ------------------------------------------------------------------
-        if isinstance(groupby, (str, Vector)):
-            groupby = [groupby]
-        groupby = [self._resolve_column(col) for col in groupby]
-
-        # ------------------------------------------------------------------
-        # 2. Validate lengths
-        # ------------------------------------------------------------------
         nrows = len(self)
-        for i, col in enumerate(groupby):
-            if len(col) != nrows:
-                raise SerifValueError(
-                    f"Partition key at index {i} has length {len(col)}, "
-                    f"but table has {nrows} rows."
-                )
-
-        # ------------------------------------------------------------------
-        # 3. Build partition index + per-row key lookup
-        # ------------------------------------------------------------------
-        partition_index = {}
-        pk_len = len(groupby)
-        over_data = [c._storage.to_tuple() for c in groupby]
-        row_keys = [None] * nrows
-
-        for row_idx in range(nrows):
-            key = tuple(over_data[k][row_idx] for k in range(pk_len))
-            row_keys[row_idx] = key
-            bucket = partition_index.get(key)
-            if bucket is None:
-                partition_index[key] = [row_idx]
-            else:
-                bucket.append(row_idx)
-
+        groupby, partition_index, row_keys = self._build_partition_index(
+            groupby, track_row_keys=True, key_label="Partition key")
         group_items = list(partition_index.items())
+        uniquify = Table._make_uniquifier()
 
-        def expand_to_rows(group_map):
-            return [group_map[row_keys[i]] for i in range(nrows)]
-
-        # ------------------------------------------------------------------
-        # 4. Groupby key columns (copied straight through)
-        # ------------------------------------------------------------------
+        # Groupby key columns are copied straight through -- share storage via
+        # _clone (Table() below copies on construction anyway) so the column
+        # keeps its backend and subclass (a _Category stays categorical).
         result_cols = []
-        used_names = set()
-
-        def uniquify(name):
-            if name not in used_names:
-                used_names.add(name)
-                return name
-            i = 2
-            while f"{name}{i}" in used_names:
-                i += 1
-            new = f"{name}{i}"
-            used_names.add(new)
-            return new
-
         for col in groupby:
-            result_cols.append(Vector(list(col), name=uniquify(col._name or "key")))
+            result_cols.append(col._clone(col._storage, name=uniquify(col._name or "key")))
 
-        # ------------------------------------------------------------------
-        # 5. Aggregations
-        # ------------------------------------------------------------------
+        # Aggregations: compute one value per group, then broadcast to rows
         if aggregations:
-            for agg_name, func in aggregations.items():
-                if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
-                    source = func.__self__
-                    method_name = func.__name__
-                    if len(source) != nrows:
-                        raise SerifValueError(
-                            f"aggregations['{agg_name}']: vector length {len(source)} "
-                            f"!= table length {nrows}"
-                        )
-                    if source.ndims() == 2:
-                        # Block (fan-out) aggregations are supported by aggregate()
-                        # but not yet by window(). Refuse rather than silently
-                        # index columns by row number and return garbage.
-                        raise SerifTypeError(
-                            f"aggregations['{agg_name}']: block aggregations "
-                            f"(t[cols].<method>) are not supported in window() yet; "
-                            f"use a single-column aggregation or aggregate()."
-                        )
-                    data = source._storage.to_tuple()
-                    group_map = {}
-                    for _key, row_indices in group_items:
-                        group_vec = Vector([data[i] for i in row_indices])
-                        val = getattr(group_vec, method_name)()
-                        if isinstance(val, Vector):
-                            raise SerifTypeError(
-                                f"aggregations['{agg_name}']: '{method_name}' returned a "
-                                f"non-scalar (Vector). window() is flat-only — every cell "
-                                f"must be a scalar."
-                            )
-                        group_map[_key] = val
-                    result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
-                elif callable(func):
-                    group_map = {}
-                    for _key, row_indices in group_items:
-                        group_cols = [
-                            Vector([col._storage.to_tuple()[i] for i in row_indices], name=col._name)
-                            for col in self._storage
-                        ]
-                        group_map[_key] = func(Table(group_cols))
-                    result_cols.append(Vector(expand_to_rows(group_map), name=agg_name))
-                else:
-                    hint = (
-                        f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
-                        f" Use t.col.sum not t.col.sum())"
-                        if not callable(func) else ""
-                    )
-                    raise SerifTypeError(
-                        f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
-                    )
+            keys_in_order = [key for key, _ in group_items]
+            for out_name, out_values in self._apply_aggregations(
+                    aggregations, group_items, nrows, uniquify,
+                    allow_blocks=False, fn_name='window'):
+                group_map = dict(zip(keys_in_order, out_values))
+                expanded = [group_map[row_keys[i]] for i in range(nrows)]
+                result_cols.append(Vector(expanded, name=out_name))
 
-        # ------------------------------------------------------------------
-        # 6. Final table (same row count as input)
-        # ------------------------------------------------------------------
         return Table(result_cols)
 
     def sort_by(self, by, reverse=False, na_last=True):
@@ -2029,13 +1776,12 @@ class Table(Vector):
             indices.sort(key=key_fn, reverse=rev)
 
         # --- 6. Rebuild columns in sorted order ---
-        new_cols = []
-        for col in self._storage:
-            src = col._storage.to_tuple()
-            new_data = [src[i] for i in indices]
-            new_cols.append(Vector(new_data, name=col._name))
-
-        return Table(new_cols)
+        # Permute through the storage protocol: preserves each column's
+        # backend AND subclass (a _Category stays categorical, an int column
+        # keeps ArrayStorage) with zero re-inference. The columns are freshly
+        # built, so the nocopy assembly is safe.
+        new_cols = [col._clone(col._storage.take(indices)) for col in self._storage]
+        return Table._from_columns_nocopy(new_cols)
 
     def to_parquet(self, path: str) -> None:
         """Write this Table to a Parquet file. See serif.write_parquet for details."""

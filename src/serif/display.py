@@ -6,6 +6,7 @@ from datetime import date
 from typing import List
 from .naming import _get_reserved_names
 from .naming import _sanitize_user_name
+from .naming import _disambiguate
 
 
 # How many rows/columns to show before inserting "..."
@@ -134,8 +135,7 @@ def _compute_headers(cols, col_indices):
             if san is None:
                 san = f"col{idx}_"
             elif san in seen:
-                sep = "" if san.endswith("_") else "_"
-                san = f"{san}{sep}_{idx}"
+                san = _disambiguate(san, idx)
             else:
                 seen.add(san)
         else:
