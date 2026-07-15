@@ -38,9 +38,31 @@ def test_date_minus_timedelta_scalar():
     assert list(Vector([D2, D3]) - timedelta(days=1)) == [D1, D2]
 
 
-def test_date_minus_date_vector_gives_timedeltas():
+def test_date_minus_date_vector_gives_int_days():
+    # Doctrine: date arithmetic is a whole-days ring (Excel-style).
+    # date + int → date, so date - date → int. Python's timedelta semantics
+    # are kept for datetime vectors, where subsecond precision matters.
     result = Vector([D3, D2]) - Vector([D1, D1])
-    assert list(result) == [timedelta(days=2), timedelta(days=1)]
+    assert list(result) == [2, 1]
+    assert result.schema().kind is int
+
+
+def test_date_minus_date_scalar_gives_int_days():
+    assert list(Vector([D3, D2]) - D1) == [2, 1]
+
+
+def test_date_scalar_minus_date_vector_gives_int_days():
+    assert list(D3 - Vector([D1, D2])) == [2, 1]
+
+
+def test_date_minus_date_propagates_none():
+    assert list(Vector([D3, None]) - Vector([D1, D1])) == [2, None]
+
+
+def test_datetime_minus_datetime_keeps_timedelta():
+    a = datetime(2024, 1, 2, 12, 30)
+    b = datetime(2024, 1, 1, 12, 0)
+    assert list(Vector([a]) - Vector([b])) == [timedelta(days=1, minutes=30)]
 
 
 def test_date_plus_timedelta_keeps_date_kind():
