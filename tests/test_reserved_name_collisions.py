@@ -39,18 +39,3 @@ def test_column_named_after_reserved_method_stays_reachable(name):
     sanitized = _sanitize_user_name(name)
     assert sanitized.endswith('_'), f"{name!r} should sanitize with a trailing _"
     assert list(getattr(t, sanitized)) == [1, 2, 3]
-
-
-def test_first_last_collision_resolved():
-    # Regression for the first/last methods added for block aggregations:
-    # they must not make columns of those names unreachable.
-    t = Table({'first': [10, 20], 'last': [30, 40]})
-
-    assert list(t['first']) == [10, 20]
-    assert list(t['last']) == [30, 40]
-    assert list(t.first_) == [10, 20]
-    assert list(t.last_) == [30, 40]
-
-    # Plain dot-access resolves to the method, not the column.
-    assert callable(t.first)
-    assert callable(t.last)

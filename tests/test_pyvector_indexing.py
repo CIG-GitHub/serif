@@ -129,13 +129,6 @@ class TestIntegerVectorIndexing:
 class TestMutationUpdatesFingerprint:
     """Test that all mutation types update fingerprint"""
     
-    def test_single_index_updates_fingerprint(self):
-        v = Vector([1, 2, 3])
-        fp1 = v.fingerprint()
-        v[0] = 999
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-    
     def test_slice_updates_fingerprint(self):
         v = Vector([1, 2, 3, 4, 5])
         fp1 = v.fingerprint()

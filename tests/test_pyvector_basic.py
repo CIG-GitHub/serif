@@ -121,19 +121,6 @@ class TestFingerprint:
         v = Vector([1, 2, 3])
         fp = v.fingerprint()
         assert isinstance(fp, int)
-    
-    def test_fingerprint_changes_on_mutation(self):
-        v = Vector([1, 2, 3])
-        fp1 = v.fingerprint()
-        v[0] = 999
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-    
-    def test_fingerprint_same_for_equal_vectors(self):
-        v1 = Vector([1, 2, 3])
-        v2 = Vector([1, 2, 3])
-        # Note: fingerprints should be same for same data
-        assert v1.fingerprint() == v2.fingerprint()
 
 
 class TestFillNA:

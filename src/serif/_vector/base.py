@@ -78,11 +78,6 @@ def _kleene_xor(x, y):
         return None
     return bool(x) != bool(y)
 
-def _slice_length(s: slice, sequence_length: int) -> int:
-    start, stop, step = s.indices(sequence_length)
-    return max(0, (stop - start + (step - (1 if step > 0 else -1))) // step)
-
-
 def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
     """
     Resolve the output Schema for a binary math op purely from types.
@@ -818,7 +813,6 @@ class Vector():
 
         n = len(self)
         underlying = self._storage  # local bind
-        append_update = lambda idx, v: updates.append((idx, v))
 
         updates = []  # list of (idx, new_value)
 
@@ -845,17 +839,17 @@ class Vector():
                         "Iterable length must match number of True mask elements."
                     )
                 for idx, v in zip(true_indices, value):
-                    append_update(idx, v)
+                    updates.append((idx, v))
             else:
                 for idx in true_indices:
-                    append_update(idx, value)
+                    updates.append((idx, value))
 
         # =====================================================================
         # CASE 2 — Slice assignment
         # =====================================================================
         elif isinstance(key, slice):
-            slice_len = _slice_length(key, n)
             start, stop, step = key.indices(n)
+            slice_len = len(range(start, stop, step))
 
             if is_seq_val:
                 if slice_len != len(value):
@@ -868,7 +862,7 @@ class Vector():
             # faster than enumerate(zip()) for slices
             rng = range(start, stop, step)
             for idx, new_val in zip(rng, values_to_assign):
-                append_update(idx, new_val)
+                updates.append((idx, new_val))
 
         # =====================================================================
         # CASE 3 — Single integer index
@@ -881,7 +875,7 @@ class Vector():
                 raise SerifIndexError(
                     f"Index {key} out of range for vector length {n}"
                 )
-            append_update(key, value)
+            updates.append((key, value))
 
         # =====================================================================
         # CASE 4 — Vector of integer indices
@@ -901,14 +895,14 @@ class Vector():
                         idx += n
                     if not (0 <= idx < n):
                         raise SerifIndexError(f"Index {idx} out of range.")
-                    append_update(idx, val)
+                    updates.append((idx, val))
             else:
                 for idx in key:
                     if idx < 0:
                         idx += n
                     if not (0 <= idx < n):
                         raise SerifIndexError(f"Index {idx} out of range.")
-                    append_update(idx, value)
+                    updates.append((idx, value))
 
         # =====================================================================
         # CASE 5 — List or tuple of integer indices
@@ -925,14 +919,14 @@ class Vector():
                         idx += n
                     if not (0 <= idx < n):
                         raise SerifIndexError(f"Index {idx} out of range.")
-                    append_update(idx, val)
+                    updates.append((idx, val))
             else:
                 for idx in key:
                     if idx < 0:
                         idx += n
                     if not (0 <= idx < n):
                         raise SerifIndexError(f"Index {idx} out of range.")
-                    append_update(idx, value)
+                    updates.append((idx, value))
 
         else:
             raise SerifTypeError(
@@ -973,7 +967,6 @@ class Vector():
         data_list = list(underlying)           # COW materialization
 
         for idx, new_val in updates:
-            old_val = data_list[idx]
             data_list[idx] = new_val
 
         nullable = self._dtype.nullable if self._dtype is not None else True
@@ -1426,9 +1419,6 @@ class Vector():
         return Vector(out)
 
 
-    def argsort(self):
-        return [i for i, _ in sorted(enumerate(self._storage), key=lambda x: x[1])]
-
     def pluck(self, key, default=None):
         """Extract a key/index from each element, returning default if not found.
         
@@ -1579,7 +1569,7 @@ class Vector():
         """ The << operator behavior has been overridden to attempt to concatenate (append) the new array to the end of the first
         """
         if self._dtype.kind in (bool, int) and isinstance(other, int):
-            warnings.warn(f"The behavior of >> and << have been overridden for concatenation. Use .bitshift() to shift bits.")
+            warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         nullable = self._dtype.nullable if self._dtype is not None else True
         if isinstance(other, Vector):
@@ -1595,7 +1585,7 @@ class Vector():
         """ The >> operator behavior has been overridden to add the column(s) of other to self
         """
         if self._dtype.kind in (bool, int) and isinstance(other, int):
-            warnings.warn(f"The behavior of >> and << have been overridden for concatenation. Use .bitshift() to shift bits.")
+            warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         if type(other).__name__ == 'Table':
             return Vector((self,) + other.cols())

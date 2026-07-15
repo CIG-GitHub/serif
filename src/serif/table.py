@@ -247,11 +247,9 @@ class Table(Vector):
         self._length = len(initial[0]) if initial else 0
         
         # Deep copy columns to enforce value semantics
-        # Tables receive snapshots of vectors, preventing aliasing
-        # Save original names BEFORE copying
-        original_names = [vec._name for vec in initial] if initial else []
-        
-        # Make copies of the vectors
+        # Tables receive snapshots of vectors, preventing aliasing.
+        # copy() preserves names on every Vector flavor, so no separate
+        # name save/restore is needed.
         if initial:
             initial = tuple(vec.copy() for vec in initial)
         else:
@@ -263,13 +261,6 @@ class Table(Vector):
         
         # Call parent constructor
         super().__init__(initial, dtype=dtype, name=name)
-        
-        # Restore column names after parent init
-        # The parent Vector.__init__ stores columns in self._storage
-        if original_names:
-            for i, col_name in enumerate(original_names):
-                if i < len(self._storage):
-                    self._storage[i]._name = col_name
         
         # Build column map
         self._column_map = self._build_column_map()
@@ -291,7 +282,7 @@ class Table(Vector):
         """Build mapping from sanitized column names to column indices.
         
         This is computed once during table initialization and used by
-        PyRow for O(1) attribute lookups during iteration.
+        Row for O(1) attribute lookups during iteration.
         """
         column_map = {}
         seen = {}
@@ -389,10 +380,10 @@ class Table(Vector):
             col = self._storage[col_idx]
             
             # Validate: does this column's sanitized name match base_name?
-            from .naming import _sanitize_user_name
+            # (base_name comes from _parse_indexed_attr already sanitized.)
             sanitized = _sanitize_user_name(col._name)
-            
-            if sanitized != base_name.lower():
+
+            if sanitized != base_name:
                 raise AttributeError(
                     f"Column {col_idx} is '{col._name}' (sanitizes to '{sanitized}'), not '{base_name}'"
                 )
@@ -476,10 +467,10 @@ class Table(Vector):
                     )
                 
                 # Validate: does this column's sanitized name match base_name?
-                from .naming import _sanitize_user_name
+                # (base_name comes from _parse_indexed_attr already sanitized.)
                 sanitized = _sanitize_user_name(self._storage[col_idx_indexed]._name)
-                
-                if sanitized != base_name.lower():
+
+                if sanitized != base_name:
                     raise AttributeError(
                         f"Column {col_idx_indexed} is '{self._storage[col_idx_indexed]._name}' "
                         f"(sanitizes to '{sanitized}'), not '{base_name}'"
@@ -501,8 +492,11 @@ class Table(Vector):
                 object.__setattr__(self, '_column_map', self._build_column_map())
                 return
             
-            # Regular column lookup by name
-            col_idx = self._column_map.get(attr) or self._column_map.get(attr.lower())
+            # Regular column lookup by name. Explicit None checks — a column
+            # at index 0 is a valid (falsy) lookup result.
+            col_idx = self._column_map.get(attr)
+            if col_idx is None:
+                col_idx = self._column_map.get(attr.lower())
             if col_idx is not None:
                 # Replace the column in _storage
                 if not isinstance(value, Vector):
@@ -656,7 +650,7 @@ class Table(Vector):
             if isinstance(row_spec, slice):
                 row_sliced = self[row_spec]  # Returns Table
             elif isinstance(row_spec, int):
-                # Single row -> return PyRow, then index into it
+                # Single row -> return Row, then index into it
                 return self[row_spec][col_spec]
             else:
                 raise SerifKeyError(f"Invalid row specifier: {type(row_spec)}")
@@ -729,7 +723,9 @@ class Table(Vector):
             target_indices = [col_spec]
         elif isinstance(col_spec, str):
             # Look up by name
-            idx = self._column_map.get(col_spec) or self._column_map.get(col_spec.lower())
+            idx = self._column_map.get(col_spec)
+            if idx is None:
+                idx = self._column_map.get(col_spec.lower())
             if idx is None:
                 raise SerifKeyError(f"Column '{col_spec}' not found")
             target_indices = [idx]
@@ -737,7 +733,9 @@ class Table(Vector):
             # Handle list of names/ints
             for c in col_spec:
                 if isinstance(c, str):
-                    idx = self._column_map.get(c) or self._column_map.get(c.lower())
+                    idx = self._column_map.get(c)
+                    if idx is None:
+                        idx = self._column_map.get(c.lower())
                     if idx is None:
                         raise SerifKeyError(f"Column '{c}' not found")
                     target_indices.append(idx)
@@ -849,7 +847,7 @@ class Table(Vector):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
         """
         if self._dtype is not None and self._dtype.kind in (bool, int) and isinstance(other, int):
-            warnings.warn(f"The behavior of >> and << have been overridden. Use .bitshift() to shift bits.")
+            warnings.warn("The behavior of >> and << have been overridden. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         # Dict syntax: {name: values, ...}
         if isinstance(other, dict):

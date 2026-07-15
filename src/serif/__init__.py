@@ -20,6 +20,7 @@ Zero external dependencies - pure Python stdlib only.
 """
 
 from ._vector import Vector
+from ._vector import Schema
 from ._vector import _Int
 from ._vector import _Float
 from ._vector import _String
@@ -38,6 +39,7 @@ __version__ = "0.1.5"
 __all__ = [
     "Vector",
     "Table",
+    "Schema",
     "read_csv",
     "read_parquet",
     "write_parquet",
