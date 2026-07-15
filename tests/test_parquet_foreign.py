@@ -65,7 +65,7 @@ def _single_column_file(path, *, phys, conv=None, optional=False, page_body,
         uncompressed_size = len(page_body)
 
     buf = bytearray(_MAGIC)
-    dph = _enc_data_page_header(num_values, optional)
+    dph = _enc_data_page_header(num_values)
     ph = _enc_page_header(uncompressed_size, len(page_body), dph)
     page = ph + page_body
     offset = len(buf)
@@ -205,7 +205,7 @@ def test_multi_row_group_strings_with_nulls(tmp_path):
     row_groups = []
     for values in (group1, group2):
         body = _string_page(values)
-        dph = _enc_data_page_header(len(values), True)
+        dph = _enc_data_page_header(len(values))
         ph = _enc_page_header(len(body), len(body), dph)
         page = ph + body
         offset = len(buf)

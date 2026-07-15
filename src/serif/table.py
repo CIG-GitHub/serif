@@ -462,7 +462,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows', '_storage'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_wild', '_repr_rows', '_storage'):
             object.__setattr__(self, attr, value)
             return
         
@@ -2064,7 +2064,6 @@ class Table(Vector):
         object.__setattr__(t, '_display_as_row', False)
         object.__setattr__(t, '_wild',          False)
         object.__setattr__(t, '_fp',            None)
-        object.__setattr__(t, '_fp_powers',     None)
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)

@@ -1,9 +1,7 @@
 import operator
 import warnings
-import re
 import math
 from builtins import isinstance as b_isinstance
-from collections.abc import Iterator
 from collections.abc import Iterable
 
 from ..errors import SerifTypeError
@@ -22,17 +20,13 @@ from .storage import TupleStorage
 
 from datetime import date
 from datetime import datetime
-from datetime import timedelta
 from itertools import chain
 
 from typing import Any
-from typing import Iterable
 from typing import List
-from typing import Tuple
 
 # ============================================================
 # Reverse arithmetic operation helpers
-## This section looks ok
 # ============================================================
 def _reverse_add(y, x):
     return x + y
@@ -258,7 +252,6 @@ class Vector():
         instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(data, nullable)
         return instance
@@ -281,7 +274,6 @@ class Vector():
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = self._build_storage(initial, nullable)
         self._fp = None
-        self._fp_powers = None
 
     def _build_storage(self, data, nullable):
         tc = getattr(self, 'typecode', None)
@@ -309,7 +301,6 @@ class Vector():
         instance._display_as_row = self._display_as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         instance._storage = new_storage
         return instance
 
@@ -325,7 +316,6 @@ class Vector():
         instance._display_as_row = False
         instance._wild = False
         instance._fp = None
-        instance._fp_powers = None
         instance._storage = storage
         return instance
 
@@ -340,7 +330,6 @@ class Vector():
         instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(iterable, nullable)
         return instance
@@ -398,18 +387,6 @@ class Vector():
 
         return hash(repr(x))
 
-    def _ensure_fp_powers(self) -> None:
-        n = len(self._storage)
-        if n == 0:
-            self._fp_powers = []
-            return
-        P = self._FP_P
-        B = self._FP_B
-        pw = [1] * n
-        for i in range(n - 2, -1, -1):
-            pw[i] = (pw[i + 1] * B) % P
-        self._fp_powers = pw
-
     def _compute_fingerprint_full(self) -> int:
         P = self._FP_P
         B = self._FP_B
@@ -421,8 +398,6 @@ class Vector():
 
     def fingerprint(self) -> int:
         if self._fp is None:
-            if self._fp_powers is None or len(self._fp_powers) != len(self._storage):
-                self._ensure_fp_powers()
             self._fp = self._compute_fingerprint_full()
         return self._fp
 
@@ -774,7 +749,7 @@ class Vector():
         Includes:
         - dtype validation & promotion
         - copy-on-write
-        - fingerprint incremental update
+        - fingerprint invalidation
         """
 
         # === Fast precomputed checks ===
@@ -939,7 +914,7 @@ class Vector():
                             f"Promotion not supported."
                         )
         # =====================================================================
-        # MUTATE — copy-on-write + fingerprint updates
+        # MUTATE — copy-on-write + fingerprint invalidation
         # =====================================================================
         data_list = list(underlying)           # COW materialization
 

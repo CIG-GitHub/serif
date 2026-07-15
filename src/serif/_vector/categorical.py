@@ -46,7 +46,6 @@ class _Category(Vector):
         self._display_as_row = False
         self._wild = True
         self._fp = None
-        self._fp_powers = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
         self._storage = _CategoryStorage(codes, categories)
 

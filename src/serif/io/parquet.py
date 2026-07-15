@@ -302,17 +302,6 @@ def _skip_map(data, pos: int) -> int:
     return pos
 
 
-def _read_struct_fields(data, pos: int):
-    """
-    Generator: yields (field_id, type_code, pos_after_header).
-    Caller must consume the field value and advance pos themselves — but
-    since we can't do that here, we instead return a simple flat reader.
-
-    Actually: return a dict-building function instead.
-    """
-    raise NotImplementedError  # Use _parse_* functions below
-
-
 # ---------------------------------------------------------------------------
 # Parquet struct encoding
 # ---------------------------------------------------------------------------
@@ -339,7 +328,7 @@ def _enc_schema_element(name: str, phys_type, conv_type, rep_type,
     return w.stop()
 
 
-def _enc_data_page_header(num_values: int, nullable: bool) -> bytes:
+def _enc_data_page_header(num_values: int) -> bytes:
     """
     DataPageHeader fields:
       1: num_values (i32)
@@ -793,7 +782,7 @@ def write_parquet(table, path: str) -> None:
         uncompressed = len(page_body)
 
         # Build page: PageHeader + body
-        dph        = _enc_data_page_header(n, nullable)
+        dph        = _enc_data_page_header(n)
         ph         = _enc_page_header(uncompressed, uncompressed, dph)
         full_page  = ph + page_body
         total_size = len(full_page)   # header + body, as required by spec
@@ -1279,14 +1268,10 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
     codec          = cm.get('codec', _CODEC_UNCOMPRESSED)
     num_values     = cm['num_values']
     data_page_off  = cm['data_page_offset']
-    dict_page_off  = cm.get('dictionary_page_offset')
 
-    # Skip dictionary page if present (we don't support dictionary encoding,
-    # but we can skip over it gracefully if the data pages are PLAIN)
+    # If the file has a dictionary page it sits before data_page_offset;
+    # starting from data_page_offset skips it implicitly.
     pos = data_page_off
-
-    # If the file has a dictionary page before the data page, it would be at
-    # dict_page_off. We start reading from data_page_off so it's fine.
 
     values    = None   # None = not yet initialised; may become list or array.array
     remaining = num_values
