@@ -250,7 +250,14 @@ class _Category(Vector):
         return None
 
     def _elementwise_compare(self, other, op):
+        # Unknown in, unknown out (docs/null-semantics.md): null positions
+        # compare to None, and the result vector is nullable when any None
+        # was produced.
         is_ordering = op in _ORDERING_OPS
+
+        def _wrap(result):
+            return Vector._from_iterable_known_dtype(
+                result, Schema(bool, any(v is None for v in result)))
 
         # vs scalar string
         if isinstance(other, str):
@@ -259,21 +266,21 @@ class _Category(Vector):
                     raise SerifValueError(
                         f"Cannot order-compare: {other!r} is not in the category list {self._categories}"
                     )
-                # == unknown value → all False; != unknown value → all True (for non-null)
+                # == unknown value → False; != unknown value → True; null → None
                 import operator as _op2
                 is_ne = op is _op2.ne
-                return Vector._from_iterable_known_dtype(
-                    [is_ne and not self._code_storage.is_null(i) for i in range(len(self))],
-                    Schema(bool, False)
-                )
+                return _wrap([
+                    None if self._code_storage.is_null(i) else is_ne
+                    for i in range(len(self))
+                ])
             rhs_code = self._categories.index(other)
             result = []
             for i in range(len(self)):
                 if self._code_storage.is_null(i):
-                    result.append(False)
+                    result.append(None)
                 else:
                     result.append(bool(op(self._code_storage[i], rhs_code)))
-            return Vector._from_iterable_known_dtype(result, Schema(bool, False))
+            return _wrap(result)
 
         # vs another categorical
         if isinstance(other, _Category):
@@ -286,20 +293,20 @@ class _Category(Vector):
                 result = []
                 for lv, rv in zip(self._storage, other._storage):
                     if lv is None or rv is None:
-                        result.append(False)
+                        result.append(None)
                     else:
                         result.append(bool(op(lv, rv)))
-                return Vector._from_iterable_known_dtype(result, Schema(bool, False))
+                return _wrap(result)
             # Same categories — use codes directly
             result = []
             for i in range(len(self)):
                 l_null = self._code_storage.is_null(i)
                 r_null = other._code_storage.is_null(i)
                 if l_null or r_null:
-                    result.append(False)
+                    result.append(None)
                 else:
                     result.append(bool(op(self._code_storage[i], other._code_storage[i])))
-            return Vector._from_iterable_known_dtype(result, Schema(bool, False))
+            return _wrap(result)
 
         # vs plain string vector
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind == str:
@@ -309,7 +316,7 @@ class _Category(Vector):
                 result = []
                 for i, rv in enumerate(other):
                     if self._code_storage.is_null(i) or rv is None:
-                        result.append(False)
+                        result.append(None)
                         continue
                     if rv not in cat_index:
                         raise SerifValueError(
@@ -321,10 +328,10 @@ class _Category(Vector):
                 result = []
                 for lv, rv in zip(self._storage, other):
                     if lv is None or rv is None:
-                        result.append(False)
+                        result.append(None)
                     else:
                         result.append(bool(op(lv, rv)))
-            return Vector._from_iterable_known_dtype(result, Schema(bool, False))
+            return _wrap(result)
 
         raise SerifTypeError(
             f"Cannot compare categorical with {type(other).__name__!r}"

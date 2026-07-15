@@ -120,8 +120,9 @@ def test_row_eq_list(num_t):
     assert list(num_t[0] == [1, 10, 100]) == [True, True, True]
 
 
-def test_row_compare_nulls_are_false(null_t):
-    assert list(null_t[1] == null_t[1]) == [True, False]
+def test_row_compare_nulls_are_null(null_t):
+    # Unknown in, unknown out (docs/null-semantics.md).
+    assert list(null_t[1] == null_t[1]) == [True, None]
 
 
 def test_row_isna(null_t):

@@ -46,6 +46,38 @@ def _reverse_mod(y, x):
 def _reverse_pow(y, x):
     return x ** y
 
+
+# ============================================================
+# Kleene three-valued logic (see docs/null-semantics.md)
+# The known operand may settle the result; otherwise unknown propagates.
+# ============================================================
+
+def _kleene_and(x, y):
+    if x is not None and not x:
+        return False
+    if y is not None and not y:
+        return False
+    if x is None or y is None:
+        return None
+    return True
+
+
+def _kleene_or(x, y):
+    if x is not None and x:
+        return True
+    if y is not None and y:
+        return True
+    if x is None or y is None:
+        return None
+    return False
+
+
+def _kleene_xor(x, y):
+    # No settling operand for xor: unknown with anything is unknown.
+    if x is None or y is None:
+        return None
+    return bool(x) != bool(y)
+
 def _slice_length(s: slice, sequence_length: int) -> int:
     start, stop, step = s.indices(sequence_length)
     return max(0, (stop - start + (step - (1 if step > 0 else -1))) // step)
@@ -712,7 +744,9 @@ class Vector():
             return self._storage[key[-1]][key[:-1]]
 
         key = self._check_duplicate(key)
-        if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
+        if isinstance(key, Vector) and key.schema().kind == bool:
+            # Nullable masks are allowed: a null entry EXCLUDES the row
+            # (SQL WHERE semantics — None is falsy in the filter below).
             if len(self) != len(key):
                 raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
@@ -772,16 +806,16 @@ class Vector():
         # CASE 1 — Boolean mask (fast-path)
         # =====================================================================
         if (
-            isinstance(key, Vector)
-            and key.schema().kind == bool
-            and not key.schema().nullable
+            isinstance(key, Vector) and key.schema().kind == bool
         ) or (
             isinstance(key, list) and all(isinstance(e, bool) for e in key)
         ):
             if len(key) != n:
                 raise SerifValueError("Boolean mask length must match vector length.")
 
-            # Precompute true indices (much faster than branch-per-element)
+            # Precompute true indices (much faster than branch-per-element).
+            # A null mask entry assigns nothing (None is falsy here) — SQL
+            # WHERE semantics, see docs/null-semantics.md.
             true_indices = [i for i, flag in enumerate(key) if flag]
             tcount = len(true_indices)
 
@@ -957,32 +991,36 @@ class Vector():
                 for col in other.cols()
             ))
         
+        # Element-wise: unknown in, unknown out (docs/null-semantics.md).
         if isinstance(other, Vector):
-            # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            other_schema = other.schema()
+            nullable = (
+                (self._dtype.nullable if self._dtype is not None else True)
+                or (other_schema.nullable if other_schema is not None else True)
+            )
             return Vector._from_iterable_known_dtype(
-                (False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
-                Schema(bool, False),
+                (None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
+                Schema(bool, nullable),
             )
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            vals = [None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)]
             return Vector._from_iterable_known_dtype(
-                (False if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
-                Schema(bool, False),
-            )
+                vals, Schema(bool, any(v is None for v in vals)))
         # Scalar comparison
         if other is None and op in (operator.eq, operator.ne):
             warnings.warn(
-                "Null comparison: `v == None` always returns False for null values. "
+                "Null comparison: `v == None` yields null for every element. "
                 "Use `v.isna()` to test for nulls.",
                 stacklevel=2
             )
+        nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None
         return Vector._from_iterable_known_dtype(
-            (False if x is None else bool(op(x, other)) for x in self),
-            Schema(bool, False),
+            (None if (x is None or other is None) else bool(op(x, other)) for x in self),
+            Schema(bool, nullable),
         )    # Now, we can redefine the comparison methods using the helper function
     
     def __eq__(self, other):
@@ -1003,23 +1041,53 @@ class Vector():
     def __ne__(self, other):
         return self._elementwise_compare(other, operator.ne)
 
+    def _logical_elementwise(self, other, kleene_func):
+        """Kleene three-valued logical op (docs/null-semantics.md)."""
+        other = self._check_duplicate(other)
+        if self.ndims() == 2:
+            return self.copy(tuple(
+                col._logical_elementwise(other, kleene_func) for col in self.cols()
+            ))
+        if isinstance(other, Vector) and other.ndims() == 2:
+            return other.copy(tuple(
+                self._logical_elementwise(col, kleene_func) for col in other.cols()
+            ))
+        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
+            if len(self) != len(other):
+                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            vals = [kleene_func(x, y) for x, y in zip(self, other, strict=True)]
+        else:
+            vals = [kleene_func(x, other) for x in self]
+        return Vector._from_iterable_known_dtype(
+            vals, Schema(bool, any(v is None for v in vals)))
+
+    # &, |, ^ dispatch by dtype: bool vectors get Kleene logic; int vectors
+    # get Python's bitwise operators (values obey Python, absence obeys the
+    # null doctrine).
+
     def __and__(self, other):
-        return self._elementwise_compare(other, operator.and_)
+        if self._dtype is not None and self._dtype.kind is int:
+            return self._elementwise_operation(other, operator.and_, '__and__', '&')
+        return self._logical_elementwise(other, _kleene_and)
 
     def __or__(self, other):
-        return self._elementwise_compare(other, operator.or_)
+        if self._dtype is not None and self._dtype.kind is int:
+            return self._elementwise_operation(other, operator.or_, '__or__', '|')
+        return self._logical_elementwise(other, _kleene_or)
 
     def __xor__(self, other):
-        return self._elementwise_compare(other, operator.xor)
+        if self._dtype is not None and self._dtype.kind is int:
+            return self._elementwise_operation(other, operator.xor, '__xor__', '^')
+        return self._logical_elementwise(other, _kleene_xor)
 
     def __rand__(self, other):
-        return self._elementwise_compare(other, operator.and_)
+        return self.__and__(other)
 
     def __ror__(self, other):
-        return self._elementwise_compare(other, operator.or_)
+        return self.__or__(other)
 
     def __rxor__(self, other):
-        return self._elementwise_compare(other, operator.xor)
+        return self.__xor__(other)
 
 
     """ Math operations """
@@ -1131,10 +1199,14 @@ class Vector():
         return self._unary_operation(operator.abs, '__abs__')
 
     def __invert__(self):
-        # For boolean vectors, use logical NOT instead of bitwise NOT
+        # For boolean vectors, use logical NOT instead of bitwise NOT.
+        # NOT unknown is unknown (docs/null-semantics.md) — the old
+        # `not None` mapped nulls to True.
         if self._dtype and self._dtype.kind is bool:
-            return self._clone(
-                self._build_storage((not x for x in self), self._dtype.nullable)
+            return Vector._from_iterable_known_dtype(
+                (None if x is None else (not x) for x in self),
+                Schema(bool, self._dtype.nullable),
+                as_row=self._display_as_row,
             )
         return self._unary_operation(operator.invert, '__invert__')
 
