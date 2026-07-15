@@ -275,6 +275,10 @@ class Vector():
         tc = getattr(self, 'typecode', None)
         if tc is not None:
             return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
+        # Route str columns to the compact buffer backend
+        if getattr(self, '_dtype', None) is not None and self._dtype.kind is str:
+            from .storage import StringStorage
+            return StringStorage.from_iterable(data)
         return TupleStorage.from_iterable(data, nullable=nullable)
 
     def _clone(self, new_storage, dtype=..., name=...):
