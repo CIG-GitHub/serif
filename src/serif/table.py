@@ -13,6 +13,7 @@ from ._vector.storage import TupleStorage, ArrayStorage
 from .errors import SerifKeyError
 from .errors import SerifValueError
 from .errors import SerifTypeError
+from .errors import SerifEmptyReductionError
 
 
 def _missing_col_error(name, context="Table"):
@@ -1551,11 +1552,18 @@ class Table(Vector):
                     width = len(sub_names)
                     col_data = [c._storage.to_tuple() for c in sub_cols]
                     fanned = [[] for _ in range(width)]
-                    for _key, row_indices in group_items:
+                    for key, row_indices in group_items:
                         for j in range(width):
                             col_slice = Table._group_slice(
                                 col_data[j], row_indices, sub_cols[j], name=sub_names[j])
-                            v = getattr(col_slice, method_name)()
+                            try:
+                                v = getattr(col_slice, method_name)()
+                            except SerifEmptyReductionError as e:
+                                col_desc = sub_names[j] if sub_names[j] is not None else f"col{j}"
+                                Table._chain_empty_reduction(
+                                    e, agg_name,
+                                    f"block method '{method_name}', column '{col_desc}'",
+                                    key, fn_name)
                             Table._reject_nonscalar(
                                 agg_name, v, f"block method '{method_name}'", fn_name)
                             fanned[j].append(v)
@@ -1565,9 +1573,13 @@ class Table(Vector):
                 else:
                     data = source._storage.to_tuple()
                     out = []
-                    for _key, row_indices in group_items:
+                    for key, row_indices in group_items:
                         group_vec = Table._group_slice(data, row_indices, source, name=None)
-                        val = getattr(group_vec, method_name)()
+                        try:
+                            val = getattr(group_vec, method_name)()
+                        except SerifEmptyReductionError as e:
+                            Table._chain_empty_reduction(
+                                e, agg_name, f"'{method_name}'", key, fn_name)
                         Table._reject_nonscalar(agg_name, val, f"'{method_name}'", fn_name)
                         out.append(val)
                     yield (agg_name, out)
@@ -1576,12 +1588,15 @@ class Table(Vector):
                 # column once (not once per group).
                 col_data = [(col, col._storage.to_tuple()) for col in self._storage]
                 out = []
-                for _key, row_indices in group_items:
+                for key, row_indices in group_items:
                     group_cols = [
                         Table._group_slice(data, row_indices, col, name=col._name)
                         for col, data in col_data
                     ]
-                    val = func(Table(group_cols))
+                    try:
+                        val = func(Table(group_cols))
+                    except SerifEmptyReductionError as e:
+                        Table._chain_empty_reduction(e, agg_name, "callable", key, fn_name)
                     Table._reject_nonscalar(agg_name, val, "callable", fn_name)
                     out.append(val)
                 yield (agg_name, out)
@@ -1594,6 +1609,18 @@ class Table(Vector):
                 raise SerifTypeError(
                     f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
                 )
+
+    @staticmethod
+    def _chain_empty_reduction(e, agg_name, desc, key, fn_name):
+        """Re-raise a no-verdict error with the group's coordinates attached,
+        so the user can tell a data problem ("this group isn't supposed to be
+        empty") from a legitimate sparse group (qualify with a lambda)."""
+        where = f"group {key!r}" if key != () else "the whole table"
+        raise SerifEmptyReductionError(
+            f"{fn_name}() aggregation '{agg_name}' ({desc}) over {where}: {e} "
+            f"In an aggregation, qualify via a lambda, e.g. "
+            f"lambda g: g.<col>.all(on_empty=False)."
+        ) from e
 
     @staticmethod
     def _wrap_group_key_column(values, source_col, name):

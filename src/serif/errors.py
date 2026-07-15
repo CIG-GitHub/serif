@@ -21,3 +21,13 @@ class SerifValueError(SerifError, ValueError):
 class SerifIndexError(SerifError, IndexError):
     """Raised for invalid indexing operations."""
     pass
+
+
+class SerifEmptyReductionError(SerifValueError):
+    """Raised when all()/any() is asked for a verdict over zero valid values.
+
+    A boolean reduction over an empty or all-null vector has no evidence to
+    summarize; pass on_empty=True/False to choose the empty-case verdict
+    (docs/null-semantics.md).
+    """
+    pass

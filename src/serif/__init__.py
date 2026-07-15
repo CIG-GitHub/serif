@@ -32,6 +32,7 @@ from .errors import SerifKeyError
 from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
+from .errors import SerifEmptyReductionError
 from .io import read_csv, read_parquet, write_parquet
 from .display import set_repr_rows
 
@@ -49,4 +50,5 @@ __all__ = [
     "SerifValueError",
     "SerifTypeError",
     "SerifIndexError",
+    "SerifEmptyReductionError",
 ]

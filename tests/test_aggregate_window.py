@@ -2,6 +2,7 @@ import pytest
 import warnings
 from serif import Table
 from serif import Vector
+from serif import SerifEmptyReductionError
 
 
 class TestAggregate:
@@ -355,6 +356,87 @@ class TestAggregateWindowEdgeCases:
 		result = table.aggregate({'x_sum': table.x.sum})
 		assert len(result) == 1
 		assert result.x_sum[0] == 6
+
+
+class TestVerdictReductionsInAggregations:
+	"""all()/any() over a group with zero valid values raises with the
+	group's coordinates attached (docs/null-semantics.md)."""
+
+	def test_aggregate_all_null_group_raises_with_group_key(self):
+		table = Table({
+			'region': ['E', 'E', 'W', 'W'],
+			'ok':     [True, True, None, None],
+		})
+		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
+			table.aggregate(
+				groupby=table.region,
+				aggregations={'flags': table.ok.all}
+			)
+
+	def test_aggregate_qualified_via_lambda(self):
+		table = Table({
+			'region': ['E', 'E', 'W', 'W'],
+			'ok':     [True, True, None, None],
+		})
+		result = table.aggregate(
+			groupby=table.region,
+			aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
+		)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is True
+		assert flags['W'] is False
+
+	def test_aggregate_callable_gets_group_context_too(self):
+		table = Table({
+			'region': ['E', 'W'],
+			'ok':     [True, None],
+		})
+		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
+			table.aggregate(
+				groupby=table.region,
+				aggregations={'flags': lambda g: g.ok.any()}
+			)
+
+	def test_aggregate_block_names_the_column(self):
+		table = Table({
+			'region': ['E', 'W'],
+			'a':      [True, True],
+			'b':      [True, None],
+		})
+		with pytest.raises(SerifEmptyReductionError, match=r"column 'b'.*'W'"):
+			table.aggregate(
+				groupby=table.region,
+				aggregations={'ok_': table['a', 'b'].all}
+			)
+
+	def test_aggregate_whole_table_says_so(self):
+		table = Table({'ok': [None, None]})
+		with pytest.raises(SerifEmptyReductionError, match='whole table'):
+			table.aggregate(aggregations={'flags': table.ok.all})
+
+	def test_window_all_null_group_raises_with_group_key(self):
+		table = Table({
+			'region': ['E', 'W'],
+			'ok':     [True, None],
+		})
+		with pytest.raises(SerifEmptyReductionError, match=r"window\(\).*'W'"):
+			table.window(
+				groupby=table.region,
+				aggregations={'flags': table.ok.all}
+			)
+
+	def test_aggregate_dense_verdicts_unaffected(self):
+		table = Table({
+			'region': ['E', 'E', 'W'],
+			'ok':     [True, False, True],
+		})
+		result = table.aggregate(
+			groupby=table.region,
+			aggregations={'flags': table.ok.all}
+		)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is False
+		assert flags['W'] is True
 
 	def test_window_empty_table(self):
 		table = Table({'x': [], 'y': []})

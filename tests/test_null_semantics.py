@@ -3,7 +3,8 @@ The null doctrine (docs/null-semantics.md):
 
   Element-wise: unknown in, unknown out. Kleene logic for & and |.
   Aggregate: skip nulls; empty remainder yields the identity element
-  (sum 0, count 0, all True, any False) or None (max, min, mean).
+  (sum 0, product 1, count 0) or None (max, min, mean, stdev); the
+  verdict reductions all()/any() raise unless on_empty= is passed.
 
 Plus the dtype dispatch for &/|/^: Kleene logical on bool vectors,
 Python bitwise on int vectors.
@@ -14,6 +15,8 @@ from datetime import date
 import pytest
 
 from serif import Vector
+from serif import SerifEmptyReductionError
+from serif import SerifTypeError
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +199,7 @@ def test_masked_assignment_skips_null_entries():
 def test_aggregates_skip_nulls():
     v = Vector([1, None, 3])
     assert v.sum() == 4
+    assert v.product() == 3
     assert v.count() == 2
     assert v.mean() == 2
     assert v.max() == 3
@@ -203,8 +207,8 @@ def test_aggregates_skip_nulls():
 
 
 @pytest.mark.parametrize("agg,expected", [
-    ('sum', 0), ('count', 0), ('all', True), ('any', False),
-    ('max', None), ('min', None), ('mean', None),
+    ('sum', 0), ('product', 1), ('count', 0),
+    ('max', None), ('min', None), ('mean', None), ('stdev', None),
 ])
 def test_all_null_aggregate_identity_rule(agg, expected):
     result = getattr(Vector([None, None]), agg)()
@@ -220,3 +224,55 @@ def test_all_skips_nulls():
 
 def test_any_skips_nulls():
     assert Vector([False, None]).any() is False
+
+
+# ---------------------------------------------------------------------------
+# Verdict reductions: all()/any() need evidence
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("method", ['all', 'any'])
+@pytest.mark.parametrize("data", [[], [None], [None, None]])
+def test_verdict_over_zero_valid_values_raises(method, data):
+    with pytest.raises(SerifEmptyReductionError):
+        getattr(Vector(data), method)()
+
+
+@pytest.mark.parametrize("method", ['all', 'any'])
+@pytest.mark.parametrize("data", [[], [None, None]])
+@pytest.mark.parametrize("verdict", [True, False])
+def test_on_empty_value_is_the_verdict(method, data, verdict):
+    assert getattr(Vector(data), method)(on_empty=verdict) is verdict
+
+
+def test_explicit_on_empty_none_still_raises():
+    # None is "no verdict chosen", stated or omitted — there is no
+    # null-verdict option (in an `if`, None is indistinguishable from False).
+    with pytest.raises(SerifEmptyReductionError):
+        Vector([None]).all(on_empty=None)
+
+
+def test_on_empty_ignored_when_evidence_exists():
+    assert Vector([True, None]).all(on_empty=False) is True
+    assert Vector([False, None]).any(on_empty=True) is False
+
+
+def test_verdict_with_any_valid_value_never_raises():
+    # A single valid value settles it — no raise even among nulls.
+    assert Vector([None, False, None]).all() is False
+    assert Vector([None, True, None]).any() is True
+
+
+@pytest.mark.parametrize("bad", ['yes', 1, 0, 1.0])
+def test_on_empty_rejects_non_bool(bad):
+    # Identity check, not truthiness: on_empty=1 is a bug, not a True.
+    with pytest.raises(SerifTypeError, match='on_empty'):
+        Vector([True]).all(on_empty=bad)
+    with pytest.raises(SerifTypeError, match='on_empty'):
+        Vector([True]).any(on_empty=bad)
+
+
+def test_no_verdict_error_teaches():
+    with pytest.raises(SerifEmptyReductionError, match='on_empty'):
+        Vector([None, None]).all()
+    with pytest.raises(SerifEmptyReductionError, match='empty vector'):
+        Vector([]).any()
