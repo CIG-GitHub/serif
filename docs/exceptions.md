@@ -79,6 +79,6 @@ except SerifError:
 
 `table.missing_column` raises `AttributeError` (Pythonic behavior). 
 
-Use `table['col']` for dictionary-style access or check existence with `'col' in table._underlying`.
+Use `table['col']` for dictionary-style access or check existence with `'col' in table.column_names()`.
 
 

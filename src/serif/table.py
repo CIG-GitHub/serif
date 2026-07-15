@@ -133,12 +133,29 @@ class Row(Vector):
         return self
 
     @property
-    def _underlying(self):
+    def _storage(self):
         """
-        If a Vector method asks for 'self._underlying', we materialize it on demand.
-        This is the "Lazy" part. We don't build the tuple until you do math.
+        Materialized on demand — the "lazy" part of the view.
+
+        Base Vector methods (math, comparisons, aggregation, sorting) all
+        read self._storage; building a TupleStorage of the current row's
+        values at access time makes every one of them work on a Row without
+        copying anything until the moment it's actually needed.
         """
-        return tuple(col[self._index] for col in self._raw_cols)
+        return TupleStorage(tuple(col[self._index] for col in self._raw_cols))
+
+    def _clone(self, new_storage, dtype=..., name=...):
+        # An operation result derived from a Row is a value, not a view —
+        # return a plain Vector of the row's dtype.
+        use_dtype = self._dtype if dtype is ... else dtype
+        use_name = None if name is ... else name
+        return Vector._from_storage(new_storage, use_dtype, name=use_name)
+
+    def __setitem__(self, key, value):
+        raise SerifTypeError(
+            "Row is a read-only view. Assign through the table instead: "
+            "t[row_index, col] = value"
+        )
 
     @property
     def shape(self):
