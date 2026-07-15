@@ -301,6 +301,21 @@ class TestErrorCases:
             if os.path.exists(path):
                 os.unlink(path)
 
+    def test_decimal_column_raises(self):
+        # DECIMAL is deliberately unsupported: reject, don't guess. A
+        # Decimal column must fail the write (and the read — see
+        # test_parquet_foreign) until serif takes a position on decimal
+        # handling. Cast to float upstream if float precision suffices.
+        from decimal import Decimal
+        t = Table({'amount': [Decimal('123.45'), Decimal('67.89')]})
+        path = tempfile.mktemp(suffix='.parquet')
+        try:
+            with pytest.raises(SerifTypeError, match="Decimal"):
+                t.to_parquet(path)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
     def test_plain_int_list_works(self):
         # [1, 2, 3] creates ArrayStorage('q') — works fine
         t = Table({'n': [1, 2, 3]})
