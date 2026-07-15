@@ -239,11 +239,6 @@ def test_to_object(factory, values):
     assert obj.schema().kind is object
 
 
-@_params(CASES, IDS)
-def test_transpose_roundtrip_values(factory, values):
-    assert list(factory().T) == values
-
-
 # ---------------------------------------------------------------------------
 # Concatenation
 # ---------------------------------------------------------------------------
@@ -298,12 +293,6 @@ def test_categorical_setitem_none_marks_nullable():
     v[0] = None
     assert list(v) == [None, "a", "b"]
     assert v.schema().nullable is True
-
-
-def test_categorical_survives_transpose():
-    v = Vector(["b", "a"]).categorize(["a", "b"])
-    assert isinstance(v.T, _Category)
-    assert list(v.T) == ["b", "a"]
 
 
 # ---------------------------------------------------------------------------

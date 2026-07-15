@@ -192,12 +192,13 @@ class TestListOfListsConstruction:
         assert list(t.cols()[0]) == [1, 3, 5]
         assert list(t.cols()[1]) == [2, 4, 6]
 
-    def test_jagged_treated_as_columns(self):
-        # Inner lists of different lengths → columns, not rows
-        t = Table([[1, 2, 3], [4, 5]])
-        assert t.shape[1] == 2  # 2 columns
-        assert list(t.cols()[0]) == [1, 2, 3]
-        assert list(t.cols()[1]) == [4, 5]
+    def test_jagged_raises(self):
+        # Inner lists of different lengths would become unequal-length
+        # columns — forbidden by invariant #2 (docs/invariants.md). Puke
+        # loudly instead of truncating to the shortest column.
+        from serif import SerifValueError
+        with pytest.raises(SerifValueError, match="same length"):
+            Table([[1, 2, 3], [4, 5]])
 
 
 class TestConcatenation:

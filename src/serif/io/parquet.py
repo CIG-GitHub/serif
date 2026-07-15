@@ -1427,10 +1427,18 @@ def read_parquet(path: str):
             'is_optional': s.get('repetition_type') == _REP_OPTIONAL,
         })
 
-    # Accumulate values per column across all row groups
-    col_values = {m['name']: None for m in col_meta}
+    # Accumulate values per schema-leaf POSITION (not name): duplicate
+    # column names are legal in both Parquet and serif (invariant #6), and
+    # a name-keyed accumulator would silently merge them.
+    col_values = [None] * len(col_meta)
+    name_to_indices = {}
+    for i, m in enumerate(col_meta):
+        name_to_indices.setdefault(m['name'], []).append(i)
 
     for rg in row_groups:
+        # Within a row group, the nth chunk bearing a name maps to the nth
+        # schema leaf with that name, in order.
+        seen_count = {}
         for cc in rg.get('columns', []):
             cm = cc.get('meta_data')
             if cm is None:
@@ -1438,12 +1446,16 @@ def read_parquet(path: str):
 
             path_parts = cm.get('path_in_schema', [])
             col_name   = path_parts[-1] if path_parts else None
-            if col_name not in col_values:
+            candidates = name_to_indices.get(col_name)
+            if not candidates:
                 continue
+            nth = seen_count.get(col_name, 0)
+            seen_count[col_name] = nth + 1
+            if nth >= len(candidates):
+                continue
+            col_idx = candidates[nth]
+            meta_entry = col_meta[col_idx]
 
-            meta_entry = next((m for m in col_meta if m['name'] == col_name), None)
-            if meta_entry is None:
-                continue
 
             chunk_values = _read_column_chunk(
                 data,
@@ -1454,21 +1466,21 @@ def read_parquet(path: str):
                 is_optional= meta_entry['is_optional'],
                 col_name   = col_name,
             )
-            existing = col_values[col_name]
+            existing = col_values[col_idx]
             if existing is None:
-                col_values[col_name] = chunk_values
+                col_values[col_idx] = chunk_values
             elif isinstance(existing, StringStorage) and isinstance(chunk_values, StringStorage):
-                col_values[col_name] = _concat_string_storages(existing, chunk_values)
+                col_values[col_idx] = _concat_string_storages(existing, chunk_values)
             elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
-                col_values[col_name] = existing + chunk_values
+                col_values[col_idx] = existing + chunk_values
             else:
                 if isinstance(existing, _pyarray.array):
-                    col_values[col_name] = list(existing)
-                col_values[col_name].extend(chunk_values)
+                    col_values[col_idx] = list(existing)
+                col_values[col_idx].extend(chunk_values)
 
     result_cols = []
-    for m in col_meta:
-        raw   = col_values[m['name']] or []
+    for col_idx, m in enumerate(col_meta):
+        raw   = col_values[col_idx] or []
         dtype = _Schema(m['kind'], m['is_optional'])
 
         if isinstance(raw, StringStorage):

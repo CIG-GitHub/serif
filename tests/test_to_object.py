@@ -35,13 +35,6 @@ def test_to_object_preserves_name():
 	assert b._name == "mydata"
 
 
-def test_to_object_preserves_display_as_row():
-	"""Test that to_object preserves display_as_row setting"""
-	a = Vector([1, 2, 3], as_row=True)
-	b = a.to_object()
-	assert b._display_as_row == True
-
-
 def test_int_vector_rejects_string():
 	"""Test that int vector rejects string assignment"""
 	a = Vector([1, 2, 3, 4])

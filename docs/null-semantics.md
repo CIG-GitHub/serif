@@ -55,7 +55,8 @@ Null  | Null   False  Null          Null  | True   Null   Null
 Dispatch is by dtype. On **bool** vectors these operators are Kleene
 logical. On **int** vectors they are Python's bitwise operators —
 `Vector([3]) & 1` is `[1]`, exactly as `3 & 1` is `1`. (Values obey Python;
-only absence obeys the doctrine.)
+only absence obeys the doctrine.) Every other dtype raises `SerifTypeError`:
+`1.5 & 2.5` is a TypeError in Python, so it is one here too.
 
 ## Aggregations
 

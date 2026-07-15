@@ -118,6 +118,16 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
 # Small helpers
 # ============================================================
 
+def _null_sort_flag(is_null: bool, reverse: bool, na_last: bool) -> bool:
+    """
+    Sort-key flag that places nulls last (na_last=True) or first for BOTH
+    sort directions: the flag flips with `reverse` so the nulls' final
+    position is direction-independent. Shared by Vector.sort_by,
+    _Category.sort_by, and Table.sort_by — one rule, three callers.
+    """
+    return (is_null != reverse) if na_last else (is_null == reverse)
+
+
 def _is_hashable(x: Any) -> bool:
     try:
         hash(x)
@@ -216,6 +226,29 @@ def _collect_and_infer(iterable, dtype_hint):
     return data, all_vectors, dtype
 
 
+def _storage_for_dtype(dtype, data, nullable):
+    """
+    Build the storage backend appropriate for a Schema. Mirrors the subclass
+    _build_storage dispatch, but keyed on dtype rather than instance class —
+    used by __setitem__ rebuilds, where an in-place kind promotion can leave
+    the instance class behind the new dtype.
+    """
+    kind = dtype.kind if dtype is not None else None
+    if kind is int:
+        try:
+            return ArrayStorage.from_iterable(data, typecode='q', nullable=nullable)
+        except OverflowError:
+            # Arbitrary-precision ints don't fit i64 — values stay exact in
+            # a tuple backend (never truncate; Python semantics first).
+            return TupleStorage.from_iterable(data, nullable=nullable)
+    if kind is float:
+        return ArrayStorage.from_iterable(data, typecode='d', nullable=nullable)
+    if kind is str:
+        from .storage import StringStorage
+        return StringStorage.from_iterable(data)
+    return TupleStorage.from_iterable(data, nullable=nullable)
+
+
 def _pick_target_class(dtype):
     """Return the Vector subclass appropriate for the given DataType."""
     if dtype is None:
@@ -245,7 +278,6 @@ class Vector():
     _dtype = None  # Schema instance (private)
     _storage = None
     _name = None
-    _display_as_row = False
     _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
     
@@ -258,7 +290,7 @@ class Vector():
         return self._dtype
 
 
-    def __new__(cls, initial=(), dtype=None, name=None, as_row=False, **kwargs):
+    def __new__(cls, initial=(), dtype=None, name=None, **kwargs):
         # Subclass construction (Table, _Int, _Float, etc.): just allocate,
         # __init__ will handle initialization.
         if cls is not Vector:
@@ -285,7 +317,7 @@ class Vector():
         if is_table and data:
             if len({len(x) for x in data}) == 1:
                 from ..table import Table
-                return Table(initial=data, dtype=dtype, name=name, as_row=as_row)
+                return Table(initial=data, dtype=dtype, name=name)
             from ..errors import SerifValueError
             raise SerifValueError('Passing vectors of different length will not produce a Table.')
 
@@ -296,7 +328,6 @@ class Vector():
         instance = object.__new__(target_class)
         instance._dtype = dtype
         instance._name = name
-        instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
         nullable = dtype.nullable if dtype is not None else True
@@ -304,7 +335,7 @@ class Vector():
         return instance
 
 
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
+    def __init__(self, initial=(), dtype=None, name=None, **kwargs):
         # Factory path: __new__ already built the instance fully.
         if '_storage' in self.__dict__:
             return
@@ -312,7 +343,6 @@ class Vector():
         # Subclass path: Table.__init__ → super().__init__(), or other subclass
         # direct construction. self._dtype may already be set by the subclass.
         self._name = name
-        self._display_as_row = as_row
         self._wild = True
         if dtype is not None:
             if not isinstance(dtype, Schema):
@@ -341,11 +371,29 @@ class Vector():
 
         dtype and name default to self's values (sentinel ... means "keep").
         Pass explicit values to override.
+
+        Construction-path contract (which builder to use when)
+        -------------------------------------------------------
+        Vector(...)                    — public: full inference + class
+                                         dispatch; the only path that may
+                                         return a Table.
+        copy()                         — same subclass & schema, name kept
+                                         by default; storage rebuilt.
+        _clone(storage)                — SAME subclass, dtype/name kept:
+                                         permutations of existing data only.
+                                         Never changes the element kind.
+        _from_storage(storage, dtype)  — class picked FROM dtype, unnamed
+                                         wildness off: I/O fast paths with a
+                                         fully-known prebuilt backend.
+        _from_iterable_known_dtype(it, dtype)
+                                       — class picked from dtype, one walk
+                                         into storage, zero inference:
+                                         derived results whose schema is
+                                         known before materialization.
         """
         instance = object.__new__(type(self))
         instance._dtype = self._dtype if dtype is ... else dtype
         instance._name = self._name if name is ... else name
-        instance._display_as_row = self._display_as_row
         instance._wild = True
         instance._fp = None
         instance._storage = new_storage
@@ -360,21 +408,19 @@ class Vector():
         instance = object.__new__(target_cls)
         instance._dtype = dtype
         instance._name = name
-        instance._display_as_row = False
         instance._wild = False
         instance._fp = None
         instance._storage = storage
         return instance
 
     @classmethod
-    def _from_iterable_known_dtype(cls, iterable, dtype, *, name=None, as_row=False):
+    def _from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
         """Build a Vector directly from an iterable when the dtype is already known.
         Bypasses __new__/__init__ inference; one walk into storage."""
         target_cls = _pick_target_class(dtype)
         instance = object.__new__(target_cls)
         instance._dtype = dtype
         instance._name = name
-        instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
         nullable = dtype.nullable if dtype is not None else True
@@ -472,8 +518,11 @@ class Vector():
             # Typed 1D vector: build storage directly, no inference needed.
             source = new_values if new_values is not None else self._storage
             return self._clone(self._build_storage(source, self._dtype.nullable), name=use_name)
-        # dtype unknown (Table or untyped vector): full constructor for class dispatch.
-        return Vector(list(new_values or self._storage), dtype=None, name=use_name, as_row=self._display_as_row)
+        # dtype unknown (Table or untyped vector): full constructor for class
+        # dispatch. Explicit None check — an empty new_values means "empty
+        # copy", not "copy the original".
+        source = list(new_values) if new_values is not None else list(self._storage)
+        return Vector(source, dtype=None, name=use_name)
     
     def to_object(self):
         """
@@ -564,7 +613,7 @@ class Vector():
                     out.append(caster(elem))
             except Exception as exc:
                 type_name = getattr(py_target_type, "__name__", repr(py_target_type))
-                raise ValueError(
+                raise SerifValueError(
                     f"Cast failed at index {i}: {elem!r} cannot be converted to {type_name}"
                 ) from exc
 
@@ -574,7 +623,7 @@ class Vector():
         else:
             new_dtype = infer_dtype(out)
 
-        return Vector(out, dtype=new_dtype, name=self._name, as_row=self._display_as_row)
+        return Vector(out, dtype=new_dtype, name=self._name)
 
     def fillna(self, value):
         dtype = self.schema()
@@ -596,10 +645,9 @@ class Vector():
                         out,
                         dtype=Schema(required_dtype.kind, False),
                         name=self._name,
-                        as_row=self._display_as_row
                     )
                 except SerifTypeError:
-                    raise ValueError(
+                    raise SerifValueError(
                         f"fillna: value {value!r} (type {type(value).__name__}) "
                         f"cannot be used with {dtype.kind.__name__} vector. "
                         f"Promotion not supported."
@@ -623,7 +671,6 @@ class Vector():
             out,
             dtype=new_dtype,
             name=self._name,
-            as_row=self._display_as_row
         )
 
     def dropna(self):
@@ -677,7 +724,6 @@ class Vector():
         return Vector._from_iterable_known_dtype(
             (elem is None for elem in storage),
             Schema(bool, False),
-            as_row=self._display_as_row,
         )
 
     def isinstance(self, types):
@@ -707,14 +753,7 @@ class Vector():
         return Vector._from_iterable_known_dtype(
             (b_isinstance(elem, types) for elem in self._storage),
             Schema(bool, False),
-            as_row=self._display_as_row,
         )
-
-    @property
-    def _(self):
-        """ streamlined display """
-        return ''
-
 
     def __iter__(self):
         """ iterate over the underlying tuple """
@@ -723,19 +762,6 @@ class Vector():
     def __len__(self):
         """ length of the underlying tuple """
         return len(self._storage)
-
-    @property
-    def T(self):
-        if self._dtype is not None:
-            # 1D typed vector: share immutable storage, just flip display flag.
-            instance = self._clone(self._storage)
-            instance._display_as_row = not self._display_as_row
-            return instance
-        # Table or untyped: full copy for correct class dispatch.
-        inverted = self.copy(name=self._name)
-        inverted._display_as_row = not self._display_as_row
-        return inverted
-
 
     def __getitem__(self, key):
         """ Get item(s) from self. Behavior varies by input type:
@@ -749,7 +775,12 @@ class Vector():
         """
         if isinstance(key, int):
             # Effectively a different input type (single not a list). Returning a value, not a vector.
-            return self._storage[key]
+            try:
+                return self._storage[key]
+            except IndexError:
+                raise SerifIndexError(
+                    f"Index {key} out of range for vector length {len(self)}"
+                ) from None
 
         if isinstance(key, tuple):
             # 1-D vectors accept only single-element tuples; deeper indexing
@@ -763,11 +794,11 @@ class Vector():
             # Nullable masks are allowed: a null entry EXCLUDES the row
             # (SQL WHERE semantics — None is falsy in the filter below).
             if len(self) != len(key):
-                raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, list) and {type(e) for e in key} == {bool}:
             if len(self) != len(key):
-                raise ValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, slice):
             return self._clone(self._storage.slice(key))
@@ -943,7 +974,16 @@ class Vector():
             # Object dtype accepts any type - skip validation
             if self._dtype is not None and self._dtype.kind is not object:
                 incompatible = None
+                saw_none = False
                 for val in new_values:
+                    if val is None:
+                        # Assigning None widens a non-nullable schema to
+                        # nullable — the column is typed "X", not "X and
+                        # never absent". (A strict never-null column mode
+                        # would raise here; that is a future concept, not
+                        # today's default.)
+                        saw_none = True
+                        continue
                     try:
                         validate_scalar(val, self._dtype)
                     except TypeError:
@@ -961,6 +1001,9 @@ class Vector():
                             f"{self._dtype.kind.__name__} vector. "
                             f"Promotion not supported."
                         )
+
+                if saw_none and not self._dtype.nullable:
+                    self._dtype = Schema(self._dtype.kind, True)
         # =====================================================================
         # MUTATE — copy-on-write + fingerprint invalidation
         # =====================================================================
@@ -969,8 +1012,13 @@ class Vector():
         for idx, new_val in updates:
             data_list[idx] = new_val
 
+        # Rebuild through a dtype-keyed dispatch (not the instance class):
+        # typed vectors keep their backend across mutation — an int column
+        # stays ArrayStorage('q') and remains e.g. Parquet-writable — and the
+        # dispatch stays correct even right after an in-place kind promotion,
+        # when the instance class lags the new dtype.
         nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = TupleStorage.from_iterable(data_list, nullable=nullable)
+        self._storage = _storage_for_dtype(self._dtype, data_list, nullable)
         self._invalidate_fp()
 
 
@@ -1007,7 +1055,7 @@ class Vector():
         # Element-wise: unknown in, unknown out (docs/null-semantics.md).
         if isinstance(other, Vector):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             other_schema = other.schema()
             nullable = (
                 (self._dtype.nullable if self._dtype is not None else True)
@@ -1019,7 +1067,7 @@ class Vector():
             )
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             vals = [None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)]
             return Vector._from_iterable_known_dtype(
                 vals, Schema(bool, any(v is None for v in vals)))
@@ -1067,7 +1115,7 @@ class Vector():
             ))
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             vals = [kleene_func(x, y) for x, y in zip(self, other, strict=True)]
         else:
             vals = [kleene_func(x, other) for x in self]
@@ -1076,22 +1124,59 @@ class Vector():
 
     # &, |, ^ dispatch by dtype: bool vectors get Kleene logic; int vectors
     # get Python's bitwise operators (values obey Python, absence obeys the
-    # null doctrine).
+    # null doctrine). Every other dtype raises — `1.5 & 2.5` is a TypeError
+    # in Python, so it is one here too (docs/null-semantics.md).
+
+    def _bitwise_kind_error(self, op_symbol):
+        kind = self._dtype.kind if self._dtype is not None else None
+        kind_name = kind.__name__ if kind is not None else 'object'
+        return SerifTypeError(
+            f"Unsupported operand type(s) for '{op_symbol}': Vector<{kind_name}>. "
+            f"'{op_symbol}' is Kleene-logical on bool vectors and bitwise on "
+            f"int vectors; other dtypes raise, as in plain Python."
+        )
+
+    def _tablewise_bitwise(self, other, op_dunder):
+        """Per-column recursion for &, |, ^ on a 2-D block: each column's own
+        dtype dispatch (Kleene / bitwise / raise) applies. Names preserved
+        from the left side, matching Table arithmetic."""
+        other = self._check_duplicate(other)
+        result_cols = [getattr(col, op_dunder)(other) for col in self.cols()]
+        for orig_col, result_col in zip(self.cols(), result_cols):
+            result_col._name = orig_col._name
+            result_col._wild = False
+        from ..table import Table
+        return Table(result_cols)
 
     def __and__(self, other):
-        if self._dtype is not None and self._dtype.kind is int:
+        if self.ndims() == 2:
+            return self._tablewise_bitwise(other, '__and__')
+        kind = self._dtype.kind if self._dtype is not None else None
+        if kind is int:
             return self._elementwise_operation(other, operator.and_, '__and__', '&')
-        return self._logical_elementwise(other, _kleene_and)
+        if kind is bool:
+            return self._logical_elementwise(other, _kleene_and)
+        raise self._bitwise_kind_error('&')
 
     def __or__(self, other):
-        if self._dtype is not None and self._dtype.kind is int:
+        if self.ndims() == 2:
+            return self._tablewise_bitwise(other, '__or__')
+        kind = self._dtype.kind if self._dtype is not None else None
+        if kind is int:
             return self._elementwise_operation(other, operator.or_, '__or__', '|')
-        return self._logical_elementwise(other, _kleene_or)
+        if kind is bool:
+            return self._logical_elementwise(other, _kleene_or)
+        raise self._bitwise_kind_error('|')
 
     def __xor__(self, other):
-        if self._dtype is not None and self._dtype.kind is int:
+        if self.ndims() == 2:
+            return self._tablewise_bitwise(other, '__xor__')
+        kind = self._dtype.kind if self._dtype is not None else None
+        if kind is int:
             return self._elementwise_operation(other, operator.xor, '__xor__', '^')
-        return self._logical_elementwise(other, _kleene_xor)
+        if kind is bool:
+            return self._logical_elementwise(other, _kleene_xor)
+        raise self._bitwise_kind_error('^')
 
     def __rand__(self, other):
         return self.__and__(other)
@@ -1126,7 +1211,7 @@ class Vector():
 
         if isinstance(other, Vector):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
             try:
                 result_values = tuple(
@@ -1143,11 +1228,11 @@ class Vector():
                 )
             if result_dtype is None:
                 result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+            return Vector(result_values, dtype=result_dtype, name=None)
 
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             try:
                 result_values = tuple(
                     None if (x is None or y is None) else op_func(x, y)
@@ -1160,7 +1245,7 @@ class Vector():
                     f"Vector<{lhs}> and {type(other).__name__} elements."
                 )
             result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+            return Vector(result_values, dtype=result_dtype, name=None)
 
         # Scalar path
         result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
@@ -1171,7 +1256,7 @@ class Vector():
             )
             if result_dtype is None:
                 result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
+            return Vector(result_values, dtype=result_dtype, name=None)
         except TypeError:
             lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
             raise SerifTypeError(
@@ -1219,7 +1304,6 @@ class Vector():
             return Vector._from_iterable_known_dtype(
                 (None if x is None else (not x) for x in self),
                 Schema(bool, self._dtype.nullable),
-                as_row=self._display_as_row,
             )
         return self._unary_operation(operator.invert, '__invert__')
 
@@ -1300,25 +1384,18 @@ class Vector():
     def ndims(self):
         return self._ndims
 
-    def cols(self, key=None):
-        if isinstance(key, int):
-            return self._storage[key]
-        if isinstance(key, slice):
-            return self._storage.to_tuple()[key]
-        return self._storage.to_tuple()
-
     """
     Recursive Vector Operations
     """
     def max(self):
         if self.ndims() == 2:
-            return self.copy((c.max() for c in self.cols()), name=None).T
+            return self.copy((c.max() for c in self.cols()), name=None)
         non_none = [v for v in self._storage if v is not None]
         return max(non_none) if non_none else None
 
     def min(self):
         if self.ndims() == 2:
-            return self.copy((c.min() for c in self.cols()), name=None).T
+            return self.copy((c.min() for c in self.cols()), name=None)
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
@@ -1332,7 +1409,7 @@ class Vector():
         t.sort_by('date').first().
         """
         if self.ndims() == 2:
-            return self.copy((c.first() for c in self.cols()), name=None).T
+            return self.copy((c.first() for c in self.cols()), name=None)
         return self._storage[0] if len(self._storage) else None
 
     def last(self):
@@ -1340,38 +1417,38 @@ class Vector():
         Last element by position (mirror of first()). Returns None if empty.
         """
         if self.ndims() == 2:
-            return self.copy((c.last() for c in self.cols()), name=None).T
+            return self.copy((c.last() for c in self.cols()), name=None)
         n = len(self._storage)
         return self._storage[n - 1] if n else None
 
     def sum(self):
         if self.ndims() == 2:
-            return self.copy((c.sum() for c in self.cols()), name=None).T
+            return self.copy((c.sum() for c in self.cols()), name=None)
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
     def all(self):
         """Return True if all elements are truthy (excluding None)."""
         if self.ndims() == 2:
-            return self.copy((c.all() for c in self.cols()), name=None).T
+            return self.copy((c.all() for c in self.cols()), name=None)
         return all(v for v in self._storage if v is not None)
 
     def any(self):
         """Return True if any element is truthy (excluding None)."""
         if self.ndims() == 2:
-            return self.copy((c.any() for c in self.cols()), name=None).T
+            return self.copy((c.any() for c in self.cols()), name=None)
         return any(v for v in self._storage if v is not None)
 
     def mean(self):
         if self.ndims() == 2:
-            return self.copy((c.mean() for c in self.cols()), name=None).T
+            return self.copy((c.mean() for c in self.cols()), name=None)
         # Exclude None values from mean
         non_none = [v for v in self._storage if v is not None]
         return sum(non_none) / len(non_none) if non_none else None
 
     def stdev(self, population=False):
         if self.ndims() == 2:
-            return self.copy((c.stdev(population) for c in self.cols()), name=None).T
+            return self.copy((c.stdev(population) for c in self.cols()), name=None)
         # Exclude None values from stdev
         non_none = [v for v in self._storage if v is not None]
         if len(non_none) < 2:
@@ -1384,7 +1461,7 @@ class Vector():
 
     def count(self):
         if self.ndims() == 2:
-            return self.copy((c.count() for c in self.cols()), name=None).T
+            return self.copy((c.count() for c in self.cols()), name=None)
         return sum(1 for v in self._storage if v is not None)
 
     def unique(self):
@@ -1463,12 +1540,10 @@ class Vector():
 
         # Build sort order from indices — avoids materializing Python objects
         # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
-        # The null flag is flipped under reverse so na_last/na_first hold for
-        # BOTH sort directions (same rule Table.sort_by implements).
-        if na_last:
-            key_fn = lambda i: (storage.is_null(i) != reverse, storage[i] if not storage.is_null(i) else 0)
-        else:
-            key_fn = lambda i: (storage.is_null(i) == reverse, storage[i] if not storage.is_null(i) else 0)
+        key_fn = lambda i: (
+            _null_sort_flag(storage.is_null(i), reverse, na_last),
+            storage[i] if not storage.is_null(i) else 0,
+        )
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
 
@@ -1540,7 +1615,7 @@ class Vector():
         # 2b. Vector @ Vector (Dot Product)
         # Standard sum of products
         if len(self) != len(other):
-            raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
         return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
 
     def __rmatmul__(self, other):
@@ -1548,7 +1623,7 @@ class Vector():
         if len(self.shape) > 1:
             return Vector(tuple(x @ other for x in self.cols()))
         if len(self) != len(other):
-            raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
         return sum(x*y for x, y in zip(self._storage, other._storage, strict=True))
 
 
@@ -1568,7 +1643,7 @@ class Vector():
     def __lshift__(self, other):
         """ The << operator behavior has been overridden to attempt to concatenate (append) the new array to the end of the first
         """
-        if self._dtype.kind in (bool, int) and isinstance(other, int):
+        if self._dtype is not None and self._dtype.kind in (bool, int) and isinstance(other, int):
             warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         nullable = self._dtype.nullable if self._dtype is not None else True
@@ -1584,7 +1659,7 @@ class Vector():
     def __rshift__(self, other):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
         """
-        if self._dtype.kind in (bool, int) and isinstance(other, int):
+        if self._dtype is not None and self._dtype.kind in (bool, int) and isinstance(other, int):
             warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         if type(other).__name__ == 'Table':
@@ -1600,7 +1675,9 @@ class Vector():
             return Vector(cols)
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             return Vector([self, Vector(tuple(x for x in other))])
-        elif not self:
+        elif len(self) == 0:
+            # `not self` would trip Vector.__bool__'s ambiguity guard and
+            # mask the intended error below.
             return Vector((other,),
                 dtype=self._dtype)
         raise SerifTypeError("Cannot add a column of constant values. Try using Vector.new(element, length).")
@@ -1622,15 +1699,9 @@ class Vector():
         """
         # Convert other to Vector and combine column-wise
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return Vector((Vector(tuple(other)), self),
-                None,
-                None,
-                False)
+            return Vector((Vector(tuple(other)), self))
         # Scalar case: create a single-element vector for other
-        return Vector((Vector((other,)), self),
-            None,
-            None,
-            False)
+        return Vector((Vector((other,)), self))
 
     
     def bit_lshift(self, other):

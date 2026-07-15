@@ -176,6 +176,17 @@ def validate_scalar(value: Any, dtype: Schema) -> Any:
     if dtype.kind is datetime and vtype is date:
         return datetime.combine(value, datetime.min.time())
 
+    # Non-primitive kinds accept subclass instances: inference normalizes an
+    # OrderedDict to kind dict, so validation must accept OrderedDict values
+    # too. Primitive/temporal kinds stay exact-type (a datetime must NOT
+    # slip into a date column; bool/int/float have explicit coercions above).
+    if dtype.kind not in (bool, int, float, complex, str, bytes, date, datetime):
+        try:
+            if isinstance(value, dtype.kind):
+                return value
+        except TypeError:
+            pass
+
     raise TypeError(
         f"Incompatible value {value!r} for column<{dtype.kind.__name__}>"
     )

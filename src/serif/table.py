@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from ._vector import Vector
 from ._vector import Schema
+from ._vector.base import _null_sort_flag
 
 from .naming import _sanitize_user_name
 from .naming import _disambiguate
@@ -221,10 +222,10 @@ class Table(Vector):
     _repr_rows = None  # Optional table-specific repr row count override
     _ndims = 2
     
-    def __new__(cls, initial=(), dtype=None, name=None, as_row=False):
+    def __new__(cls, initial=(), dtype=None, name=None):
         return super(Vector, cls).__new__(cls)
 
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False):
+    def __init__(self, initial=(), dtype=None, name=None):
         # Handle dict initialization {name: values, ...}
         if isinstance(initial, dict):
             # Create Vectors with names from dict keys
@@ -243,6 +244,16 @@ class Table(Vector):
             else:
                 # Jagged → treat as columns (invariant check will fire if lengths differ)
                 initial = [Vector(col) for col in initial]
+
+        # Enforce invariant #2 (docs/invariants.md): all columns equal length.
+        # Without this, _length silently truncates to the first column.
+        if initial:
+            lengths = {len(col) for col in initial}
+            if len(lengths) > 1:
+                raise SerifValueError(
+                    f"Table columns must all have the same length; "
+                    f"got lengths {sorted(lengths)}."
+                )
 
         self._length = len(initial[0]) if initial else 0
         
@@ -320,6 +331,15 @@ class Table(Vector):
         base_attrs = object.__dir__(self)
         return set(list(self._build_column_map().keys()) + base_attrs)
     
+    def cols(self, key=None):
+        """Access columns positionally: cols() → tuple of all columns,
+        cols(i) → single column, cols(slice) → tuple of columns."""
+        if isinstance(key, int):
+            return self._storage[key]
+        if isinstance(key, slice):
+            return self._storage.to_tuple()[key]
+        return self._storage.to_tuple()
+
     def column_names(self):
         """Return list of column names (original names, not sanitized).
 
@@ -356,7 +376,9 @@ class Table(Vector):
         """
         result = {}
         for i, col in enumerate(self._storage):
-            key = col._name if col._name is not None else f"col_{i}"
+            # Unnamed columns use the same col{i}_ spelling as attribute
+            # access, so the dict key round-trips through t.col0_ etc.
+            key = col._name if col._name is not None else f"col{i}_"
             result[key] = list(col._storage)
         return result
 
@@ -450,7 +472,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_wild', '_repr_rows', '_storage'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage'):
             object.__setattr__(self, attr, value)
             return
         
@@ -479,9 +501,14 @@ class Table(Vector):
                 # Replace the column at validated index
                 if not isinstance(value, Vector):
                     value = Vector(value)
+                else:
+                    # Copy before storing: keeping the caller's object would
+                    # alias table state to an external vector (and the rename
+                    # below would mutate the caller's vector).
+                    value = value.copy()
                 
                 if self._storage and len(value) != self._length:
-                    raise ValueError(
+                    raise SerifValueError(
                         f"Cannot assign column '{attr}': length {len(value)} != table length {self._length}"
                     )
                 
@@ -501,10 +528,15 @@ class Table(Vector):
                 # Replace the column in _storage
                 if not isinstance(value, Vector):
                     value = Vector(value)
+                else:
+                    # Copy before storing: keeping the caller's object would
+                    # alias table state to an external vector (and the rename
+                    # below would mutate the caller's vector).
+                    value = value.copy()
                 
                 # Validate length
                 if self._storage and len(value) != self._length:
-                    raise ValueError(
+                    raise SerifValueError(
                         f"Cannot assign column '{attr}': length {len(value)} != table length {self._length}"
                     )
                 
@@ -678,10 +710,12 @@ class Table(Vector):
 
         if isinstance(key, Vector) and key.schema().kind == bool:
             # Nullable masks allowed: null entries exclude the row.
-            assert (len(self) == len(key))
+            if len(self) != len(key):
+                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return Table(tuple(x[key] for x in self._storage))
         if isinstance(key, list) and {type(e) for e in key} == {bool}:
-            assert (len(self) == len(key))
+            if len(self) != len(key):
+                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
             return Table(tuple(x[key] for x in self._storage))
         if isinstance(key, slice):
             return Table(tuple(x[key] for x in self._storage), name=self._name)
@@ -691,6 +725,12 @@ class Table(Vector):
             if len(self) > 1000:
                 warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
             return Table(tuple(x[key] for x in self._storage))
+
+        # No silent fall-through: an unrecognized key must puke, not return None.
+        raise SerifTypeError(
+            f"Table indices must be column names (str), ints, slices, boolean "
+            f"masks, or non-nullable int vectors, not {type(key).__name__}"
+        )
 
     def __setitem__(self, key, value):
         """
@@ -830,18 +870,32 @@ class Table(Vector):
         return _printr(self)
 
     def _elementwise_compare(self, other, op):
+        """
+        Table comparisons return a Table of bool columns, same shape as self.
+
+        Table vs Table pairs columns positionally; anything else (scalar,
+        Vector, plain iterable) broadcasts to every column — mirroring how
+        Table arithmetic broadcasts. Column names are preserved from the
+        left side, matching _table_elementwise_operation.
+        """
         other = self._check_duplicate(other)
-        if isinstance(other, Vector):
-            # Raise mismatched column counts
+        if isinstance(other, Table):
             if len(self.cols()) != len(other.cols()):
-                raise ValueError(f"Column count mismatch: {len(self.cols())} != {len(other.cols())}")
-            return Vector(tuple(op(x, y) for x, y in zip(self.cols(), other.cols(), strict=True)), False, bool, True)
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            # Raise mismatched row counts
-            if len(self) != len(other):
-                raise ValueError(f"Row count mismatch: {len(self)} != {len(other)}")
-            return Vector(tuple(op(x, y) for x, y in zip(self, other, strict=True)), False, bool, True).T
-        return Vector(tuple(op(x, other) for x in self.cols()), False, bool, True)
+                raise SerifValueError(
+                    f"Column count mismatch: {len(self.cols())} != {len(other.cols())}"
+                )
+            result_cols = [
+                lcol._elementwise_compare(rcol, op)
+                for lcol, rcol in zip(self.cols(), other.cols(), strict=True)
+            ]
+        else:
+            result_cols = [
+                col._elementwise_compare(other, op) for col in self.cols()
+            ]
+        for orig_col, result_col in zip(self.cols(), result_cols):
+            result_col._name = orig_col._name
+            result_col._wild = False
+        return Table(result_cols)
 
     def __rshift__(self, other):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
@@ -861,14 +915,14 @@ class Table(Vector):
                     col = Vector(values)
                 else:
                     # Reject scalars - user must be explicit
-                    raise ValueError(
+                    raise SerifValueError(
                         f"Column '{col_name}' value must be iterable (list, Vector, etc.), not scalar. "
                         f"Use Vector.new({values!r}, {len(self)}) for scalar broadcast."
                     )
                 
                 # Validate length
                 if self._storage and len(col) != self._length:
-                    raise ValueError(
+                    raise SerifValueError(
                         f"Column '{col_name}' has length {len(col)}, expected {self._length}"
                     )
                 
@@ -896,7 +950,9 @@ class Table(Vector):
             # Convert iterable to Vector and add as column (let Vector infer dtype)
             return Vector(self.cols() + (Vector(other),),
                 dtype=self._dtype)
-        elif not self:
+        elif len(self) == 0:
+            # `not self` would trip Vector.__bool__'s ambiguity guard and
+            # mask the intended error below.
             return Vector((other,),
                 dtype=self._dtype)
         raise SerifTypeError("Cannot add a column of constant values. Try using Vector.new(element, length).")
@@ -907,10 +963,10 @@ class Table(Vector):
         """
         if isinstance(other, Table):
             if len(self.cols()) != len(other.cols()):
-                raise ValueError(f"Column count mismatch: {len(self.cols())} != {len(other.cols())}")
+                raise SerifValueError(f"Column count mismatch: {len(self.cols())} != {len(other.cols())}")
             return Table(tuple(x << y for x, y in zip(self.cols(), other.cols(), strict=True)))
         if len(self.cols()) != len(other):
-            raise ValueError(f"Column count mismatch: {len(self.cols())} != {len(other)}")
+            raise SerifValueError(f"Column count mismatch: {len(self.cols())} != {len(other)}")
         return Table(tuple(x << y for x, y in zip(self.cols(), other, strict=True)))
 
     def _table_elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
@@ -934,7 +990,7 @@ class Table(Vector):
         
         # Table + Table: left-biased naming with warnings
         if len(self.cols()) != len(other.cols()):
-            raise ValueError(f"Table width mismatch: {len(self.cols())} != {len(other.cols())}")
+            raise SerifValueError(f"Table width mismatch: {len(self.cols())} != {len(other.cols())}")
         
         result_cols = []
         warnings_to_emit = []
@@ -1143,8 +1199,6 @@ class Table(Vector):
         pairs = self._validate_join_keys(other, left_on, right_on)
         left_keys = [lk for lk, _ in pairs]
         right_keys = [rk for _, rk in pairs]
-        # Drop right key column when it shares a name with the left key column
-        right_key_drop = {rk._name for lk, rk in pairs if lk._name == rk._name}
 
         # Hashability needs runtime validation only for object/untyped key
         # columns; typed keys are already guaranteed hashable by dtype rules.
@@ -1159,6 +1213,15 @@ class Table(Vector):
         right_cols = other._storage
         n_left_cols = len(left_cols)
         n_right_cols = len(right_cols)
+
+        # Drop a right column only when it IS one of the join key columns
+        # (identity, not name) whose left key shares its name. Matching by
+        # name alone would also drop an unrelated right column that merely
+        # shares the key's name (duplicate names are legal, invariant #6).
+        drop_right_idx = {
+            idx for idx, col in enumerate(right_cols)
+            if any(col is rk and lk._name == rk._name for lk, rk in pairs)
+        }
 
         # Materialize key columns once -- per-row storage access would pay
         # unboxing/decoding costs inside the hot loops below.
@@ -1265,7 +1328,7 @@ class Table(Vector):
                 result_data[col_idx], orig_col, left_nullable_pad))
         base = n_left_cols
         for offset, orig_col in enumerate(right_cols):
-            if orig_col._name not in right_key_drop:
+            if offset not in drop_right_idx:
                 result_cols.append(Table._wrap_join_column(
                     result_data[base + offset], orig_col, right_nullable_pad))
 
@@ -1445,7 +1508,7 @@ class Table(Vector):
                 f"a scalar. For a per-column block use t[cols].<method>."
             )
 
-    def _apply_aggregations(self, aggregations, group_items, nrows, uniquify,
+    def _apply_aggregations(self, aggregations, group_items, nrows,
                             *, allow_blocks, fn_name):
         """
         Compute per-group scalar values for each aggregation spec.
@@ -1498,7 +1561,7 @@ class Table(Vector):
                             fanned[j].append(v)
                     for j in range(width):
                         base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
-                        yield (uniquify(f"{agg_name}{base}"), fanned[j])
+                        yield (f"{agg_name}{base}", fanned[j])
                 else:
                     data = source._storage.to_tuple()
                     out = []
@@ -1609,12 +1672,14 @@ class Table(Vector):
             result_cols.append(Table._wrap_group_key_column(
                 values, col, name=uniquify(col._name or "key")))
 
-        # Aggregations
+        # Aggregations. Every output name goes through the same uniquifier
+        # as the groupby keys — aggregate() never emits duplicate column
+        # names, whatever the aggregation dict contains.
         if aggregations:
             for out_name, out_values in self._apply_aggregations(
-                    aggregations, group_items, nrows, uniquify,
+                    aggregations, group_items, nrows,
                     allow_blocks=True, fn_name='aggregate'):
-                result_cols.append(Vector(out_values, name=out_name))
+                result_cols.append(Vector(out_values, name=uniquify(out_name)))
 
         return Table(result_cols)
 
@@ -1661,11 +1726,11 @@ class Table(Vector):
         if aggregations:
             keys_in_order = [key for key, _ in group_items]
             for out_name, out_values in self._apply_aggregations(
-                    aggregations, group_items, nrows, uniquify,
+                    aggregations, group_items, nrows,
                     allow_blocks=False, fn_name='window'):
                 group_map = dict(zip(keys_in_order, out_values))
                 expanded = [group_map[row_keys[i]] for i in range(nrows)]
-                result_cols.append(Vector(expanded, name=out_name))
+                result_cols.append(Vector(expanded, name=uniquify(out_name)))
 
         return Table(result_cols)
 
@@ -1754,22 +1819,10 @@ class Table(Vector):
 
             def key_fn(i, data=data, rev=rev, na_last=na_last):
                 v = data[i]
-                is_none = (v is None)
-
-                if na_last:
-                    # Nones should be last for BOTH rev=False and rev=True
-                    # rev=False -> flag = True for None, False for non-None
-                    # rev=True  -> flip so None is still "worse" after reversal
-                    flag = is_none if not rev else (not is_none)
-                else:
-                    # Nones should be first for BOTH rev=False and rev=True
-                    # rev=False -> flag = False for None, True for non-None
-                    # rev=True  -> flip so None is still "better" after reversal
-                    flag = (not is_none) if not rev else is_none
-
-                # Compare on (flag, value). Bool is orderable; `v` is only compared
-                # among non-None values, which is what you require for the column.
-                return (flag, v)
+                # Compare on (flag, value): the shared null-flag rule keeps
+                # nulls last/first under BOTH sort directions; `v` is only
+                # compared among non-None values.
+                return (_null_sort_flag(v is None, rev, na_last), v)
 
             indices.sort(key=key_fn, reverse=rev)
 
@@ -1806,7 +1859,6 @@ class Table(Vector):
         # Mirror every attribute that Table.__setattr__ guards
         object.__setattr__(t, '_dtype',         None)
         object.__setattr__(t, '_name',          None)
-        object.__setattr__(t, '_display_as_row', False)
         object.__setattr__(t, '_wild',          False)
         object.__setattr__(t, '_fp',            None)
         object.__setattr__(t, '_repr_rows',     None)

@@ -94,8 +94,9 @@ def test_to_dict_named_columns():
 
 
 def test_to_dict_unnamed_column_positional_key():
+    # Same col{i}_ spelling as attribute access (t.col0_)
     t = Table([Vector([1, 2])])
-    assert t.to_dict() == {'col_0': [1, 2]}
+    assert t.to_dict() == {'col0_': [1, 2]}
 
 
 # ---------------------------------------------------------------------------

@@ -3,10 +3,6 @@ from .base import _elementwise_proxy
 
 
 class _String(Vector):
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
-
     def count(self, *args, **kwargs):
         """
         Two personalities, disambiguated by arity — both Python-faithful:

@@ -22,8 +22,16 @@ Tables are built via:
 - dtype is per-column, never per-row  
 
 ## 4. Row iteration
-`for row in table:` yields row-tuples.  
-This mimics CSV/SQL patterns.
+`for row in table:` yields a **ride-along Row view** — one Row object whose
+index advances each step. This is deliberate: iteration allocates nothing
+per row, and the view machinery is what enables zero-copy fast paths.
+
+Consequences:
+- Consume each row inside the loop (read fields, do math) — this covers the
+  CSV/SQL iteration pattern.
+- Do **not** stash the yielded rows: `list(table)` gives N references to the
+  same view, all pointing at the final row. To materialize rows, copy
+  explicitly: `[tuple(row) for row in table]`.
 
 ## 5. Column-major memory alignment
 Operations such as:

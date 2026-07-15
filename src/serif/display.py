@@ -29,6 +29,11 @@ def set_repr_rows(n: int | None):
     >>> # All future table reprs will show 20 rows
     >>> serif.set_repr_rows(None)  # Reset to default
     """
+    if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n <= 0):
+        from .errors import SerifTypeError
+        raise SerifTypeError(
+            f"set_repr_rows expects a positive int or None, got {n!r}"
+        )
     global _REPR_ROWS_DEFAULT
     _REPR_ROWS_DEFAULT = n if n is not None else 12
 
@@ -256,8 +261,12 @@ def _align_columns(formatted_cols, header_rows, col_dtypes):
     return aligned_cols, aligned_headers
 
 
-def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
-    """Generate footer line based on shape and dtypes."""
+def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS,
+            dtype_text=None) -> str:
+    """Generate footer line based on shape and dtypes.
+
+    dtype_text, when given, overrides the computed dtype string for the
+    2-D case (e.g. 'mixed' when types are shown in the header instead)."""
     shape = pv.shape
     if not shape:
         return "# empty"
@@ -277,7 +286,9 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS) -> str:
         return f"# {len(pv)} element vector <{dt}>"
     
     if len(shape) == 2:
-        if dtype_list:
+        if dtype_text is not None:
+            d = dtype_text
+        elif dtype_list:
             if truncated:
                 d = ", ".join(dtype_list[:shown]) + ", ..., " + ", ".join(dtype_list[-shown:])
             else:
@@ -393,18 +404,14 @@ def _repr_table(tbl) -> str:
 
     lines.append("")
     
-    # Footer: use <mixed> if types are in header, otherwise show type info
+    # Footer: <mixed> if types are in header; a single type if homogeneous;
+    # otherwise the per-column type list.
     if show_types_in_header:
-        lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", "<mixed>"))
+        lines.append(_footer(tbl, dtype_text="mixed"))
+    elif len(set(dtypes_all)) == 1:
+        lines.append(_footer(tbl, dtype_text=dtypes_all[0]))
     else:
-        # Check if all dtypes are the same (homogeneous table)
-        unique_dtypes = set(dtypes_all)
-        if len(unique_dtypes) == 1:
-            # Homogeneous - show single type
-            lines.append(_footer(tbl, None, False, MAX_HEAD_COLS).replace(f"<{tbl._dtype.kind.__name__ if tbl._dtype else 'object'}>", f"<{dtypes_all[0]}>"))
-        else:
-            # Keep showing all types
-            lines.append(_footer(tbl, dtypes_all, truncated, MAX_HEAD_COLS))
+        lines.append(_footer(tbl, dtypes_all, truncated, MAX_HEAD_COLS))
 
     return "\n".join(lines)
 

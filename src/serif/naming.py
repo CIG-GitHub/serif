@@ -6,9 +6,10 @@ import re
 
 def _get_reserved_names():
     """Get all public methods and properties from Vector and Table classes.
-    
-    This is computed dynamically to support future plugin extensions.
-    Results are cached for performance.
+
+    Computed from dir() rather than hardcoded so the set tracks the classes
+    as they evolve, then cached for the life of the process — anything that
+    adds methods after first use must invalidate _get_reserved_names._cache.
     """
     if not hasattr(_get_reserved_names, '_cache'):
         from ._vector import Vector

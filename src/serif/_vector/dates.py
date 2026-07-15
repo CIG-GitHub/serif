@@ -5,13 +5,10 @@ from datetime import datetime
 from datetime import timedelta
 from collections.abc import Iterable
 from .dtype import Schema
+from ..errors import SerifValueError
 
 
 class _Date(Vector):
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
-
     def _elementwise_compare(self, other, op):
         # Unknown in, unknown out (docs/null-semantics.md). Also note:
         # dates promote to midnight via datetime.min.time() when compared
@@ -23,7 +20,7 @@ class _Date(Vector):
 
         if isinstance(other, Vector):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             if other.schema() is not None and other.schema().kind is str:
                 return _wrap([
                     None if (x is None or y is None) else bool(op(x, date.fromisoformat(y)))
@@ -36,7 +33,7 @@ class _Date(Vector):
                 ])
         elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return _wrap([
                 None if (x is None or y is None) else bool(op(x, y))
                 for x, y in zip(self, other, strict=True)
@@ -56,7 +53,7 @@ class _Date(Vector):
         """ adding integers is adding days """
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 (date.fromordinal(s.toordinal() + y) if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
@@ -81,7 +78,7 @@ class _Date(Vector):
         """
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 (date.fromordinal(s.toordinal() - y) if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
@@ -89,7 +86,7 @@ class _Date(Vector):
 
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is date:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 ((s - y).days if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
