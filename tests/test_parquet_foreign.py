@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from serif import Table, read_parquet, write_parquet
-from serif.errors import SerifValueError
+from serif.errors import SerifTypeError, SerifValueError
 from serif.io.parquet import (
     _MAGIC,
     _CODEC_GZIP,
@@ -33,6 +33,7 @@ from serif.io.parquet import (
     _ENC_PLAIN,
     _REP_OPTIONAL,
     _REP_REQUIRED,
+    _T_BOOLEAN,
     _T_BYTE_ARRAY,
     _T_DOUBLE,
     _T_FLOAT,
@@ -58,16 +59,18 @@ _EPOCH = datetime(1970, 1, 1)
 
 def _single_column_file(path, *, phys, conv=None, optional=False, page_body,
                         uncompressed_size=None, num_values,
-                        codec=_CODEC_UNCOMPRESSED, meta_builder=None):
+                        codec=_CODEC_UNCOMPRESSED, meta_builder=None,
+                        page_header=None, schema_leaf=None):
     """Assemble a one-column, one-row-group Parquet file byte by byte."""
     page_body = bytes(page_body)
     if uncompressed_size is None:
         uncompressed_size = len(page_body)
 
     buf = bytearray(_MAGIC)
-    dph = _enc_data_page_header(num_values)
-    ph = _enc_page_header(uncompressed_size, len(page_body), dph)
-    page = ph + page_body
+    if page_header is None:
+        dph = _enc_data_page_header(num_values)
+        page_header = _enc_page_header(uncompressed_size, len(page_body), dph)
+    page = page_header + page_body
     offset = len(buf)
     buf += page
 
@@ -81,9 +84,11 @@ def _single_column_file(path, *, phys, conv=None, optional=False, page_body,
     rg = _enc_row_group([chunk], len(page), num_values)
 
     rep = _REP_OPTIONAL if optional else _REP_REQUIRED
+    if schema_leaf is None:
+        schema_leaf = _enc_schema_element('x', phys, conv, rep)
     schema = [
         _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=1),
-        _enc_schema_element('x', phys, conv, rep),
+        schema_leaf,
     ]
     footer = _enc_file_metadata(schema, [rg], num_values)
     buf += footer
@@ -133,6 +138,141 @@ def test_timestamp_millis_reads_as_datetime(tmp_path):
                         num_values=1, page_body=array('q', [ms]).tobytes())
     t = read_parquet(str(p))
     assert list(t['x']) == [dt]
+
+
+def test_signed_int_converted_type_reads_as_int(tmp_path):
+    p = tmp_path / "i32conv.parquet"
+    _single_column_file(p, phys=_T_INT32, conv=17,  # INT_32
+                        num_values=2, page_body=struct.pack('<2i', -5, 7))
+    t = read_parquet(str(p))
+    assert list(t['x']) == [-5, 7]
+
+
+# ---------------------------------------------------------------------------
+# Annotations that must RAISE, not misread. Decoding these as raw physical
+# values yields plausible-looking wrong numbers — serif pukes instead.
+# ---------------------------------------------------------------------------
+
+def test_decimal_converted_type_raises(tmp_path):
+    # DECIMAL(9,2) stored as INT32: raw 12345 means 123.45. Reading it as
+    # the int 12345 would be silently wrong.
+    p = tmp_path / "dec.parquet"
+    _single_column_file(p, phys=_T_INT32, conv=5,  # DECIMAL
+                        num_values=1, page_body=struct.pack('<i', 12345))
+    with pytest.raises(SerifTypeError, match='DECIMAL'):
+        read_parquet(str(p))
+
+
+def test_uint64_converted_type_raises(tmp_path):
+    # UINT_64 values with the high bit set decode as negative INT64s.
+    p = tmp_path / "u64.parquet"
+    _single_column_file(p, phys=_T_INT64, conv=14,  # UINT_64
+                        num_values=1, page_body=array('q', [-1]).tobytes())
+    with pytest.raises(SerifTypeError, match='UINT_64'):
+        read_parquet(str(p))
+
+
+# ---------------------------------------------------------------------------
+# LogicalType (SchemaElement field 10) — the newer annotation union. Some
+# types (nanosecond timestamps, UUID) exist ONLY here; without parsing it
+# the reader would surface them as raw physical values.
+# ---------------------------------------------------------------------------
+
+def _leaf_with_logical_type(name, phys, lt_fid, ts_unit=None):
+    """SchemaElement annotated ONLY via logicalType — no converted_type."""
+    w = _ThriftWriter()
+    w.i32(1, phys)
+    w.i32(3, _REP_REQUIRED)
+    w.string(4, name)
+    lt = _ThriftWriter()
+    if ts_unit is not None:
+        ts = _ThriftWriter()
+        ts.bool_(1, True)                # isAdjustedToUTC
+        unit = _ThriftWriter()
+        unit.struct(ts_unit, b'\x00')    # TimeUnit union: empty struct at fid=unit
+        ts.struct(2, unit.stop())
+        lt.struct(lt_fid, ts.stop())
+    else:
+        lt.struct(lt_fid, b'\x00')       # empty payload struct
+    w.struct(10, lt.stop())
+    return w.stop()
+
+
+def test_logical_timestamp_micros_reads_as_datetime(tmp_path):
+    dt = datetime(2024, 6, 1, 12, 30, 45, 123456)
+    us = (dt - _EPOCH) // timedelta(microseconds=1)
+    leaf = _leaf_with_logical_type('x', _T_INT64, 8, ts_unit=2)  # TIMESTAMP(MICROS)
+    p = tmp_path / "lt_us.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=1,
+                        page_body=array('q', [us]).tobytes(), schema_leaf=leaf)
+    t = read_parquet(str(p))
+    assert list(t['x']) == [dt]
+
+
+def test_logical_timestamp_nanos_raises(tmp_path):
+    # Python datetimes hold microseconds; truncating nanos would silently
+    # change the data.
+    leaf = _leaf_with_logical_type('x', _T_INT64, 8, ts_unit=3)  # TIMESTAMP(NANOS)
+    p = tmp_path / "lt_ns.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=1,
+                        page_body=array('q', [1]).tobytes(), schema_leaf=leaf)
+    with pytest.raises(SerifTypeError, match='NANOS'):
+        read_parquet(str(p))
+
+
+def test_unknown_logical_type_raises(tmp_path):
+    leaf = _leaf_with_logical_type('x', _T_INT64, 14)  # UUID
+    p = tmp_path / "lt_uuid.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=1,
+                        page_body=array('q', [1]).tobytes(), schema_leaf=leaf)
+    with pytest.raises(SerifTypeError, match='UUID'):
+        read_parquet(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Page formats that must raise, not walk into garbage
+# ---------------------------------------------------------------------------
+
+def test_data_page_v2_raises(tmp_path):
+    # V2 pages don't decrement `remaining` if skipped — the reader would
+    # parse the bytes after the page as page headers.
+    raw = array('q', [1, 2]).tobytes()
+    w = _ThriftWriter()
+    w.i32(1, 3)              # PageType DATA_PAGE_V2
+    w.i32(2, len(raw))
+    w.i32(3, len(raw))
+    p = tmp_path / "v2.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=2, page_body=raw,
+                        page_header=w.stop())
+    with pytest.raises(SerifValueError, match='V2'):
+        read_parquet(str(p))
+
+
+def test_rle_value_encoding_raises(tmp_path):
+    # encoding=RLE in DataPageHeader field 2 means RLE-encoded VALUES
+    # (legal for booleans); decoding them as PLAIN bit-packing would yield
+    # well-formed garbage booleans.
+    dph = _ThriftWriter()
+    dph.i32(1, 8)            # num_values
+    dph.i32(2, 3)            # encoding = RLE
+    dph.i32(3, 3)
+    dph.i32(4, 3)
+    body = b'\x00'
+    ph = _enc_page_header(len(body), len(body), dph.stop())
+    p = tmp_path / "rle.parquet"
+    _single_column_file(p, phys=_T_BOOLEAN, num_values=8, page_body=body,
+                        page_header=ph)
+    with pytest.raises(SerifValueError, match='RLE'):
+        read_parquet(str(p))
+
+
+def test_truncated_footer_raises_serif_error(tmp_path):
+    # A garbage footer must surface as SerifValueError, not IndexError.
+    p = tmp_path / "trunc.parquet"
+    footer = b'\x1c'  # struct-field header promising content that isn't there
+    p.write_bytes(_MAGIC + footer + struct.pack('<I', len(footer)) + _MAGIC)
+    with pytest.raises(SerifValueError, match='footer'):
+        read_parquet(str(p))
 
 
 # ---------------------------------------------------------------------------

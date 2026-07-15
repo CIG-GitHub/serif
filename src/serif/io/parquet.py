@@ -8,7 +8,11 @@ This is a deliberately minimal, zero-dependency "round-trippable subset":
 
   READ  — reads Parquet written by this module; also handles PLAIN-encoded,
            UNCOMPRESSED or GZIP-compressed files from other tools.
-           Snappy raises with an informative error.
+           Snappy raises with an informative error. Anything the reader
+           cannot decode FAITHFULLY raises rather than misreads: DataPage V2,
+           dictionary/RLE value encodings, and type annotations with no
+           faithful Python value (DECIMAL, TIME, unsigned 32/64-bit ints,
+           nanosecond timestamps) — never silent wrong values.
 
 Supported column types (write & read):
     bool      → BOOLEAN  (bit-packed)
@@ -61,6 +65,22 @@ _CT_DATE             = 6
 _CT_TIMESTAMP_MILLIS = 9
 _CT_TIMESTAMP_MICROS = 10
 
+# LogicalType union field ids (SchemaElement field 10). Newer writers use
+# these instead of (or alongside) ConvertedType; TIMESTAMP_NANOS and UUID
+# exist ONLY here, so the reader must look or it misreads them as raw ints.
+_LT_STRING    = 1
+_LT_TIMESTAMP = 8
+
+_LT_NAMES = {1: 'STRING', 2: 'MAP', 3: 'LIST', 4: 'ENUM', 5: 'DECIMAL',
+             6: 'DATE', 7: 'TIME', 8: 'TIMESTAMP', 10: 'INTEGER',
+             11: 'UNKNOWN', 12: 'JSON', 13: 'BSON', 14: 'UUID',
+             15: 'FLOAT16'}
+
+# TimeUnit union field ids (TimestampType field 2)
+_TU_MILLIS = 1
+_TU_MICROS = 2
+_TU_NANOS  = 3
+
 # Encoding
 _ENC_PLAIN = 0
 _ENC_RLE   = 3
@@ -73,6 +93,7 @@ _CODEC_SNAPPY       = 1
 # PageType
 _PAGE_DATA       = 0
 _PAGE_DICTIONARY = 2
+_PAGE_DATA_V2    = 3
 
 # ---------------------------------------------------------------------------
 # Thrift compact binary — type codes
@@ -80,6 +101,7 @@ _PAGE_DICTIONARY = 2
 
 _TC_BOOL_TRUE  = 1
 _TC_BOOL_FALSE = 2
+_TC_BYTE       = 3
 _TC_I16        = 4
 _TC_I32        = 5
 _TC_I64        = 6
@@ -243,6 +265,10 @@ def _skip_field(data, pos: int, type_code: int) -> int:
     """Skip past a Thrift field value. Returns new pos."""
     if type_code in (_TC_BOOL_TRUE, _TC_BOOL_FALSE):
         pass  # value encoded in type byte
+    elif type_code == _TC_BYTE:
+        # i8 is one raw byte, not a varint. IntType.bitWidth is the notable
+        # user — skipping it as zero-width would desync the footer parse.
+        pos += 1
     elif type_code in (_TC_I16, _TC_I32):
         _, pos = _varint_decode(data, pos)
     elif type_code == _TC_I64:
@@ -861,37 +887,6 @@ def _write_empty_parquet(path: str, nrows: int) -> None:
 # Thrift struct parsers for reading
 # ---------------------------------------------------------------------------
 
-def _parse_struct(data, pos: int, field_handlers: dict):
-    """
-    Generic Thrift compact struct reader.
-
-    field_handlers: {field_id: callable(data, pos, type_code) → (value, new_pos)}
-    Returns (result_dict, new_pos) where result_dict has the same keys.
-    """
-    result = {}
-    last = 0
-    while True:
-        b = data[pos]; pos += 1
-        if b == 0:
-            break
-        tc    = b & 0x0F
-        delta = (b >> 4) & 0x0F
-        if delta:
-            fid = last + delta
-        else:
-            fid, pos = _dec_i32(data, pos)
-        last = fid
-
-        handler = field_handlers.get(fid)
-        if handler is None:
-            pos = _skip_field(data, pos, tc)
-        else:
-            val, pos = handler(data, pos, tc)
-            result[fid] = val
-
-    return result, pos
-
-
 def _parse_list(data, pos: int, elem_parser):
     """
     Parse a Thrift compact list.
@@ -932,11 +927,15 @@ def _parse_list_str(data, pos: int):
     return vals, pos
 
 
-# -- SchemaElement --
+# -- LogicalType (SchemaElement field 10) --
 
-def _parse_schema_element(data, pos: int):
-    r = {'type': None, 'repetition_type': None, 'name': None,
-         'num_children': None, 'converted_type': None}
+def _parse_timestamp_unit(data, pos: int):
+    """
+    TimestampType{1: bool isAdjustedToUTC, 2: TimeUnit unit}. TimeUnit is a
+    union of EMPTY structs, so the inner field id IS the unit
+    (1=MILLIS, 2=MICROS, 3=NANOS).
+    """
+    unit = None
     last = 0
     while True:
         b = data[pos]; pos += 1
@@ -944,8 +943,72 @@ def _parse_schema_element(data, pos: int):
             break
         tc    = b & 0x0F
         delta = (b >> 4) & 0x0F
-        fid   = (last + delta) if delta else _dec_i32(data, pos)[0]
-        if not delta:
+        fid   = (last + delta) if delta else None
+        if fid is None:
+            fid, pos = _dec_i32(data, pos)
+        last = fid
+        if fid == 2 and tc == _TC_STRUCT:
+            inner_last = 0
+            while True:
+                ib = data[pos]; pos += 1
+                if ib == 0:
+                    break
+                itc    = ib & 0x0F
+                idelta = (ib >> 4) & 0x0F
+                ifid   = (inner_last + idelta) if idelta else None
+                if ifid is None:
+                    ifid, pos = _dec_i32(data, pos)
+                inner_last = ifid
+                unit = ifid
+                pos = _skip_field(data, pos, itc)
+        else:
+            pos = _skip_field(data, pos, tc)
+    return unit, pos
+
+
+def _parse_logical_type(data, pos: int):
+    """
+    SchemaElement.logicalType is a Thrift union of structs — exactly one
+    field is present, and its field id says WHICH logical type this is.
+    Payload structs are skipped, except TIMESTAMP's, whose unit changes how
+    INT64 values decode.
+
+    Returns ({'fid': int|None, 'timestamp_unit': int|None}, new_pos).
+    """
+    r = {'fid': None, 'timestamp_unit': None}
+    last = 0
+    while True:
+        b = data[pos]; pos += 1
+        if b == 0:
+            break
+        tc    = b & 0x0F
+        delta = (b >> 4) & 0x0F
+        fid   = (last + delta) if delta else None
+        if fid is None:
+            fid, pos = _dec_i32(data, pos)
+        last = fid
+        r['fid'] = fid
+        if fid == _LT_TIMESTAMP and tc == _TC_STRUCT:
+            r['timestamp_unit'], pos = _parse_timestamp_unit(data, pos)
+        else:
+            pos = _skip_field(data, pos, tc)
+    return r, pos
+
+
+# -- SchemaElement --
+
+def _parse_schema_element(data, pos: int):
+    r = {'type': None, 'repetition_type': None, 'name': None,
+         'num_children': None, 'converted_type': None, 'logical_type': None}
+    last = 0
+    while True:
+        b = data[pos]; pos += 1
+        if b == 0:
+            break
+        tc    = b & 0x0F
+        delta = (b >> 4) & 0x0F
+        fid   = (last + delta) if delta else None
+        if fid is None:
             fid, pos = _dec_i32(data, pos)
         last = fid
         if   fid == 1 and tc == _TC_I32:    r['type'],            pos = _dec_i32(data, pos)
@@ -953,6 +1016,7 @@ def _parse_schema_element(data, pos: int):
         elif fid == 4 and tc == _TC_BINARY: r['name'],            pos = _dec_str(data, pos)
         elif fid == 5 and tc == _TC_I32:    r['num_children'],    pos = _dec_i32(data, pos)
         elif fid == 6 and tc == _TC_I32:    r['converted_type'],  pos = _dec_i32(data, pos)
+        elif fid == 10 and tc == _TC_STRUCT: r['logical_type'],   pos = _parse_logical_type(data, pos)
         else: pos = _skip_field(data, pos, tc)
     return r, pos
 
@@ -1127,30 +1191,83 @@ _CONV_TO_KIND = {
     _CT_DATE:             _date,
     _CT_TIMESTAMP_MILLIS: _datetime,
     _CT_TIMESTAMP_MICROS: _datetime,
+    11: int, 12: int,                     # UINT_8 / UINT_16 — fit their
+                                          # physical INT32 without sign issues
+    15: int, 16: int, 17: int, 18: int,   # INT_8 .. INT_64
+}
+
+# ConvertedType codes the reader refuses: decoding any of these as raw
+# physical values yields plausible-looking WRONG numbers (a DECIMAL's
+# unscaled int, a UINT_64's sign-flipped negatives). Names for the error.
+_CT_UNSUPPORTED = {
+    1: 'MAP', 2: 'MAP_KEY_VALUE', 3: 'LIST', 4: 'ENUM', 5: 'DECIMAL',
+    7: 'TIME_MILLIS', 8: 'TIME_MICROS', 13: 'UINT_32', 14: 'UINT_64',
+    19: 'JSON', 20: 'BSON', 21: 'INTERVAL',
 }
 
 
 def _elem_to_kind(elem: dict):
     """
-    Returns (kind, phys_type, conv_type).
-    Raises SerifTypeError for unreadable types.
+    Returns (kind, phys_type, conv_type). conv_type may be synthesized from
+    the logical type (TIMESTAMP unit) so the decoder picks the right scale.
+
+    Raises SerifTypeError for any annotation the reader can't decode
+    faithfully — falling back to raw physical values would be a silent
+    misread, and serif pukes instead.
     """
+    name = elem.get('name')
     phys = elem.get('type')
     conv = elem.get('converted_type')
+    lt   = elem.get('logical_type')
 
     if phys is None:
         raise SerifTypeError(
-            f"Schema element '{elem.get('name')}' is a group (no physical type); "
+            f"Schema element '{name}' is a group (no physical type); "
             "nested schemas are not supported."
         )
 
-    kind = _CONV_TO_KIND.get(conv) or _PHYS_TO_KIND.get(phys)
-    if kind is None:
+    if conv is not None:
+        kind = _CONV_TO_KIND.get(conv)
+        if kind is None:
+            label = _CT_UNSUPPORTED.get(conv, f'code {conv}')
+            raise SerifTypeError(
+                f"Column '{name}': unsupported Parquet converted type {label}; "
+                f"decoding it as raw physical values would be silently wrong. "
+                f"Cannot read this column."
+            )
+        return kind, phys, conv
+
+    if lt is not None and lt.get('fid') is not None:
+        fid = lt['fid']
+        if fid == _LT_STRING:
+            return str, phys, _CT_UTF8
+        if fid == 6:  # DATE
+            return _date, phys, _CT_DATE
+        if fid == _LT_TIMESTAMP:
+            unit = lt.get('timestamp_unit')
+            if unit == _TU_MILLIS:
+                return _datetime, phys, _CT_TIMESTAMP_MILLIS
+            if unit == _TU_MICROS:
+                return _datetime, phys, _CT_TIMESTAMP_MICROS
+            raise SerifTypeError(
+                f"Column '{name}': TIMESTAMP(NANOS) is not supported — Python "
+                f"datetimes hold microseconds, and truncating nanoseconds "
+                f"would silently change the data. Re-write the file with "
+                f"microsecond timestamps."
+            )
+        label = _LT_NAMES.get(fid, f'id {fid}')
         raise SerifTypeError(
-            f"Column '{elem.get('name')}': unsupported Parquet physical type {phys} "
-            f"(converted_type={conv}). Cannot read this column."
+            f"Column '{name}': unsupported Parquet logical type {label}; "
+            f"decoding it as raw physical values would be silently wrong. "
+            f"Cannot read this column."
         )
 
+    kind = _PHYS_TO_KIND.get(phys)
+    if kind is None:
+        raise SerifTypeError(
+            f"Column '{name}': unsupported Parquet physical type {phys}. "
+            "Cannot read this column."
+        )
     return kind, phys, conv
 
 
@@ -1293,15 +1410,30 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             # but we skip the dict page itself.
             continue
 
+        if page_type == _PAGE_DATA_V2:
+            # V2 pages carry their def levels outside the (possibly
+            # compressed) body and their header in field 8, which this
+            # parser doesn't read. Skipping them would leave `remaining`
+            # undecremented and walk the reader into garbage bytes.
+            raise SerifValueError(
+                f"Column '{col_name}': DataPage V2 pages are not supported "
+                "by this reader. Re-write the file with data page version 1 "
+                "(the default in most tools)."
+            )
+
         if page_type != _PAGE_DATA:
             continue
 
-        if encoding not in (_ENC_PLAIN, _ENC_RLE):
+        if encoding != _ENC_PLAIN:
+            # RLE (3) here would mean RLE-encoded *values* (legal for
+            # booleans) — decoding them as PLAIN bit-packing yields
+            # well-formed garbage, so it raises like the dictionary
+            # encodings do.
             raise SerifValueError(
-                f"Column '{col_name}': unsupported data page encoding {encoding}. "
-                "This reader supports PLAIN (0) only. "
-                "Files using dictionary (RLE_DICTIONARY=8) encoding cannot be read "
-                "by this module."
+                f"Column '{col_name}': unsupported data page value encoding "
+                f"{encoding}. This reader supports PLAIN (0) only; dictionary "
+                "(PLAIN_DICTIONARY=2 / RLE_DICTIONARY=8) and RLE-encoded "
+                "boolean (RLE=3) pages cannot be read by this module."
             )
 
         page_body = _decompress(page_body, codec, col_name)
@@ -1401,7 +1533,11 @@ def read_parquet(path: str):
         )
 
     footer_bytes = bytes(data[footer_start:footer_start + footer_len])
-    file_meta, _ = _parse_file_metadata(footer_bytes, 0)
+    try:
+        file_meta, _ = _parse_file_metadata(footer_bytes, 0)
+    except (IndexError, _struct.error) as e:
+        raise SerifValueError(
+            f"'{path}': truncated or corrupt Parquet footer") from e
 
     schema_elems = file_meta.get('schema', [])
     row_groups   = file_meta.get('row_groups', [])
@@ -1457,15 +1593,20 @@ def read_parquet(path: str):
             meta_entry = col_meta[col_idx]
 
 
-            chunk_values = _read_column_chunk(
-                data,
-                cm,
-                kind       = meta_entry['kind'],
-                phys_type  = meta_entry['phys_type'],
-                conv_type  = meta_entry['conv_type'],
-                is_optional= meta_entry['is_optional'],
-                col_name   = col_name,
-            )
+            try:
+                chunk_values = _read_column_chunk(
+                    data,
+                    cm,
+                    kind       = meta_entry['kind'],
+                    phys_type  = meta_entry['phys_type'],
+                    conv_type  = meta_entry['conv_type'],
+                    is_optional= meta_entry['is_optional'],
+                    col_name   = col_name,
+                )
+            except (IndexError, _struct.error) as e:
+                raise SerifValueError(
+                    f"'{path}': truncated or corrupt Parquet data for "
+                    f"column '{col_name}'") from e
             existing = col_values[col_idx]
             if existing is None:
                 col_values[col_idx] = chunk_values
