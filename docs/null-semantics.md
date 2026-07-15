@@ -15,10 +15,13 @@ where SQL is just old.
 > logic — the known operand may settle the result.
 >
 > **Aggregate: summarize what you know.**
-> Skip nulls. If nothing remains, return the operation's identity element
-> if one exists; otherwise `None`.
+> Skip nulls. If nothing remains: true math folds return their identity
+> (`sum` → `0`, `product` → `1`, `count` → `0`); statistics with no
+> identity return `None` (`max`, `min`, `mean`, `stdev`); and the verdict
+> reductions `all()`/`any()` refuse to guess — they raise unless
+> `on_empty=` says what the verdict should be.
 
-Everything else in this document is a consequence of those two sentences.
+Everything else in this document is a consequence of those two rules.
 
 ## Element-wise operations
 
@@ -61,23 +64,64 @@ only absence obeys the doctrine.) Every other dtype raises `SerifTypeError`:
 ## Aggregations
 
 Aggregates skip nulls — they summarize the values you have. When nothing
-remains (all-null or empty input), the result is the operation's identity
-element, or `None` when no identity exists:
+remains (all-null or empty input), there are three tiers:
 
-| aggregate | all-null / empty result | why                    |
-|-----------|-------------------------|------------------------|
-| `sum`     | `0`                     | additive identity      |
-| `count`   | `0`                     | counting identity      |
-| `all`     | `True`                  | identity of AND (vacuous truth) |
-| `any`     | `False`                 | identity of OR         |
-| `max`     | `None`                  | no identity exists     |
-| `min`     | `None`                  | no identity exists     |
-| `mean`    | `None`                  | no identity exists     |
+| aggregate | all-null / empty result | why                        |
+|-----------|-------------------------|----------------------------|
+| `sum`     | `0`                     | additive identity          |
+| `product` | `1`                     | multiplicative identity    |
+| `count`   | `0`                     | counting identity          |
+| `max`     | `None`                  | no identity exists         |
+| `min`     | `None`                  | no identity exists         |
+| `mean`    | `None`                  | no identity exists         |
+| `stdev`   | `None`                  | no identity exists         |
+| `all`     | raise unless `on_empty=` | a verdict needs evidence  |
+| `any`     | raise unless `on_empty=` | a verdict needs evidence  |
 
-`all([None, True]) is True` is not "None is truthy" — the null was skipped,
-and no known value violated the condition. The element-wise layer already
-reported the unknown before you aggregated; aggregation is where you decide
-to summarize what's known.
+The math folds have a true answer for the empty case — the fold identity —
+and the identity-less statistics return `None`, which propagates honestly
+through any arithmetic downstream. `all([None, True]) is True` is not
+"None is truthy" — the null was skipped, and no known value violated the
+condition. The element-wise layer already reported the unknown before you
+aggregated; aggregation is where you decide to summarize what's known.
+
+### `all()` / `any()`: verdicts need evidence
+
+A boolean reduction is a verdict, and its result lands in `if`/`assert`,
+where Python coerces anything into a decision silently. That makes the
+identity elements dangerous in exactly this one place:
+`t[t.type == 'wire'].amount_ok.all()` with a typo'd filter would return
+`True` — a validation that passes on zero evidence. The mirror image:
+"any fraud flags?" over a never-populated column would return `False` — an
+alarm that silently doesn't fire.
+
+So when zero valid values survive the null-skip (an empty vector, or one
+whose values are all null — one condition, not two), `all()` and `any()`
+raise `SerifEmptyReductionError` unless you finish asking the question:
+
+```
+flags.all()                # zero valid values → raises
+flags.all(on_empty=True)   # vacuous truth, opted into deliberately
+flags.any(on_empty=False)  # the OR identity, opted into deliberately
+```
+
+The value you pass is the value you get back. There is deliberately no
+`on_empty=None` "return a null verdict" option: in an `if`, `None` is
+indistinguishable from `False`, so `on_empty=False` already covers it.
+The one thing this closes off — a 2-D → 1-D reduction that wants to keep
+truthiness, falseness, and emptiness as three distinct output values —
+must be written by hand (like vectorized shift-via-operator: the surface
+is spoken for, but you have the tools).
+
+In `aggregate()`/`window()`, a group with zero valid values raises the
+same error, re-raised with the group key and output column attached, so
+you can tell a data problem ("this group isn't supposed to be empty")
+from a legitimate sparse group. For the latter, qualify with a lambda:
+`lambda g: g.flag.all(on_empty=False)`.
+
+This is `Vector.__bool__`'s refusal, one step later: `if vec:` raises
+because you haven't said which reduction you mean; `all()` over no
+evidence raises because you haven't said what the verdict should be.
 
 ## Filtering and assignment
 
@@ -100,14 +144,16 @@ Masked assignment follows the same rule: a null mask entry assigns nothing.
 ## Named deviations
 
 **From Python:** `None > 6` raises in Python; in a vector it yields null.
-`all([None])` is `False` in Python (None is falsy); serif's `all()` skips
-the null and returns `True` (identity rule). In table land, `None` is
-absence, not a falsy sentinel object.
+`all([None])` is `False` in Python (None is falsy) and `all([])` is `True`
+(vacuous truth); serif's `all()` raises on both — the nulls are skipped,
+no evidence remains, and a verdict from no evidence is the footgun. In
+table land, `None` is absence, not a falsy sentinel object.
 
-**From SQL:** `SUM` of all-null is NULL in SQL, `0` here (the identity rule;
-Excel and Python agree). `EVERY`/`bool_and` of all-null is NULL in SQL,
-`True` here (same rule). SQL's choices here are widely regarded as warts;
-the identity rule is one principle applied uniformly.
+**From SQL:** `SUM` of all-null is NULL in SQL, `0` here (the identity
+rule; Excel and Python agree). `EVERY`/`bool_and` of all-null is NULL in
+SQL; serif raises unless qualified — SQL's NULL at least refuses to render
+a verdict, but it then coerces silently in a `WHERE`; the raise makes the
+refusal loud.
 
 ## Explicit null tools
 

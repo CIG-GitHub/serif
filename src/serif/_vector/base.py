@@ -8,6 +8,7 @@ from ..errors import SerifTypeError
 from ..errors import SerifIndexError
 from ..errors import SerifValueError
 from ..errors import SerifKeyError
+from ..errors import SerifEmptyReductionError
 from ..display import _printr
 from ..naming import _sanitize_user_name
 from .dtype import Schema
@@ -77,6 +78,16 @@ def _kleene_xor(x, y):
     if x is None or y is None:
         return None
     return bool(x) != bool(y)
+
+
+def _check_on_empty(method_name, on_empty):
+    # Identity checks, not truthiness: on_empty=1 is a bug, not a True.
+    if on_empty is None or on_empty is True or on_empty is False:
+        return
+    raise SerifTypeError(
+        f"{method_name}(): on_empty must be True or False (or None, the "
+        f"default, which raises on zero valid values); got {on_empty!r}"
+    )
 
 def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
     """
@@ -1427,17 +1438,74 @@ class Vector():
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
-    def all(self):
-        """Return True if all elements are truthy (excluding None)."""
+    def product(self):
+        """Product of valid values; 1 (the multiplicative identity) if none."""
         if self.ndims() == 2:
-            return self.copy((c.all() for c in self.cols()), name=None)
-        return all(v for v in self._storage if v is not None)
+            return self.copy((c.product() for c in self.cols()), name=None)
+        result = 1
+        for v in self._storage:
+            if v is not None:
+                result = result * v
+        return result
 
-    def any(self):
-        """Return True if any element is truthy (excluding None)."""
+    def _no_verdict(self, method_name, on_empty):
+        if on_empty is not None:
+            return on_empty
+        n = len(self._storage)
+        detail = "empty vector" if n == 0 else f"length {n}, all null"
+        raise SerifEmptyReductionError(
+            f"{method_name}() over zero valid values ({detail}): no verdict "
+            f"is possible. Pass on_empty=True or on_empty=False to choose "
+            f"the empty-case verdict, or fillna()/dropna() upstream."
+        )
+
+    def all(self, on_empty=None):
+        """
+        True if every valid (non-null) element is truthy.
+
+        A verdict needs evidence: over zero valid values (empty vector, or
+        all null after skipping) all() raises SerifEmptyReductionError
+        unless on_empty supplies the empty-case verdict — the value you
+        pass (True or False) is the value returned. See
+        docs/null-semantics.md.
+        """
+        _check_on_empty('all', on_empty)
         if self.ndims() == 2:
-            return self.copy((c.any() for c in self.cols()), name=None)
-        return any(v for v in self._storage if v is not None)
+            return self.copy((c.all(on_empty=on_empty) for c in self.cols()), name=None)
+        seen_valid = False
+        for v in self._storage:
+            if v is None:
+                continue
+            if not v:
+                return False
+            seen_valid = True
+        if seen_valid:
+            return True
+        return self._no_verdict('all', on_empty)
+
+    def any(self, on_empty=None):
+        """
+        True if any valid (non-null) element is truthy.
+
+        A verdict needs evidence: over zero valid values (empty vector, or
+        all null after skipping) any() raises SerifEmptyReductionError
+        unless on_empty supplies the empty-case verdict — the value you
+        pass (True or False) is the value returned. See
+        docs/null-semantics.md.
+        """
+        _check_on_empty('any', on_empty)
+        if self.ndims() == 2:
+            return self.copy((c.any(on_empty=on_empty) for c in self.cols()), name=None)
+        seen_valid = False
+        for v in self._storage:
+            if v is None:
+                continue
+            if v:
+                return True
+            seen_valid = True
+        if seen_valid:
+            return False
+        return self._no_verdict('any', on_empty)
 
     def mean(self):
         if self.ndims() == 2:
