@@ -31,7 +31,7 @@ from datetime import date as _date, datetime as _datetime, timedelta as _timedel
 
 from ..errors import SerifTypeError, SerifValueError
 from .._vector import Vector
-from .._vector.storage import ArrayStorage
+from .._vector.storage import ArrayStorage, StringStorage
 
 # ---------------------------------------------------------------------------
 # File-level constants
@@ -1185,6 +1185,81 @@ def _decompress(page_bytes: bytes, codec: int, col_name: str) -> bytes:
 # Column chunk reader
 # ---------------------------------------------------------------------------
 
+def _decode_str_raw(page_body: bytes, body_pos: int,
+                    null_flags, non_null_count: int) -> StringStorage:
+    """
+    Build a StringStorage directly from PLAIN BYTE_ARRAY page data.
+
+    PLAIN BYTE_ARRAY format:  [4-byte LE length][utf-8 bytes] repeated.
+    We scan the length prefixes to build the offset array and copy raw bytes
+    into a contiguous buffer — zero .decode() calls.  Strings are decoded
+    lazily only when StringStorage.__getitem__ is called.
+    """
+    buf_parts: list = []
+    partial_offs: list = [0]   # byte offsets for the non-null values only
+    pos = body_pos
+
+    for _ in range(non_null_count):
+        length = _struct.unpack_from('<I', page_body, pos)[0]
+        pos += 4
+        buf_parts.append(page_body[pos:pos + length])
+        partial_offs.append(partial_offs[-1] + length)
+        pos += length
+
+    raw_buf = b''.join(buf_parts)
+
+    if null_flags is None:
+        # Non-nullable: partial_offs IS the full offset array
+        return StringStorage.from_raw(raw_buf, _pyarray.array('I', partial_offs), None)
+
+    # Nullable: expand partial_offs to cover every position (including nulls).
+    # Null positions get a zero-length entry (duplicate offset).
+    from .._vector.nullable import ByteMask
+    full_offs = [0]
+    null_list = []
+    has_nulls = False
+    raw_idx   = 0
+
+    for is_null in null_flags:
+        if is_null:
+            has_nulls = True
+            null_list.append(True)
+            full_offs.append(full_offs[-1])   # zero advance
+        else:
+            null_list.append(False)
+            seg_len = partial_offs[raw_idx + 1] - partial_offs[raw_idx]
+            full_offs.append(full_offs[-1] + seg_len)
+            raw_idx += 1
+
+    mask = ByteMask.from_iterable(null_list) if has_nulls else None
+    return StringStorage.from_raw(raw_buf, _pyarray.array('I', full_offs), mask)
+
+
+def _concat_string_storages(a: StringStorage, b: StringStorage) -> StringStorage:
+    """Concatenate two StringStorages (multiple row groups)."""
+    shift    = len(a._buf)
+    new_buf  = a._buf + b._buf
+    a_len    = len(a)
+    b_len    = len(b)
+
+    # a's offsets + b's offsets each shifted by len(a._buf)
+    new_offs = _pyarray.array('I', a._offsets)
+    for i in range(1, b_len + 1):
+        new_offs.append(b._offsets[i] + shift)
+
+    # Combine null masks
+    if a._mask is None and b._mask is None:
+        new_mask = None
+    else:
+        from .._vector.nullable import ByteMask
+        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(a_len)]
+        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(b_len)]
+        all_flags = a_flags + b_flags
+        new_mask = ByteMask.from_iterable(all_flags) if any(all_flags) else None
+
+    return StringStorage.from_raw(new_buf, new_offs, new_mask)
+
+
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                         conv_type, is_optional: bool, col_name: str) -> list:
     """
@@ -1248,27 +1323,40 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             else page_num_values
         )
 
-        page_values, _ = _decode_plain(
-            page_body, body_pos, kind, phys_type, non_null_count, conv_type
-        )
-
-        if null_flags is not None:
-            it = iter(page_values)
-            page_result = [None if f else next(it) for f in null_flags]
+        if kind is str:
+            # String fast path: build StringStorage directly from raw bytes.
+            # No .decode() calls — offsets built from length prefixes, raw
+            # UTF-8 bytes copied into a single contiguous buffer.
+            page_storage = _decode_str_raw(page_body, body_pos, null_flags, non_null_count)
+            if values is None:
+                values = page_storage
+            elif isinstance(values, StringStorage):
+                values = _concat_string_storages(values, page_storage)
+            else:
+                values = list(values) if not isinstance(values, list) else values
+                values.extend(page_storage)
         else:
-            page_result = page_values  # may be array.array (DOUBLE/INT64 fast path)
+            page_values, _ = _decode_plain(
+                page_body, body_pos, kind, phys_type, non_null_count, conv_type
+            )
 
-        # Accumulate — keep array.array alive to avoid boxing
-        if values is None:
-            values = (page_result
-                      if isinstance(page_result, _pyarray.array)
-                      else list(page_result))
-        elif isinstance(values, _pyarray.array) and isinstance(page_result, _pyarray.array):
-            values += page_result          # pure array concatenation, no boxing
-        else:
-            if isinstance(values, _pyarray.array):     # first page was fast, rest aren't
-                values = list(values)
-            values.extend(page_result)
+            if null_flags is not None:
+                it = iter(page_values)
+                page_result = [None if f else next(it) for f in null_flags]
+            else:
+                page_result = page_values  # may be array.array (DOUBLE/INT64 fast path)
+
+            # Accumulate — keep array.array alive to avoid boxing
+            if values is None:
+                values = (page_result
+                          if isinstance(page_result, _pyarray.array)
+                          else list(page_result))
+            elif isinstance(values, _pyarray.array) and isinstance(page_result, _pyarray.array):
+                values += page_result          # pure array concatenation, no boxing
+            else:
+                if isinstance(values, _pyarray.array):     # first page was fast, rest aren't
+                    values = list(values)
+                values.extend(page_result)
         remaining -= page_num_values
 
     return values if values is not None else []
@@ -1374,6 +1462,8 @@ def read_parquet(path: str):
             existing = col_values[col_name]
             if existing is None:
                 col_values[col_name] = chunk_values
+            elif isinstance(existing, StringStorage) and isinstance(chunk_values, StringStorage):
+                col_values[col_name] = _concat_string_storages(existing, chunk_values)
             elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
                 col_values[col_name] = existing + chunk_values
             else:
@@ -1386,7 +1476,11 @@ def read_parquet(path: str):
         raw   = col_values[m['name']] or []
         dtype = _Schema(m['kind'], m['is_optional'])
 
-        if isinstance(raw, _pyarray.array):
+        if isinstance(raw, StringStorage):
+            # Str fast path: StringStorage already built with raw bytes,
+            # no .decode() has occurred yet.
+            col = Vector._from_storage(raw, dtype, name=m['name'])
+        elif isinstance(raw, _pyarray.array):
             # Non-nullable float or int: storage is already a packed C array.
             # Wrap it directly — zero extra iteration, zero boxing.
             storage = ArrayStorage(raw, None)
