@@ -107,11 +107,12 @@ class TestCategoricalComparisons:
         result = c >= 'm'
         assert list(result) == [False, True, True]
 
-    def test_null_always_false_in_comparison(self):
+    def test_null_compares_to_null(self):
+        # Unknown in, unknown out (docs/null-semantics.md).
         v = Vector(['s', None, 'l'])
         c = v.categorize(SIZES)
         result = c == 's'
-        assert list(result) == [True, False, False]
+        assert list(result) == [True, None, False]
 
     def test_two_Categorys_same_categories(self):
         a = make_cat(['s', 'm', 'l'])
@@ -149,12 +150,13 @@ class TestCategoricalComparisons:
         with pytest.raises(SerifValueError, match="not in the category list"):
             _ = c < 'xxl'
 
-    def test_null_ne_is_false_sql_semantics(self):
-        # NULL != 's' → False  (SQL NULL semantics: any comparison with NULL is False)
+    def test_null_ne_is_null_sql_semantics(self):
+        # NULL != 's' → NULL (proper SQL three-valued logic: any comparison
+        # with NULL is NULL, not False — docs/null-semantics.md)
         v = Vector(['s', None, 'l'])
         c = v.categorize(SIZES)
         result = c != 's'
-        assert list(result) == [False, False, True]
+        assert list(result) == [False, None, True]
 
     def test_set_categories_raises(self):
         v = Vector(['s', 'm'])

@@ -283,7 +283,8 @@ def test_setitem_then_full_readback(case_id, factory, values):
     v[0] = SETITEM_VALUE[case_id]
     expected = [SETITEM_VALUE[case_id]] + values[1:]
     assert list(v) == expected
-    assert list(v == v.copy()) == [x is not None for x in expected]
+    # Null doctrine: null positions compare to None, not False.
+    assert list(v == v.copy()) == [True if x is not None else None for x in expected]
 
 
 def test_categorical_setitem_rejects_unknown_value():

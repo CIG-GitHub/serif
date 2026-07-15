@@ -11,26 +11,43 @@ class _Date(Vector):
         super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
 
     def _elementwise_compare(self, other, op):
+        # Unknown in, unknown out (docs/null-semantics.md). Also note:
+        # dates promote to midnight via datetime.min.time() when compared
+        # against datetimes.
         other = self._check_duplicate(other)
+
+        def _wrap(vals):
+            return Vector(tuple(vals), dtype=Schema(bool, any(v is None for v in vals)))
+
         if isinstance(other, Vector):
-            # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            if other.schema().kind == str:
-                return Vector(tuple(bool(op(x, date.fromisoformat(y))) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
-            if other.schema().kind == datetime:
-                return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), y)) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
+            if other.schema() is not None and other.schema().kind is str:
+                return _wrap([
+                    None if (x is None or y is None) else bool(op(x, date.fromisoformat(y)))
+                    for x, y in zip(self, other, strict=True)
+                ])
+            if other.schema() is not None and other.schema().kind is datetime:
+                return _wrap([
+                    None if (x is None or y is None) else bool(op(datetime.combine(x, datetime.min.time()), y))
+                    for x, y in zip(self, other, strict=True)
+                ])
         elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            # Raise mismatched lengths
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            # If it's not a Vector or Constant, don't apply date compare logic
-            return Vector(tuple(bool(op(x, y)) for x, y in zip(self, other, strict=True)), dtype=Schema(bool, False))
+            return _wrap([
+                None if (x is None or y is None) else bool(op(x, y))
+                for x, y in zip(self, other, strict=True)
+            ])
         elif isinstance(other, str):
-            return Vector(tuple(bool(op(x, date.fromisoformat(other))) for x in self), dtype=Schema(bool, False))
+            rhs = date.fromisoformat(other)
+            return _wrap([None if x is None else bool(op(x, rhs)) for x in self])
         elif isinstance(other, datetime):
-            return Vector(tuple(bool(op(datetime.combine(x, datetime.time(0, 0)), other)) for x in self), dtype=Schema(bool, False))
-        # finally, 
+            return _wrap([
+                None if x is None else bool(op(datetime.combine(x, datetime.min.time()), other))
+                for x in self
+            ])
+        # finally,
         return super()._elementwise_compare(other, op)
 
 

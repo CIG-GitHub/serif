@@ -690,7 +690,8 @@ class Table(Vector):
                 return self._storage[key]
             return Row(self, key)
 
-        if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
+        if isinstance(key, Vector) and key.schema().kind == bool:
+            # Nullable masks allowed: null entries exclude the row.
             assert (len(self) == len(key))
             return Table(tuple(x[key] for x in self._storage))
         if isinstance(key, list) and {type(e) for e in key} == {bool}:

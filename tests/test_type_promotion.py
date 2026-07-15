@@ -173,15 +173,15 @@ class TestArithmeticPromotion:
         assert s.nullable is True
         assert list(out) == [11, None, 13]
 
-    def test_comparison_with_none_produces_bool_mask(self):
+    def test_comparison_with_none_produces_nullable_bool_mask(self):
         v = Vector([1, None, 3])
         mask = v > 1
 
         s = mask.schema()
         assert s.kind is bool
-        assert s.nullable is False
-        # Define tri-value comparison as: None compared to anything -> False
-        assert list(mask) == [False, False, True]
+        assert s.nullable is True
+        # Three-valued logic (docs/null-semantics.md): unknown in, unknown out.
+        assert list(mask) == [False, None, True]
 
     def test_mixed_incompatible_types_raise(self):
         # Decided in the arithmetic-edges pass: incompatible element types
