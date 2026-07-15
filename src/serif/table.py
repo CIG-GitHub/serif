@@ -133,12 +133,29 @@ class Row(Vector):
         return self
 
     @property
-    def _underlying(self):
+    def _storage(self):
         """
-        If a Vector method asks for 'self._underlying', we materialize it on demand.
-        This is the "Lazy" part. We don't build the tuple until you do math.
+        Materialized on demand — the "lazy" part of the view.
+
+        Base Vector methods (math, comparisons, aggregation, sorting) all
+        read self._storage; building a TupleStorage of the current row's
+        values at access time makes every one of them work on a Row without
+        copying anything until the moment it's actually needed.
         """
-        return tuple(col[self._index] for col in self._raw_cols)
+        return TupleStorage(tuple(col[self._index] for col in self._raw_cols))
+
+    def _clone(self, new_storage, dtype=..., name=...):
+        # An operation result derived from a Row is a value, not a view —
+        # return a plain Vector of the row's dtype.
+        use_dtype = self._dtype if dtype is ... else dtype
+        use_name = None if name is ... else name
+        return Vector._from_storage(new_storage, use_dtype, name=use_name)
+
+    def __setitem__(self, key, value):
+        raise SerifTypeError(
+            "Row is a read-only view. Assign through the table instead: "
+            "t[row_index, col] = value"
+        )
 
     @property
     def shape(self):
@@ -445,7 +462,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_fp_powers', '_wild', '_repr_rows', '_storage'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_display_as_row', '_fp', '_wild', '_repr_rows', '_storage'):
             object.__setattr__(self, attr, value)
             return
         
@@ -2047,7 +2064,6 @@ class Table(Vector):
         object.__setattr__(t, '_display_as_row', False)
         object.__setattr__(t, '_wild',          False)
         object.__setattr__(t, '_fp',            None)
-        object.__setattr__(t, '_fp_powers',     None)
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)

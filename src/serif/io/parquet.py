@@ -269,8 +269,11 @@ def _skip_struct(data, pos: int) -> int:
             return pos
         tc = b & 0x0F
         delta = (b >> 4) & 0x0F
-        last = last + delta if delta else (_dec_i32(data, pos)[0], (pos := _dec_i32(data, pos)[1]))[0]
-        if delta == 0:
+        if delta:
+            last += delta
+        else:
+            # Long-form header: field id follows as zigzag varint. Consume it
+            # exactly once — decoding it twice desyncs the whole footer parse.
             last, pos = _dec_i32(data, pos)
         pos = _skip_field(data, pos, tc)
 
@@ -299,17 +302,6 @@ def _skip_map(data, pos: int) -> int:
     return pos
 
 
-def _read_struct_fields(data, pos: int):
-    """
-    Generator: yields (field_id, type_code, pos_after_header).
-    Caller must consume the field value and advance pos themselves — but
-    since we can't do that here, we instead return a simple flat reader.
-
-    Actually: return a dict-building function instead.
-    """
-    raise NotImplementedError  # Use _parse_* functions below
-
-
 # ---------------------------------------------------------------------------
 # Parquet struct encoding
 # ---------------------------------------------------------------------------
@@ -336,7 +328,7 @@ def _enc_schema_element(name: str, phys_type, conv_type, rep_type,
     return w.stop()
 
 
-def _enc_data_page_header(num_values: int, nullable: bool) -> bytes:
+def _enc_data_page_header(num_values: int) -> bytes:
     """
     DataPageHeader fields:
       1: num_values (i32)
@@ -559,9 +551,16 @@ def _encode_plain(values: list, kind: type, col_name: str) -> bytes:
 
     if kind is _datetime:
         import array as _array
-        us = _array.array('q', [
-            int((v - _EPOCH_DT).total_seconds() * 1_000_000) for v in values
-        ])
+
+        def _micros(v):
+            # Integer math on the timedelta components. total_seconds() is a
+            # float and loses microsecond exactness once the magnitude gets
+            # large (float64 spacing reaches 1µs within a few hundred years
+            # of the epoch).
+            d = v - _EPOCH_DT
+            return (d.days * 86_400_000_000) + (d.seconds * 1_000_000) + d.microseconds
+
+        us = _array.array('q', [_micros(v) for v in values])
         return us.tobytes()
 
     raise SerifTypeError(
@@ -783,7 +782,7 @@ def write_parquet(table, path: str) -> None:
         uncompressed = len(page_body)
 
         # Build page: PageHeader + body
-        dph        = _enc_data_page_header(n, nullable)
+        dph        = _enc_data_page_header(n)
         ph         = _enc_page_header(uncompressed, uncompressed, dph)
         full_page  = ph + page_body
         total_size = len(full_page)   # header + body, as required by spec
@@ -1269,14 +1268,10 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
     codec          = cm.get('codec', _CODEC_UNCOMPRESSED)
     num_values     = cm['num_values']
     data_page_off  = cm['data_page_offset']
-    dict_page_off  = cm.get('dictionary_page_offset')
 
-    # Skip dictionary page if present (we don't support dictionary encoding,
-    # but we can skip over it gracefully if the data pages are PLAIN)
+    # If the file has a dictionary page it sits before data_page_offset;
+    # starting from data_page_offset skips it implicitly.
     pos = data_page_off
-
-    # If the file has a dictionary page before the data page, it would be at
-    # dict_page_off. We start reading from data_page_off so it's fine.
 
     values    = None   # None = not yet initialised; may become list or array.array
     remaining = num_values

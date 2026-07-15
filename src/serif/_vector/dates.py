@@ -78,7 +78,7 @@ class _Date(Vector):
 
     def __add__(self, other):
         """ adding integers is adding days """
-        if isinstance(other, Vector) and other.schema().kind == int:
+        if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
                 raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
@@ -88,7 +88,51 @@ class _Date(Vector):
 
         if isinstance(other, int):
             return Vector(tuple((date.fromordinal(s.toordinal() + other) if s is not None else None) for s in self._storage))
-        return super().add(other)
+        # Everything else — timedelta scalars/vectors especially — goes
+        # through the base elementwise machinery (date + timedelta is core
+        # Python and must work).
+        return super().__add__(other)
+
+    def __sub__(self, other):
+        """
+        Date algebra in whole days (Excel-style, closing the int-days ring):
+
+            datevec + int  → date        datevec - int  → date
+            datevec - date → int (days)
+
+        datetime vectors are NOT _Date and keep Python's timedelta
+        semantics — subsecond precision matters there.
+        """
+        if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
+            if len(self) != len(other):
+                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            return Vector(tuple(
+                (date.fromordinal(s.toordinal() - y) if s is not None and y is not None else None)
+                for s, y in zip(self._storage, other, strict=True)
+            ))
+
+        if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is date:
+            if len(self) != len(other):
+                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            return Vector(tuple(
+                ((s - y).days if s is not None and y is not None else None)
+                for s, y in zip(self._storage, other, strict=True)
+            ))
+
+        if isinstance(other, int):
+            return Vector(tuple((date.fromordinal(s.toordinal() - other) if s is not None else None) for s in self._storage))
+
+        if isinstance(other, date) and not isinstance(other, datetime):
+            return Vector(tuple(((s - other).days if s is not None else None) for s in self._storage))
+
+        # date - timedelta → date: base machinery.
+        return super().__sub__(other)
+
+    def __rsub__(self, other):
+        """date_scalar - datevec → int days (same whole-day algebra)."""
+        if isinstance(other, date) and not isinstance(other, datetime):
+            return Vector(tuple(((other - s).days if s is not None else None) for s in self._storage))
+        return super().__rsub__(other)
 
     def eomonth(self):
         out = []

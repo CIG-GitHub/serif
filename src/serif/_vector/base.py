@@ -1,9 +1,7 @@
 import operator
 import warnings
-import re
 import math
 from builtins import isinstance as b_isinstance
-from collections.abc import Iterator
 from collections.abc import Iterable
 
 from ..errors import SerifTypeError
@@ -22,18 +20,17 @@ from .storage import TupleStorage
 
 from datetime import date
 from datetime import datetime
-from datetime import timedelta
 from itertools import chain
 
 from typing import Any
-from typing import Iterable
 from typing import List
-from typing import Tuple
 
 # ============================================================
 # Reverse arithmetic operation helpers
-## This section looks ok
 # ============================================================
+def _reverse_add(y, x):
+    return x + y
+
 def _reverse_sub(y, x):
     return x - y
 
@@ -149,16 +146,25 @@ def _collect_and_infer(iterable, dtype_hint):
     data = []
     all_vectors = True
     dtype = dtype_hint
+    saw_none = False
 
     for val in iterable:
         data.append(val)
         if not isinstance(val, Vector):
             all_vectors = False
         if dtype is None:
-            k = infer_kind(val)
-            dtype = Schema(object, True) if k is None else Schema(k, False)
+            # Order-independent inference: a leading None only sets nullable;
+            # the kind comes from the first non-None value.
+            if val is None:
+                saw_none = True
+                continue
+            dtype = Schema(infer_kind(val), saw_none)
         else:
             dtype = promote_dtype(dtype, val)
+
+    if dtype is None and saw_none:
+        # All values were None: no kind to infer.
+        dtype = Schema(object, True)
 
     return data, all_vectors, dtype
 
@@ -246,7 +252,6 @@ class Vector():
         instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(data, nullable)
         return instance
@@ -269,7 +274,6 @@ class Vector():
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = self._build_storage(initial, nullable)
         self._fp = None
-        self._fp_powers = None
 
     def _build_storage(self, data, nullable):
         tc = getattr(self, 'typecode', None)
@@ -297,7 +301,6 @@ class Vector():
         instance._display_as_row = self._display_as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         instance._storage = new_storage
         return instance
 
@@ -313,7 +316,6 @@ class Vector():
         instance._display_as_row = False
         instance._wild = False
         instance._fp = None
-        instance._fp_powers = None
         instance._storage = storage
         return instance
 
@@ -328,7 +330,6 @@ class Vector():
         instance._display_as_row = as_row
         instance._wild = True
         instance._fp = None
-        instance._fp_powers = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(iterable, nullable)
         return instance
@@ -386,18 +387,6 @@ class Vector():
 
         return hash(repr(x))
 
-    def _ensure_fp_powers(self) -> None:
-        n = len(self._storage)
-        if n == 0:
-            self._fp_powers = []
-            return
-        P = self._FP_P
-        B = self._FP_B
-        pw = [1] * n
-        for i in range(n - 2, -1, -1):
-            pw[i] = (pw[i + 1] * B) % P
-        self._fp_powers = pw
-
     def _compute_fingerprint_full(self) -> int:
         P = self._FP_P
         B = self._FP_B
@@ -409,8 +398,6 @@ class Vector():
 
     def fingerprint(self) -> int:
         if self._fp is None:
-            if self._fp_powers is None or len(self._fp_powers) != len(self._storage):
-                self._ensure_fp_powers()
             self._fp = self._compute_fingerprint_full()
         return self._fp
 
@@ -608,16 +595,9 @@ class Vector():
         Vector([1, 3, 5])
         """
         storage = self._storage
-        new_dtype = Schema(self._dtype.kind, False)
-        if isinstance(storage, ArrayStorage):
-            from array import array as _array
-            tc = storage._data.typecode
-            kept = [i for i in range(len(storage)) if not storage.is_null(i)]
-            new_data = _array(tc, (storage._data[i] for i in kept))
-            new_storage = ArrayStorage(new_data, None)
-        else:
-            new_storage = TupleStorage(tuple(x for x in storage._data if x is not None))
-        return self._clone(new_storage, dtype=new_dtype)
+        new_dtype = Schema(self._dtype.kind, False) if self._dtype is not None else None
+        kept = [i for i in range(len(storage)) if not storage.is_null(i)]
+        return self._clone(storage.take(kept), dtype=new_dtype)
 
     def isna(self):
         """
@@ -769,7 +749,7 @@ class Vector():
         Includes:
         - dtype validation & promotion
         - copy-on-write
-        - fingerprint incremental update
+        - fingerprint invalidation
         """
 
         # === Fast precomputed checks ===
@@ -934,7 +914,7 @@ class Vector():
                             f"Promotion not supported."
                         )
         # =====================================================================
-        # MUTATE — copy-on-write + fingerprint updates
+        # MUTATE — copy-on-write + fingerprint invalidation
         # =====================================================================
         data_list = list(underlying)           # COW materialization
 
@@ -1073,8 +1053,13 @@ class Vector():
                     for x, y in zip(self, other, strict=True)
                 )
             except TypeError:
-                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
+                rhs_schema = other.schema()
+                rhs = rhs_schema.kind.__name__ if rhs_schema is not None else 'object'
+                raise SerifTypeError(
+                    f"Unsupported operand type(s) for '{op_symbol}': "
+                    f"Vector<{lhs}> and Vector<{rhs}>."
+                )
             if result_dtype is None:
                 result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
@@ -1088,8 +1073,11 @@ class Vector():
                     for x, y in zip(self, other, strict=True)
                 )
             except TypeError:
-                result_values = tuple((x, y) for x, y in zip(self, other, strict=True))
-                return Vector(result_values, dtype=Schema(object, False), name=None, as_row=self._display_as_row)
+                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
+                raise SerifTypeError(
+                    f"Unsupported operand type(s) for '{op_symbol}': "
+                    f"Vector<{lhs}> and {type(other).__name__} elements."
+                )
             result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
 
@@ -1104,9 +1092,10 @@ class Vector():
                 result_dtype = infer_dtype(result_values)
             return Vector(result_values, dtype=result_dtype, name=None, as_row=self._display_as_row)
         except TypeError:
+            lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
             raise SerifTypeError(
                 f"Unsupported operand type(s) for '{op_symbol}': "
-                f"'{self._dtype.kind.__name__}' and '{type(other).__name__}'."
+                f"'{lhs}' and '{type(other).__name__}'."
             )
 
     def _unary_operation(self, op_func, op_name: str):
@@ -1119,7 +1108,7 @@ class Vector():
             new_storage = ArrayStorage(new_data, storage._mask)
         else:
             new_storage = TupleStorage(tuple(
-                None if x is None else op_func(x) for x in storage._data
+                None if x is None else op_func(x) for x in storage
             ))
         return self._clone(new_storage)
     
@@ -1162,38 +1151,14 @@ class Vector():
         return self._elementwise_operation(other, operator.pow, '__pow__', '**')
 
     def __radd__(self, other):
-        """Reverse addition: other + self (handles strings specially)"""
-        other = self._check_duplicate(other)
-        
-        # Vector + Vector
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return Vector._from_iterable_known_dtype(
-                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        # Scalar + Vector
-        if not isinstance(other, Iterable) or isinstance(other, (str, bytes, bytearray)):
-            return Vector._from_iterable_known_dtype(
-                (None if x is None else other + x for x in self),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        # Iterable + Vector
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return Vector._from_iterable_known_dtype(
-                (None if (x is None or y is None) else x + y for x, y in zip(other, self, strict=True)),
-                self._dtype,
-                as_row=self._display_as_row,
-            )
-        
-        raise SerifTypeError(f"Unsupported operand type: {type(other).__name__}")
+        """Reverse addition: other + self.
+
+        Routed through _elementwise_operation like every other reverse op so
+        the result dtype is properly promoted — the old hand-rolled path
+        stamped results with self's dtype, so 1.5 + Vector([1, 2]) produced
+        floats labeled int and crashed the int storage backend.
+        """
+        return self._elementwise_operation(other, _reverse_add, '__radd__', '+')
 
     def __rmul__(self, other):
         return self.__mul__(other)
@@ -1416,29 +1381,18 @@ class Vector():
 
         # Build sort order from indices — avoids materializing Python objects
         # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
+        # The null flag is flipped under reverse so na_last/na_first hold for
+        # BOTH sort directions (same rule Table.sort_by implements).
         if na_last:
-            key_fn = lambda i: (storage.is_null(i), storage[i] if not storage.is_null(i) else 0)
+            key_fn = lambda i: (storage.is_null(i) != reverse, storage[i] if not storage.is_null(i) else 0)
         else:
-            key_fn = lambda i: (0 if storage.is_null(i) else 1, storage[i] if not storage.is_null(i) else 0)
+            key_fn = lambda i: (storage.is_null(i) == reverse, storage[i] if not storage.is_null(i) else 0)
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
 
-        # Permute storage directly — no Vector() constructor, no type inference
-        if isinstance(storage, ArrayStorage):
-            from array import array as _array
-            from .nullable import ByteMask
-            tc = storage._data.typecode
-            new_data = _array(tc, (storage._data[i] for i in order))
-            if storage._mask is not None:
-                new_mask = ByteMask.from_iterable(storage._mask.is_null(i) for i in order)
-            else:
-                new_mask = None
-            new_storage = ArrayStorage(new_data, new_mask)
-        else:
-            new_storage = TupleStorage(tuple(storage._data[i] for i in order))
-
-        # Bypass Vector.__new__ — dtype is invariant under sort
-        return self._clone(new_storage)
+        # Permute through the storage protocol — no Vector() constructor,
+        # no type inference, works for every backend.
+        return self._clone(storage.take(order))
 
 
     def _check_duplicate(self, other):

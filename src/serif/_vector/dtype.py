@@ -128,13 +128,21 @@ def infer_kind(value: Any) -> Optional[Type]:
 
 
 def infer_dtype(values: Iterable[Any]) -> Schema:
-    """Infer a Schema (kind + nullable) from an iterable of Python scalars."""
+    """Infer a Schema (kind + nullable) from an iterable of Python scalars.
+
+    Order-independent: leading Nones only set nullable — the kind comes from
+    the first non-None value (then normal promotion). [None, 1, 2] and
+    [1, 2, None] both infer int?. All-None (or empty) infers object?.
+    """
     schema: Optional[Schema] = None
+    saw_none = False
 
     for v in values:
         if schema is None:
-            k = infer_kind(v)
-            schema = Schema(object, True) if k is None else Schema(k, False)
+            if v is None:
+                saw_none = True
+                continue
+            schema = Schema(infer_kind(v), saw_none)
         else:
             schema = promote_dtype(schema, v)
 

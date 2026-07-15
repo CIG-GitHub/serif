@@ -1,8 +1,8 @@
 """
 serif: A Pythonic, zero-dependency vector and table library
 
-Designed for Python users who need to work with datasets beyond Excel's limits
-(>1000 rows) but want the ease-of-use and intuitive feel of Excel or SQL.
+Designed for Python users who need to work with datasets beyond Excel's
+comfort zone but want the ease-of-use and intuitive feel of Excel or SQL.
 
 Main classes:
     - Vector: 1D vector with optional type safety
@@ -34,7 +34,7 @@ from .errors import SerifIndexError
 from .io import read_csv, read_parquet, write_parquet
 from .display import set_repr_rows
 
-__version__ = "0.1.2"
+__version__ = "0.1.5"
 __all__ = [
     "Vector",
     "Table",
