@@ -269,8 +269,11 @@ def _skip_struct(data, pos: int) -> int:
             return pos
         tc = b & 0x0F
         delta = (b >> 4) & 0x0F
-        last = last + delta if delta else (_dec_i32(data, pos)[0], (pos := _dec_i32(data, pos)[1]))[0]
-        if delta == 0:
+        if delta:
+            last += delta
+        else:
+            # Long-form header: field id follows as zigzag varint. Consume it
+            # exactly once — decoding it twice desyncs the whole footer parse.
             last, pos = _dec_i32(data, pos)
         pos = _skip_field(data, pos, tc)
 
@@ -559,9 +562,16 @@ def _encode_plain(values: list, kind: type, col_name: str) -> bytes:
 
     if kind is _datetime:
         import array as _array
-        us = _array.array('q', [
-            int((v - _EPOCH_DT).total_seconds() * 1_000_000) for v in values
-        ])
+
+        def _micros(v):
+            # Integer math on the timedelta components. total_seconds() is a
+            # float and loses microsecond exactness once the magnitude gets
+            # large (float64 spacing reaches 1µs within a few hundred years
+            # of the epoch).
+            d = v - _EPOCH_DT
+            return (d.days * 86_400_000_000) + (d.seconds * 1_000_000) + d.microseconds
+
+        us = _array.array('q', [_micros(v) for v in values])
         return us.tobytes()
 
     raise SerifTypeError(
