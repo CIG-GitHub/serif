@@ -152,16 +152,25 @@ def _collect_and_infer(iterable, dtype_hint):
     data = []
     all_vectors = True
     dtype = dtype_hint
+    saw_none = False
 
     for val in iterable:
         data.append(val)
         if not isinstance(val, Vector):
             all_vectors = False
         if dtype is None:
-            k = infer_kind(val)
-            dtype = Schema(object, True) if k is None else Schema(k, False)
+            # Order-independent inference: a leading None only sets nullable;
+            # the kind comes from the first non-None value.
+            if val is None:
+                saw_none = True
+                continue
+            dtype = Schema(infer_kind(val), saw_none)
         else:
             dtype = promote_dtype(dtype, val)
+
+    if dtype is None and saw_none:
+        # All values were None: no kind to infer.
+        dtype = Schema(object, True)
 
     return data, all_vectors, dtype
 

@@ -128,18 +128,15 @@ class TestNullableRoundtrip:
         assert result[1] is None
         assert result[2] == datetime(2025, 6, 1)
 
-    def test_null_first_raises_due_to_type_inference(self):
-        # serif infers 'object' when the first element is None, even if
-        # all subsequent values are str.  Parquet can't write object columns.
-        # This is a serif type-inference limitation, not a parquet bug.
+    def test_null_first_roundtrips(self):
+        # Inference is order-independent: [None, 'bob', 'carol'] is str?
+        # exactly like ['bob', 'carol', None], so this writes and reads.
         t = Table({'s': [None, 'bob', 'carol']})
-        path = tempfile.mktemp(suffix='.parquet')
-        try:
-            with pytest.raises(SerifTypeError):
-                t.to_parquet(path)
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        t2 = roundtrip(t)
+        result = col(t2, 's')
+        assert result[0] is None
+        assert result[1] == 'bob'
+        assert result[2] == 'carol'
 
     def test_null_last(self):
         t = Table({'s': ['alice', 'bob', None]})
