@@ -31,8 +31,8 @@ def read_csv(file, *, delimiter=',', has_header=True, encoding='utf-8'):
     >>> with open("data.csv") as f:
     ...     t = read_csv(f)
     """
-    from .table import Table
-    from ._vector import Vector
+    from ..table import Table
+    from .._vector import Vector
     
     # Handle file path vs file object
     if isinstance(file, str):
@@ -44,8 +44,8 @@ def read_csv(file, *, delimiter=',', has_header=True, encoding='utf-8'):
 
 def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
     """Read CSV data from an open file object."""
-    from .table import Table
-    from ._vector import Vector
+    from ..table import Table
+    from .._vector import Vector
     
     reader = csv.reader(file_obj, delimiter=delimiter)
     

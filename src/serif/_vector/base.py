@@ -298,6 +298,22 @@ class Vector():
         return instance
 
     @classmethod
+    def _from_storage(cls, storage, dtype, name=None):
+        """Create a Vector directly from a pre-built storage object.
+        Zero iterations, zero inference — for I/O fast paths where storage
+        and dtype are fully known (e.g. Parquet DOUBLE/INT64 non-nullable)."""
+        target_cls = _pick_target_class(dtype) if dtype is not None else cls
+        instance = object.__new__(target_cls)
+        instance._dtype = dtype
+        instance._name = name
+        instance._display_as_row = False
+        instance._wild = False
+        instance._fp = None
+        instance._fp_powers = None
+        instance._storage = storage
+        return instance
+
+    @classmethod
     def _from_iterable_known_dtype(cls, iterable, dtype, *, name=None, as_row=False):
         """Build a Vector directly from an iterable when the dtype is already known.
         Bypasses __new__/__init__ inference; one walk into storage."""
