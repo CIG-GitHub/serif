@@ -608,16 +608,9 @@ class Vector():
         Vector([1, 3, 5])
         """
         storage = self._storage
-        new_dtype = Schema(self._dtype.kind, False)
-        if isinstance(storage, ArrayStorage):
-            from array import array as _array
-            tc = storage._data.typecode
-            kept = [i for i in range(len(storage)) if not storage.is_null(i)]
-            new_data = _array(tc, (storage._data[i] for i in kept))
-            new_storage = ArrayStorage(new_data, None)
-        else:
-            new_storage = TupleStorage(tuple(x for x in storage._data if x is not None))
-        return self._clone(new_storage, dtype=new_dtype)
+        new_dtype = Schema(self._dtype.kind, False) if self._dtype is not None else None
+        kept = [i for i in range(len(storage)) if not storage.is_null(i)]
+        return self._clone(storage.take(kept), dtype=new_dtype)
 
     def isna(self):
         """
@@ -1119,7 +1112,7 @@ class Vector():
             new_storage = ArrayStorage(new_data, storage._mask)
         else:
             new_storage = TupleStorage(tuple(
-                None if x is None else op_func(x) for x in storage._data
+                None if x is None else op_func(x) for x in storage
             ))
         return self._clone(new_storage)
     
@@ -1416,29 +1409,18 @@ class Vector():
 
         # Build sort order from indices — avoids materializing Python objects
         # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
+        # The null flag is flipped under reverse so na_last/na_first hold for
+        # BOTH sort directions (same rule Table.sort_by implements).
         if na_last:
-            key_fn = lambda i: (storage.is_null(i), storage[i] if not storage.is_null(i) else 0)
+            key_fn = lambda i: (storage.is_null(i) != reverse, storage[i] if not storage.is_null(i) else 0)
         else:
-            key_fn = lambda i: (0 if storage.is_null(i) else 1, storage[i] if not storage.is_null(i) else 0)
+            key_fn = lambda i: (storage.is_null(i) == reverse, storage[i] if not storage.is_null(i) else 0)
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
 
-        # Permute storage directly — no Vector() constructor, no type inference
-        if isinstance(storage, ArrayStorage):
-            from array import array as _array
-            from .nullable import ByteMask
-            tc = storage._data.typecode
-            new_data = _array(tc, (storage._data[i] for i in order))
-            if storage._mask is not None:
-                new_mask = ByteMask.from_iterable(storage._mask.is_null(i) for i in order)
-            else:
-                new_mask = None
-            new_storage = ArrayStorage(new_data, new_mask)
-        else:
-            new_storage = TupleStorage(tuple(storage._data[i] for i in order))
-
-        # Bypass Vector.__new__ — dtype is invariant under sort
-        return self._clone(new_storage)
+        # Permute through the storage protocol — no Vector() constructor,
+        # no type inference, works for every backend.
+        return self._clone(storage.take(order))
 
 
     def _check_duplicate(self, other):

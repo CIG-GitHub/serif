@@ -1,5 +1,23 @@
 """
 Storage backends for Vector data.
+
+The storage protocol
+--------------------
+A storage backend must provide:
+
+    __len__()          — element count
+    __getitem__(idx)   — value at idx, None if null (int index only)
+    __iter__()         — yields values, None at null positions
+    is_null(idx)       — True if the element at idx is null
+    slice(slc)         — new storage covering the slice
+    take(indices)      — new storage gathering the given positions, in order
+    to_tuple()         — materialize as a tuple (None at null positions)
+    set(idx, value)    — copy-on-write point mutation
+
+Base-class code (Vector and friends) must go through this protocol.
+Reaching into a backend's internals (_data, _mask, _buf, _offsets) is
+allowed ONLY behind an isinstance() check of the concrete class — a bare
+`storage._data` in generic code is a bug waiting for the next backend.
 """
 
 from __future__ import annotations
@@ -15,7 +33,7 @@ class ArrayStorage:
     Contiguous numeric storage using array.array.
 
     None cannot live in array.array, so nulls are tracked with a separate
-    byte mask (1=null, 0=valid). mask=None means no nulls present.
+    ByteMask (1=valid, 0=null). mask=None means no nulls present.
     Let array.array raise on bad typecodes or overflow — not duplicated here.
     """
 
@@ -64,6 +82,15 @@ class ArrayStorage:
     def slice(self, slc: slice) -> ArrayStorage:
         new_data = self._data[slc]
         new_mask = self._mask[slc] if self._mask is not None else None
+        return ArrayStorage(new_data, new_mask)
+
+    def take(self, indices) -> ArrayStorage:
+        new_data = array(self._data.typecode, (self._data[i] for i in indices))
+        if self._mask is not None:
+            null_flags = [self._mask.is_null(i) for i in indices]
+            new_mask = ByteMask.from_iterable(null_flags) if any(null_flags) else None
+        else:
+            new_mask = None
         return ArrayStorage(new_data, new_mask)
 
     def to_tuple(self) -> tuple:
@@ -115,6 +142,9 @@ class TupleStorage:
 
     def slice(self, slc: slice) -> TupleStorage:
         return TupleStorage(self._data[slc])
+
+    def take(self, indices) -> TupleStorage:
+        return TupleStorage(tuple(self._data[i] for i in indices))
 
     def __bool__(self) -> bool:
         return len(self._data) > 0
@@ -217,6 +247,13 @@ class StringStorage:
         return len(self._offsets) > 1
 
     def __getitem__(self, idx: int) -> Any:
+        # Normalize negative indices: offsets[idx]:offsets[idx+1] straddles the
+        # buffer ends for idx=-1 and would silently return ''.
+        n = len(self._offsets) - 1
+        if idx < 0:
+            idx += n
+        if not 0 <= idx < n:
+            raise IndexError('string index out of range')
         if self._mask is not None and self._mask.is_null(idx):
             return None
         return self._buf[self._offsets[idx]:self._offsets[idx + 1]].decode('utf-8')
@@ -236,12 +273,13 @@ class StringStorage:
 
     def slice(self, slc: slice) -> StringStorage:
         """Return a new StringStorage covering the slice."""
-        n       = len(self)
-        indices = range(n)[slc]
+        return self.take(range(len(self))[slc])
 
-        if not indices:
-            return StringStorage(b'', array('I', [0]), None)
+    def take(self, indices) -> StringStorage:
+        """Gather the given positions into a new StringStorage.
 
+        Copies raw byte chunks between buffers — no decode/encode round-trip.
+        """
         buf_parts:  list[bytes] = []
         new_offs:   list[int]   = [0]
         null_flags: list[bool]  = []

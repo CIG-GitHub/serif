@@ -199,6 +199,47 @@ class _Category(Vector):
         # When called with a storage override (e.g. from _clone), decode back
         return Vector(list(new_storage))
 
+    def _clone(self, new_storage, dtype=..., name=...):
+        """
+        Clone from a storage object.
+
+        Base-class _clone would produce a half-initialized _Category (no
+        _code_storage), so: a _CategoryStorage rebuilds a real categorical;
+        any other storage type means the encoding is gone — decode into a
+        plain Vector rather than lie about the type.
+        """
+        use_dtype = self._dtype if dtype is ... else dtype
+        use_name = self._name if name is ... else name
+        if isinstance(new_storage, _CategoryStorage):
+            inst = _Category(
+                new_storage._codes,
+                new_storage._categories,
+                name=use_name,
+                nullable=use_dtype.nullable if use_dtype is not None else True,
+            )
+            inst._display_as_row = self._display_as_row
+            return inst
+        return Vector(list(new_storage), dtype=use_dtype, name=use_name,
+                      as_row=self._display_as_row)
+
+    def __setitem__(self, key, value):
+        """
+        In-place assignment with category enforcement.
+
+        Base __setitem__ would swap _storage to a TupleStorage while
+        _code_storage kept the old values — comparisons would silently use
+        stale data. Instead: assign on the decoded values with base key
+        semantics (int / slice / mask / index list), then re-encode against
+        the SAME category list. Values outside the list raise SerifValueError.
+        """
+        tmp = Vector(list(self._storage), dtype=Schema(str, True))
+        tmp[key] = value
+        new = _Category.from_values(list(tmp), self._categories, name=self._name)
+        self._code_storage = new._code_storage
+        self._dtype = new._dtype
+        self._storage = _CategoryStorage(self._code_storage, self._categories)
+        self._invalidate_fp()
+
     # ------------------------------------------------------------------
     # Comparisons — category-order aware
     # ------------------------------------------------------------------
@@ -350,11 +391,13 @@ class _Category(Vector):
 
     def sort_by(self, reverse=False, na_last=True):
         n = len(self)
+        # Null flag flipped under reverse so na_last/na_first hold for both
+        # sort directions (same rule as Vector.sort_by / Table.sort_by).
         if na_last:
-            key_fn = lambda i: (self._code_storage.is_null(i),
+            key_fn = lambda i: (self._code_storage.is_null(i) != reverse,
                                 self._code_storage[i] if not self._code_storage.is_null(i) else 0)
         else:
-            key_fn = lambda i: (0 if self._code_storage.is_null(i) else 1,
+            key_fn = lambda i: (self._code_storage.is_null(i) == reverse,
                                 self._code_storage[i] if not self._code_storage.is_null(i) else 0)
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
@@ -443,3 +486,6 @@ class _CategoryStorage:
 
     def slice(self, slc: slice):
         return _CategoryStorage(self._codes.slice(slc), self._categories)
+
+    def take(self, indices):
+        return _CategoryStorage(self._codes.take(indices), self._categories)
