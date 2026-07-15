@@ -33,13 +33,6 @@ def test_copy_can_clear_name():
 	assert v_unnamed._name is None
 
 
-def test_transpose_preserves_name():
-	"""Test that .T preserves the name"""
-	v = Vector([1, 2, 3], name="my_vector")
-	v_t = v.T
-	assert v_t._name == "my_vector"
-
-
 def test_slice_preserves_name():
 	"""Test that slicing preserves the name"""
 	v = Vector([1, 2, 3, 4, 5], name="my_vector")

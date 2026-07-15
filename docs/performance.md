@@ -14,9 +14,8 @@
 - `window()`: O(n) partition build + O(n) result expansion
 
 ## General Operations
-- **Copy-on-write:** Mutations create new tuples with O(n) copy cost
-- **Fingerprinting:** O(1) after construction (rolling hash maintained incrementally)
-- **Alias tracking:** O(1) checks via weakref registry
+- **Copy-on-write:** Mutations rebuild the vector's storage with O(n) copy cost; other vectors sharing the old storage are unaffected
+- **Fingerprinting:** lazy O(n) on first access, cached (O(1)) until the next mutation invalidates it
 
 ## Rule of Thumb
 Vector handles **10K–1M rows** comfortably. For 10M+ rows or compute-heavy numerical work, use NumPy/Polars.
@@ -24,6 +23,6 @@ Vector handles **10K–1M rows** comfortably. For 10M+ rows or compute-heavy num
 ## Performance Profile
 - **Sweet spot:** Modeling-scale data (thousands to low millions of rows)
 - Optimized for **workflow velocity**, not raw compute throughput
-- O(1) fingerprinting enables efficient change detection and caching
+- Cached fingerprinting enables efficient change detection and caching
 - Future "fast back-end" possibility without changing the Vector UX
 

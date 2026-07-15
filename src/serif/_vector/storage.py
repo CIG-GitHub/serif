@@ -12,7 +12,9 @@ A storage backend must provide:
     slice(slc)         — new storage covering the slice
     take(indices)      — new storage gathering the given positions, in order
     to_tuple()         — materialize as a tuple (None at null positions)
-    set(idx, value)    — copy-on-write point mutation
+
+The protocol is read-only: mutation happens by REBUILDING storage
+(Vector.__setitem__ materializes, edits, and re-wraps), never in place.
 
 Base-class code (Vector and friends) must go through this protocol.
 Reaching into a backend's internals (_data, _mask, _buf, _offsets) is
@@ -96,19 +98,6 @@ class ArrayStorage:
     def to_tuple(self) -> tuple:
         return tuple(self)
 
-    def set(self, idx: int, value: Any) -> ArrayStorage:
-        """Copy-on-write. Let array.array raise on overflow."""
-        new_data = array(self._data.typecode, self._data)
-
-        if value is None:
-            mask = self._mask if self._mask is not None else ByteMask.from_size(len(new_data))
-            new_mask = mask.mark_null(idx)
-        else:
-            new_data[idx] = value
-            new_mask = self._mask.mark_valid(idx) if self._mask is not None else None
-
-        return ArrayStorage(new_data, new_mask)
-
 
 class TupleStorage:
     """
@@ -151,11 +140,6 @@ class TupleStorage:
 
     def to_tuple(self) -> tuple:
         return self._data
-
-    def set(self, idx: int, value: Any) -> TupleStorage:
-        lst = list(self._data)
-        lst[idx] = value
-        return TupleStorage(tuple(lst))
 
 
 # ---------------------------------------------------------------------------
@@ -307,9 +291,3 @@ class StringStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
-
-    def set(self, idx: int, value: Any) -> StringStorage:
-        """Copy-on-write point mutation.  O(n) — string mutation is rare."""
-        lst      = list(self)       # decodes all strings
-        lst[idx] = value
-        return StringStorage.from_iterable(lst)

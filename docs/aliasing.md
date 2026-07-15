@@ -16,11 +16,11 @@ print(a)   # Vector([1, 2, 3])
 print(b)   # Vector([99, 2, 3])
 ```
 
-Serif tracks tuple identity using a weakref registry. If multiple vectors share the same underlying tuple, mutations trigger automatic copies to prevent aliasing bugs.
+Serif never mutates storage in place: `__setitem__` materializes the data, applies the updates, and rebuilds a fresh storage object. Any other Vector still pointing at the old storage is untouched — copy-on-write by construction, no registry or identity tracking needed.
 
 ### When Copies Happen
 
-- **Mutation of shared data:** If two Vectors reference the same tuple, mutation creates a new tuple
+- **Mutation:** every mutation rebuilds the mutated Vector's storage; sharers keep the old immutable storage
 - **Table construction:** Table performs deep copy to prevent external aliasing
 - **Explicit operations:** Methods like `.copy()` always create new data
 
@@ -82,7 +82,7 @@ assert fp1 != fp2  # Fingerprint changed
 
 ### Implementation
 
-Fingerprints use a **rolling hash** maintained incrementally on mutations. This provides O(1) fingerprint access after construction.
+Fingerprints use a **rolling hash**, computed lazily on first access and cached. Mutation invalidates the cache; the next `fingerprint()` call recomputes in O(n). Repeated access on unchanged data is O(1).
 
 ### Limitations
 

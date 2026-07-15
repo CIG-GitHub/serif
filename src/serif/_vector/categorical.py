@@ -43,7 +43,6 @@ class _Category(Vector):
         self._categories = categories
         self._dtype = Schema(str, nullable)
         self._name = name
-        self._display_as_row = False
         self._wild = True
         self._fp = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
@@ -210,16 +209,13 @@ class _Category(Vector):
         use_dtype = self._dtype if dtype is ... else dtype
         use_name = self._name if name is ... else name
         if isinstance(new_storage, _CategoryStorage):
-            inst = _Category(
+            return _Category(
                 new_storage._codes,
                 new_storage._categories,
                 name=use_name,
                 nullable=use_dtype.nullable if use_dtype is not None else True,
             )
-            inst._display_as_row = self._display_as_row
-            return inst
-        return Vector(list(new_storage), dtype=use_dtype, name=use_name,
-                      as_row=self._display_as_row)
+        return Vector(list(new_storage), dtype=use_dtype, name=use_name)
 
     def __setitem__(self, key, value):
         """
@@ -396,15 +392,12 @@ class _Category(Vector):
     # ------------------------------------------------------------------
 
     def sort_by(self, reverse=False, na_last=True):
+        from .base import _null_sort_flag
         n = len(self)
-        # Null flag flipped under reverse so na_last/na_first hold for both
-        # sort directions (same rule as Vector.sort_by / Table.sort_by).
-        if na_last:
-            key_fn = lambda i: (self._code_storage.is_null(i) != reverse,
-                                self._code_storage[i] if not self._code_storage.is_null(i) else 0)
-        else:
-            key_fn = lambda i: (self._code_storage.is_null(i) == reverse,
-                                self._code_storage[i] if not self._code_storage.is_null(i) else 0)
+        key_fn = lambda i: (
+            _null_sort_flag(self._code_storage.is_null(i), reverse, na_last),
+            self._code_storage[i] if not self._code_storage.is_null(i) else 0,
+        )
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
 

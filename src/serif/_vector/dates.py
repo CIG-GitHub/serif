@@ -1,15 +1,14 @@
 from .base import Vector
+from .base import _elementwise_proxy
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from collections.abc import Iterable
 from .dtype import Schema
+from ..errors import SerifValueError
+
 
 class _Date(Vector):
-    def __init__(self, initial=(), dtype=None, name=None, as_row=False, **kwargs):
-        # dtype already set by __new__
-        super().__init__(initial, dtype=dtype, name=name, as_row=as_row)
-
     def _elementwise_compare(self, other, op):
         # Unknown in, unknown out (docs/null-semantics.md). Also note:
         # dates promote to midnight via datetime.min.time() when compared
@@ -21,7 +20,7 @@ class _Date(Vector):
 
         if isinstance(other, Vector):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             if other.schema() is not None and other.schema().kind is str:
                 return _wrap([
                     None if (x is None or y is None) else bool(op(x, date.fromisoformat(y)))
@@ -34,7 +33,7 @@ class _Date(Vector):
                 ])
         elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return _wrap([
                 None if (x is None or y is None) else bool(op(x, y))
                 for x, y in zip(self, other, strict=True)
@@ -50,54 +49,11 @@ class _Date(Vector):
         # finally,
         return super()._elementwise_compare(other, op)
 
-
-    def ctime(self, *args, **kwargs):
-        return Vector(tuple((s.ctime(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromisocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.fromisocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromisoformat(self, *args, **kwargs):
-        return Vector(tuple((s.fromisoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromordinal(self, *args, **kwargs):
-        return Vector(tuple((s.fromordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def fromtimestamp(self, *args, **kwargs):
-        return Vector(tuple((s.fromtimestamp(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isocalendar(self, *args, **kwargs):
-        return Vector(tuple((s.isocalendar(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isoformat(self, *args, **kwargs):
-        return Vector(tuple((s.isoformat(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def isoweekday(self, *args, **kwargs):
-        return Vector(tuple((s.isoweekday(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def replace(self, *args, **kwargs):
-        return Vector(tuple((s.replace(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def strftime(self, *args, **kwargs):
-        return Vector(tuple((s.strftime(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def timetuple(self, *args, **kwargs):
-        return Vector(tuple((s.timetuple(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def today(self, *args, **kwargs):
-        return Vector(tuple((s.today(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def toordinal(self, *args, **kwargs):
-        return Vector(tuple((s.toordinal(*args, **kwargs) if s is not None else None) for s in self._storage))
-
-    def weekday(self, *args, **kwargs):
-        return Vector(tuple((s.weekday(*args, **kwargs) if s is not None else None) for s in self._storage))
-
     def __add__(self, other):
         """ adding integers is adding days """
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 (date.fromordinal(s.toordinal() + y) if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
@@ -122,7 +78,7 @@ class _Date(Vector):
         """
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is int:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 (date.fromordinal(s.toordinal() - y) if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
@@ -130,7 +86,7 @@ class _Date(Vector):
 
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind is date:
             if len(self) != len(other):
-                raise ValueError(f"Length mismatch: {len(self)} != {len(other)}")
+                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             return Vector(tuple(
                 ((s - y).days if s is not None and y is not None else None)
                 for s, y in zip(self._storage, other, strict=True)
@@ -169,6 +125,16 @@ class _Date(Vector):
         return Vector(tuple(out))
 
 
+# Plain per-element date methods, stamped onto the class at definition time
+# (see string.py for the rationale). date's class/static constructors
+# (today, fromordinal, fromtimestamp, fromisoformat, fromisocalendar) are
+# deliberately not stamped — mapping a constructor across elements ignores
+# the element and is meaningless as a column operation.
+_DATE_PROXY_METHODS = (
+    'ctime', 'isocalendar', 'isoformat', 'isoweekday', 'replace',
+    'strftime', 'timetuple', 'toordinal', 'weekday',
+)
 
-
-
+for _m in _DATE_PROXY_METHODS:
+    setattr(_Date, _m, _elementwise_proxy(_m))
+del _m

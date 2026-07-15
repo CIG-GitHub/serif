@@ -6,9 +6,10 @@ import re
 
 def _get_reserved_names():
     """Get all public methods and properties from Vector and Table classes.
-    
-    This is computed dynamically to support future plugin extensions.
-    Results are cached for performance.
+
+    Computed from dir() rather than hardcoded so the set tracks the classes
+    as they evolve, then cached for the life of the process — anything that
+    adds methods after first use must invalidate _get_reserved_names._cache.
     """
     if not hasattr(_get_reserved_names, '_cache'):
         from ._vector import Vector
@@ -70,6 +71,18 @@ def _sanitize_user_name(name) -> str | None:
     # Conflicts with reserved name → append _
     if sanitized in _get_reserved_names():
         sanitized = sanitized + '_'
-    
+
     return sanitized
+
+
+def _disambiguate(base: str, idx: int) -> str:
+    """
+    Canonical suffix for duplicate sanitized column names: the column at
+    position idx gets '<base>__<idx>' (single separator when base already
+    ends with '_'). This is THE one rule — Table._build_column_map,
+    Table.__getitem__, and display._compute_headers must all agree, or a
+    name shown in one place won't resolve in another.
+    """
+    sep = "" if base.endswith("_") else "_"
+    return f"{base}{sep}_{idx}"
 
