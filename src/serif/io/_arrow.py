@@ -26,9 +26,10 @@ Why this is fast: serif's storage layout is deliberately arrow-shaped.
                 buffer); StringStorage.from_raw takes exactly that. Two
                 buffer copies, ZERO decode calls.
   * numerics  — data buffer → array.frombytes: one memcpy, no boxing.
-  * validity  — arrow bitmaps and ByteMask share the 1=valid convention,
-                so np.unpackbits emits ByteMask's internal buffer
-                directly. No per-row Python loop.
+  * validity  — arrow validity bitmaps and BitMask share the identical
+                layout (one packed bit per element, LSB-first, 1=valid),
+                so arrow's validity buffer IS a BitMask buffer: one memcpy,
+                no bit twiddling, no per-row Python loop.
   * objects   — bool/date/datetime columns are TupleStorage of Python
                 objects either way; arrow's C-implemented to_pylist() is
                 the fastest available boxer, with None already in place.
@@ -43,11 +44,12 @@ import pyarrow as _pa
 import pyarrow.parquet as _pq
 
 from datetime import date as _date, datetime as _datetime
+from decimal import Decimal as _Decimal
 
 from .._vector import Vector
 from .._vector.dtype import Schema as _Schema
-from .._vector.nullable import ByteMask
-from .._vector.storage import ArrayStorage, StringStorage
+from .._vector.nullable import BitMask
+from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage
 
 
 def _supported(t) -> bool:
@@ -58,6 +60,9 @@ def _supported(t) -> bool:
     # Nanos decline: the pure reader raises its truncation-refusal error,
     # exactly as it would with pyarrow absent. Semantics stay serif's.
     if _pa.types.is_timestamp(t) and t.unit in ('us', 'ms'):
+        return True
+    # decimal128 only; decimal256 declines (serif has no 256-bit backend).
+    if _pa.types.is_decimal(t) and t.bit_width == 128:
         return True
     return False
 
@@ -106,21 +111,25 @@ def try_read(path):
     return Table._from_columns_nocopy(cols)
 
 
-def _byte_mask(arr):
+def _bit_mask(arr):
     """
-    Arrow validity BITmap → serif ByteMask.
+    Arrow validity bitmap → serif BitMask, near-zero-copy.
 
-    Both use 1=valid, 0=null, so np.unpackbits produces ByteMask's
-    internal array('B') buffer directly — all C, no per-row loop.
+    Arrow and BitMask use the identical layout: one packed bit per element,
+    least-significant-bit-first, 1=valid/0=null. So arrow's validity buffer
+    is already a valid BitMask buffer — copy it once and trim to the ceil(n/8)
+    bytes BitMask holds (arrow pads the buffer to a wider alignment; the
+    trailing bytes and any bits past n are never read but we drop them so the
+    buffer length matches what BitMask.from_iterable would have produced).
+
+    Callers must pass an array at offset 0 (try_read declines otherwise); a
+    non-zero offset would misalign every bit against this bytewise copy.
     """
     if arr.null_count == 0:
         return None
-    bits = _np.unpackbits(
-        _np.frombuffer(arr.buffers()[0], dtype=_np.uint8),
-        bitorder='little')[:len(arr)]
-    m = _pyarray.array('B')
-    m.frombytes(bits.tobytes())
-    return ByteMask(m)
+    n   = len(arr)
+    buf = bytearray(memoryview(arr.buffers()[0])[:(n + 7) // 8])
+    return BitMask(buf, n)
 
 
 def _to_vector(arr, field):
@@ -138,7 +147,7 @@ def _to_vector(arr, field):
             offs = offs[:n + 1]              # arrow pads buffers to 64 bytes
         data_buf = bufs[2]
         raw = bytes(memoryview(data_buf))[:offs[-1]] if data_buf is not None else b''
-        storage = StringStorage.from_raw(raw, offs, _byte_mask(arr))
+        storage = StringStorage.from_raw(raw, offs, _bit_mask(arr))
         return Vector._from_storage(storage, dtype, name=field.name)
 
     if _pa.types.is_int64(t) or _pa.types.is_float64(t):
@@ -150,7 +159,26 @@ def _to_vector(arr, field):
         data.frombytes(memoryview(arr.buffers()[1]))  # one memcpy, no boxing
         if len(data) > n:
             data = data[:n]                            # strip 64-byte padding
-        storage = ArrayStorage(data, _byte_mask(arr))
+        storage = ArrayStorage(data, _bit_mask(arr))
+        return Vector._from_storage(storage, dtype, name=field.name)
+
+    if _pa.types.is_decimal(t):
+        # Arrow decimal128 is little-endian; DecimalStorage is big-endian
+        # (Parquet-native).  numpy reshapes then reverses each 16-byte row
+        # in one vectorised call — all C, no per-value loop.
+        scale     = t.scale
+        precision = t.precision
+        if n == 0:
+            dtype = _Schema(_Decimal, field.nullable)
+            return Vector._from_storage(
+                DecimalStorage(bytearray(), scale, precision, None),
+                dtype, name=field.name)
+        le_buf  = bytes(memoryview(arr.buffers()[1]))[:n * 16]
+        le_rows = _np.frombuffer(le_buf, dtype=_np.uint8).reshape(n, 16)
+        be_bytes = le_rows[:, ::-1].tobytes()   # reverse each row → big-endian
+        storage  = DecimalStorage.from_raw_be(be_bytes, scale, precision,
+                                              _bit_mask(arr))
+        dtype = _Schema(_Decimal, field.nullable)
         return Vector._from_storage(storage, dtype, name=field.name)
 
     # bool / date32 / timestamp → TupleStorage of Python objects, the same
