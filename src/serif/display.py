@@ -152,7 +152,57 @@ def _compute_headers(cols, col_indices):
     return display_names, sanitized_names, dtypes
 
 
-<<<<<<< HEAD
+def _dtype_str(col) -> str:
+    """Display string for a column's dtype: 'category', kind name, or 'object',
+    with a '?' suffix when nullable."""
+    if not col._dtype:
+        return "object"
+    from serif._vector.categorical import _Category
+    if isinstance(col, _Category):
+        dtype_str = 'category'
+    else:
+        dtype_str = col._dtype.kind.__name__
+    if col._dtype.nullable:
+        dtype_str += '?'
+    return dtype_str
+
+
+def _group_dtypes(dtypes: List[str]) -> str:
+    """Summarize per-column dtypes as counted groups for the table footer.
+
+    Groups appear in column order (first appearance), so the footer reads
+    like the table does. A count prefix (e.g. '6×str') is used when a dtype
+    repeats, unless the table is homogeneous, where the bare dtype suffices.
+    With five or more groups, only the first three are shown followed by
+    '+N' — the number of columns folded away.
+
+        <int>
+        <str, int, date>
+        <6×str, 2×int, date>
+        <18×str, 12×int, 6×float, +4>
+    """
+    counts = {}
+    for dt in dtypes:
+        counts[dt] = counts.get(dt, 0) + 1
+
+    # dict preserves insertion order == first appearance == column order
+    groups = list(counts)
+
+    if len(groups) == 1:
+        return groups[0]
+
+    if len(groups) > 4:
+        hidden = sum(counts[dt] for dt in groups[3:])
+        groups = groups[:3]
+    else:
+        hidden = 0
+
+    parts = [f"{counts[dt]}×{dt}" if counts[dt] > 1 else dt for dt in groups]
+    if hidden:
+        parts.append(f"+{hidden}")
+    return ", ".join(parts)
+
+
 class _SchemaView:
     """Lazy column listing returned by Table._ — one row per column.
 
@@ -204,57 +254,6 @@ class _SchemaView:
         if ncols > shown:
             lines.append(f"... (+{ncols - shown} more columns)")
         return "\n".join(lines)
-=======
-def _dtype_str(col) -> str:
-    """Display string for a column's dtype: 'category', kind name, or 'object',
-    with a '?' suffix when nullable."""
-    if not col._dtype:
-        return "object"
-    from serif._vector.categorical import _Category
-    if isinstance(col, _Category):
-        dtype_str = 'category'
-    else:
-        dtype_str = col._dtype.kind.__name__
-    if col._dtype.nullable:
-        dtype_str += '?'
-    return dtype_str
-
-
-def _group_dtypes(dtypes: List[str]) -> str:
-    """Summarize per-column dtypes as counted groups for the table footer.
-
-    Groups appear in column order (first appearance), so the footer reads
-    like the table does. A count prefix (e.g. '6×str') is used when a dtype
-    repeats, unless the table is homogeneous, where the bare dtype suffices.
-    With five or more groups, only the first three are shown followed by
-    '+N' — the number of columns folded away.
-
-        <int>
-        <str, int, date>
-        <6×str, 2×int, date>
-        <18×str, 12×int, 6×float, +4>
-    """
-    counts = {}
-    for dt in dtypes:
-        counts[dt] = counts.get(dt, 0) + 1
-
-    # dict preserves insertion order == first appearance == column order
-    groups = list(counts)
-
-    if len(groups) == 1:
-        return groups[0]
-
-    if len(groups) > 4:
-        hidden = sum(counts[dt] for dt in groups[3:])
-        groups = groups[:3]
-    else:
-        hidden = 0
-
-    parts = [f"{counts[dt]}×{dt}" if counts[dt] > 1 else dt for dt in groups]
-    if hidden:
-        parts.append(f"+{hidden}")
-    return ", ".join(parts)
->>>>>>> origin/main
 
 
 def _is_structural_change(display_name: str, sanitized_name: str) -> bool:
