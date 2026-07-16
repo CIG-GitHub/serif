@@ -1896,170 +1896,19 @@ class Table(Vector):
         object.__setattr__(t, '_column_map',    t._build_column_map())
         return t
 
-    def peek(self, sample=1000, top_k=3):
+    @property
+    def _(self):
         """
-        Summarize columns: one row per column, with dtype, null %, and top values.
+        Column schema listing: one row per column with the dot-accessor
+        name, dtype, and the original name where sanitization changed it.
 
-        Parameters
-        ----------
-        sample : int | float | None, default 1000
-            Row sampling strategy for computing stats:
-              - None       : scan all rows
-              - int >= 1   : use up to this many rows (evenly spaced)
-              - 0 < float <= 1 : use this fraction of total rows (evenly spaced)
-        top_k : int, default 3
-            Maximum number of distinct values to show (creates top_1, top_2, top_3 columns).
+            .some_string          str     'some string'
+            .some_other_strings   str     'some other strings'
+            .a_number             int     'a number'
+            .a_float              float   'a float'
 
-        Returns
-        -------
-        Table
-            A narrow Table with one row per column. Repr is configured to show
-            up to 200 rows (no truncation for typical column counts).
+        Reads column metadata only — never scans data — so it is free at
+        any table size. Shows every column (up to 1000).
         """
-        nrows = len(self)
-        ncols = len(self._storage)
-
-        # --- Edge case: empty table ---
-        if ncols == 0:
-            summary = Table({})
-            summary._repr_rows = 200
-            return summary
-
-        # --- 1. Decide which row indices to sample ---
-        if nrows == 0:
-            indices = []
-        else:
-            if sample is None:
-                # Full scan
-                indices = list(range(nrows))
-            elif isinstance(sample, float):
-                if not (0.0 < sample <= 1.0):
-                    raise SerifValueError(
-                        "peek(sample=float) requires 0.0 < sample <= 1.0"
-                    )
-                target = max(1, int(nrows * sample))
-                if target >= nrows:
-                    indices = list(range(nrows))
-                else:
-                    step = max(1, nrows // target)
-                    indices = list(range(0, nrows, step))[:target]
-            elif isinstance(sample, int):
-                if sample <= 0:
-                    indices = []
-                elif sample >= nrows:
-                    indices = list(range(nrows))
-                else:
-                    step = max(1, nrows // sample)
-                    indices = list(range(0, nrows, step))[:sample]
-            else:
-                raise SerifTypeError(
-                    f"peek(sample=...) must be int, float, None; got {type(sample).__name__}"
-                )
-
-        # --- 2. Prepare metadata columns ---
-        names       = []
-        attr_names  = []
-        dtypes      = []
-        nullables   = []
-        null_pcts   = []
-        # Create top_k columns dynamically
-        top_columns = [[] for _ in range(top_k)]
-
-        max_value_str_len = 40  # mild truncation for display only
-
-        for idx, col in enumerate(self._storage):
-            data = col._storage.to_tuple()
-            col_name = col._name
-
-            # Original name
-            names.append(col_name)
-
-            # Sanitized attribute name with dot prefix
-            if col_name is not None:
-                base = _sanitize_user_name(col_name)
-                if base is None:
-                    attr = f".col{idx}_"
-                else:
-                    attr = f".{base}"
-            else:
-                attr = f".col{idx}_"
-            attr_names.append(attr)
-
-            # Dtype and nullable from schema(), if available
-            schema = None
-            if hasattr(col, "schema"):
-                try:
-                    schema = col.schema()
-                except Exception:
-                    schema = None
-
-            if schema is not None and getattr(schema, "kind", None) is not None:
-                kind = schema.kind
-                dtype_str = getattr(kind, "__name__", str(kind))
-                nullable = bool(getattr(schema, "nullable", True))
-            else:
-                dtype_str = "unknown"
-                nullable = True  # conservative default
-
-            dtypes.append(dtype_str)
-            nullables.append(nullable)
-
-            # --- 3. Scan sampled values for nulls & value frequencies ---
-            null_count = 0
-            value_counts = {}
-
-            for i in indices:
-                v = data[i]
-                if v is None:
-                    null_count += 1
-                else:
-                    value_counts[v] = value_counts.get(v, 0) + 1
-
-            sampled_total = len(indices)
-            if sampled_total == 0:
-                null_pct = 0.0
-            else:
-                null_pct = (null_count / sampled_total) * 100.0
-
-            # Keep as float; repr will show with normal float formatting
-            null_pcts.append(round(null_pct, 1))
-
-            # --- 4. Top-k values, sorted descending by frequency ---
-            # Sort by count descending, then by value str for stability
-            items = sorted(
-                value_counts.items(),
-                key=lambda kv: (-kv[1], str(kv[0])),
-            )[:top_k]
-
-            non_null_sample = sampled_total - null_count
-
-            # Fill each top_k column
-            for k in range(top_k):
-                if k < len(items) and non_null_sample > 0:
-                    val, count = items[k]
-                    pct = (count / non_null_sample) * 100.0
-                    val_str = str(val)
-                    if len(val_str) > max_value_str_len:
-                        val_str = val_str[: max_value_str_len - 1] + "…"
-                    top_columns[k].append(f"{val_str} ({pct:.1f}%)")
-                else:
-                    top_columns[k].append("")
-
-        # --- 5. Build summary table (one row per column) ---
-        table_dict = {
-            "name":       names,
-            "attr":       attr_names,
-            "dtype":      dtypes,
-            "nullable":   nullables,
-            "null_pct":   null_pcts,
-        }
-        
-        # Add top_k columns dynamically
-        for k in range(top_k):
-            table_dict[f"top_{k+1}"] = top_columns[k]
-        
-        summary = Table(table_dict)
-
-        # Ensure peek output does not get truncated in repr
-        summary._repr_rows = 200
-        return summary
+        from .display import _SchemaView
+        return _SchemaView(self)

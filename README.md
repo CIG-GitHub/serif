@@ -44,6 +44,12 @@ t = read_csv("sales.csv")  # Messy column names? No problem.
 #   t.pr + [TAB]    → t.price
 #   t.qua + [TAB]   → t.quantity
 
+# Or ask the table: t._ lists every column — accessor, dtype,
+# and the original name where sanitization changed it
+t._
+# .price      int   'price ($)'
+# .quantity   int
+
 # Compose expressions naturally
 total = t.price * t.quantity
 

@@ -203,6 +203,59 @@ def _group_dtypes(dtypes: List[str]) -> str:
     return ", ".join(parts)
 
 
+class _SchemaView:
+    """Lazy column listing returned by Table._ — one row per column.
+
+    Holds only a table reference; all work happens in __repr__ from column
+    metadata alone (no data scan), so access is free at any table size.
+
+        .some_string          str     'some string'
+        .some_other_strings   str     'some other strings'
+        .a_number             int     'a number'
+        .a_float              float   'a float'
+
+    The original-name column appears only when sanitization structurally
+    changed at least one name, and only on the rows it changed. Making the
+    view callable (t._(...) for extended, scan-based stats) is reserved
+    for future use.
+    """
+
+    _MAX_COLS = 1000
+
+    def __init__(self, tbl):
+        self._tbl = tbl
+
+    def __repr__(self):
+        cols = self._tbl.cols()
+        ncols = len(cols)
+        if ncols == 0:
+            return "# 0×0 table"
+
+        shown = min(ncols, self._MAX_COLS)
+        disp, san, dtypes = _compute_headers(cols, list(range(shown)))
+
+        accessors = ["." + s for s in san]
+        originals = [
+            repr(d) if d and _is_structural_change(d, s) else ""
+            for d, s in zip(disp, san)
+        ]
+
+        acc_w = max(len(a) for a in accessors)
+        dt_w = max(len(dt) for dt in dtypes)
+
+        lines = []
+        if any(originals):
+            for a, dt, orig in zip(accessors, dtypes, originals):
+                lines.append(f"{a.ljust(acc_w)}   {dt.ljust(dt_w)}   {orig}".rstrip())
+        else:
+            for a, dt in zip(accessors, dtypes):
+                lines.append(f"{a.ljust(acc_w)}   {dt}")
+
+        if ncols > shown:
+            lines.append(f"... (+{ncols - shown} more columns)")
+        return "\n".join(lines)
+
+
 def _is_structural_change(display_name: str, sanitized_name: str) -> bool:
     """Check if sanitization involved structural changes beyond just case normalization.
     
