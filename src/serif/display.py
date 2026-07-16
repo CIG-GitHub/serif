@@ -147,20 +147,60 @@ def _compute_headers(cols, col_indices):
             san = f"col{idx}_"
         sanitized_names.append(san)
 
-        # Dtype (with nullable indicator)
-        if col._dtype:
-            from serif._vector.categorical import _Category
-            if isinstance(col, _Category):
-                dtype_str = 'category'
-            else:
-                dtype_str = col._dtype.kind.__name__
-            if col._dtype.nullable:
-                dtype_str += '?'
-            dtypes.append(dtype_str)
-        else:
-            dtypes.append("object")
+        dtypes.append(_dtype_str(col))
 
     return display_names, sanitized_names, dtypes
+
+
+def _dtype_str(col) -> str:
+    """Display string for a column's dtype: 'category', kind name, or 'object',
+    with a '?' suffix when nullable."""
+    if not col._dtype:
+        return "object"
+    from serif._vector.categorical import _Category
+    if isinstance(col, _Category):
+        dtype_str = 'category'
+    else:
+        dtype_str = col._dtype.kind.__name__
+    if col._dtype.nullable:
+        dtype_str += '?'
+    return dtype_str
+
+
+def _group_dtypes(dtypes: List[str]) -> str:
+    """Summarize per-column dtypes as counted groups for the table footer.
+
+    Groups appear in column order (first appearance), so the footer reads
+    like the table does. A count prefix (e.g. '6×str') is used when a dtype
+    repeats, unless the table is homogeneous, where the bare dtype suffices.
+    With five or more groups, only the first three are shown followed by
+    '+N' — the number of columns folded away.
+
+        <int>
+        <str, int, date>
+        <6×str, 2×int, date>
+        <18×str, 12×int, 6×float, +4>
+    """
+    counts = {}
+    for dt in dtypes:
+        counts[dt] = counts.get(dt, 0) + 1
+
+    # dict preserves insertion order == first appearance == column order
+    groups = list(counts)
+
+    if len(groups) == 1:
+        return groups[0]
+
+    if len(groups) > 4:
+        hidden = sum(counts[dt] for dt in groups[3:])
+        groups = groups[:3]
+    else:
+        hidden = 0
+
+    parts = [f"{counts[dt]}×{dt}" if counts[dt] > 1 else dt for dt in groups]
+    if hidden:
+        parts.append(f"+{hidden}")
+    return ", ".join(parts)
 
 
 def _is_structural_change(display_name: str, sanitized_name: str) -> bool:
@@ -186,9 +226,9 @@ def _is_structural_change(display_name: str, sanitized_name: str) -> bool:
 
 def _header_rows(display_names, sanitized_names, dtypes):
     """Decide which header rows to show based on display vs sanitized names.
-    
+
     Returns (header_rows, show_types_in_header) where show_types_in_header indicates
-    whether types are heterogeneous and should be shown in header instead of footer.
+    whether types are heterogeneous and shown per-column in the header.
     """
     any_display = any(n for n in display_names if n != "...")
     
@@ -261,12 +301,11 @@ def _align_columns(formatted_cols, header_rows, col_dtypes):
     return aligned_cols, aligned_headers
 
 
-def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS,
-            dtype_text=None) -> str:
+def _footer(pv, dtype_text=None) -> str:
     """Generate footer line based on shape and dtypes.
 
     dtype_text, when given, overrides the computed dtype string for the
-    2-D case (e.g. 'mixed' when types are shown in the header instead)."""
+    2-D case (the grouped per-column summary from _group_dtypes)."""
     shape = pv.shape
     if not shape:
         return "# empty"
@@ -288,11 +327,6 @@ def _footer(pv, dtype_list=None, truncated=False, shown=MAX_HEAD_COLS,
     if len(shape) == 2:
         if dtype_text is not None:
             d = dtype_text
-        elif dtype_list:
-            if truncated:
-                d = ", ".join(dtype_list[:shown]) + ", ..., " + ", ".join(dtype_list[-shown:])
-            else:
-                d = ", ".join(dtype_list)
         else:
             d = pv._dtype.kind.__name__ if pv._dtype else "object"
         rows, cols = shape
@@ -364,15 +398,7 @@ def _repr_table(tbl) -> str:
     disp, san, dtypes_displayed = _compute_headers(cols, col_indices)
 
     # Get all dtypes for footer
-    dtypes_all = []
-    for col in cols:
-        if col._dtype:
-            dtype_str = col._dtype.kind.__name__
-            if col._dtype.nullable:
-                dtype_str += "?"
-            dtypes_all.append(dtype_str)
-        else:
-            dtypes_all.append("object")
+    dtypes_all = [_dtype_str(col) for col in cols]
 
     # Format columns
     formatted_cols = [_format_column(cols[i], max_preview=max_preview) for i in col_indices]
@@ -386,7 +412,7 @@ def _repr_table(tbl) -> str:
         dtypes_displayed.insert(MAX_HEAD_COLS, "...")
 
     # Build header rows
-    header_rows, show_types_in_header = _header_rows(disp, san, dtypes_displayed)
+    header_rows, _ = _header_rows(disp, san, dtypes_displayed)
 
     # Align everything
     aligned_cols, aligned_headers = _align_columns(formatted_cols, header_rows, dtypes_displayed)
@@ -403,15 +429,9 @@ def _repr_table(tbl) -> str:
         lines.append(row)
 
     lines.append("")
-    
-    # Footer: <mixed> if types are in header; a single type if homogeneous;
-    # otherwise the per-column type list.
-    if show_types_in_header:
-        lines.append(_footer(tbl, dtype_text="mixed"))
-    elif len(set(dtypes_all)) == 1:
-        lines.append(_footer(tbl, dtype_text=dtypes_all[0]))
-    else:
-        lines.append(_footer(tbl, dtypes_all, truncated, MAX_HEAD_COLS))
+
+    # Footer: grouped dtype summary, e.g. <6×str, 2×int, date>
+    lines.append(_footer(tbl, dtype_text=_group_dtypes(dtypes_all)))
 
     return "\n".join(lines)
 
