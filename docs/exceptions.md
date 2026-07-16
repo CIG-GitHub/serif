@@ -1,6 +1,6 @@
 # Exception Handling
 
-Vector raises specific exception types for clear error handling.
+Serif raises specific exception types for clear error handling.
 
 ## Exception Types
 
@@ -61,6 +61,23 @@ except SerifIndexError:
     print("Index out of bounds")
 ```
 
+### SerifEmptyReductionError
+Subclass of `SerifValueError`. Raised when `all()` or `any()` reduce over
+zero valid values (an empty vector, or one whose values are all null) —
+a verdict needs evidence. Pass `on_empty=` to supply the empty-case
+verdict. In `aggregate()`/`window()`, the raise carries the group key so
+you can tell a data problem from a legitimately sparse group.
+
+```python
+from serif import SerifEmptyReductionError
+
+flags = Vector([None, None])
+flags.any()                 # raises SerifEmptyReductionError
+flags.any(on_empty=False)   # False — opted into deliberately
+```
+
+See docs/null-semantics.md for the full doctrine.
+
 ## Broad Exception Catching
 
 All custom exceptions inherit from `SerifError`:
@@ -71,7 +88,7 @@ from serif import SerifError
 try:
     # ... operations ...
 except SerifError:
-    # Catch all Vector-specific errors
+    # Catch all serif-specific errors
     pass
 ```
 

@@ -4,10 +4,9 @@ Vector and Table use a strict, predictable indexing model built around
 two principles:
 
 1. **Column-major tables** — columns are primary, rows are derived.
-2. **Single-axis indexing only** — but indexing operations are fully composable.
-
-This avoids the complexity of Pandas/NumPy-style multi-axis indexing while
-remaining expressive, fast, and mathematically clear.
+2. **One meaning per form** — a single-axis subscript always means rows
+   (or a named column); the two-axis form `t[rows, cols]` is supported
+   and unambiguous; everything else composes.
 
 ## 1. Vector Indexing
 
@@ -40,21 +39,19 @@ Rules:
 - Returns a filtered Vector.
 - Masks are produced by comparisons, `.like()`, `.isin()`, etc.
 
-### 1.4 Disallowed forms
+### 1.4 Discouraged and disallowed forms
 
-- lists of indices  
-- arrays of indices  
-- broadcasting  
-- multi-dimensional indexing  
+- Lists/vectors of integer indices are accepted but **discouraged** — they
+  are slow relative to masks and emit a warning (see docs/gotchas.md).
+- Broadcasting and multi-dimensional indexing of vectors are disallowed.
 
-Serif deliberately avoids "fancy indexing" to keep semantics simple.
+Boolean masks are the sanctioned way to filter.
 
 ## 2. Table Indexing
 
-Table supports **only single-axis indexing**, but operations are
-composable: column selection followed by row slicing (or vice-versa).
-
-This preserves clarity and matches the column-major design.
+A single-axis subscript selects rows (integer, slice, mask) or columns
+(names). The two-axis form `t[rows, cols]` addresses cells and regions
+directly. All forms compose.
 
 ### 2.1 Row Indexing
 
@@ -121,63 +118,54 @@ Returns a new Table containing those columns (in order).
 Using the helper:
 
 ```python
-t.cols([2, 5, 7])
-t.cols(slice(3, 8))
+t.cols(2)           # the column at position 2 (a Vector)
+t.cols(slice(3, 8)) # columns 3–7, as a tuple of Vectors
+t.cols()            # all columns, as a tuple of Vectors
 ```
 
-Returns a new Table with only the specified columns.
+`cols()` takes an int, a slice, or nothing. It returns Vectors (a single
+one, or a tuple) — not a Table. For a multi-column *Table*, select by
+name: `t['a', 'b']`.
 
 #### Chaining is fully supported
 
 ```python
 t['a', 'b'][10:20]
 t[mask]['x', 'y']
-t.cols([1, 3, 4])[5:]
 ```
 
-This replaces all two-axis forms such as `t[rows, cols]`.
+### 2.3 Two-Axis Indexing
 
-### 2.3 Forbidden Forms
-
-The following are intentionally disallowed to avoid ambiguity:
-
-#### No two-axis indexing
+The tuple form `t[rows, cols]` is supported for reading and writing.
+Rows are specified by integer or slice; columns by position, slice, or
+name. Either axis order works — the axis types disambiguate.
 
 ```python
-t[i, j]
-t[i, j:k]
-t[i:j, k:l]
+t[0, 0]              # a single cell (a Python scalar)
+t[5, 'b']            # cell by row and column name
+t[:, 'a']            # a whole column
+t[1:3, 0:2]          # a rectangular region
 ```
 
-Table never interprets a tuple of length 2 as multi-axis indexing.
-
-#### No list × list indexing
+Assignment mirrors reading:
 
 ```python
-t[[1, 2], [3, 4]]
+t[0, 0] = 99         # one cell
+t[3, :] = None       # a whole row (promotes columns to nullable)
+t[:, 'b'] = 42       # a whole column
+t[0:2, 'a'] = 100    # a slice of a column
+t[1:3, 0:2] = 999    # a rectangular region
 ```
 
-Avoids Pandas/NumPy complex rules and shape ambiguities.
+#### Masks stay on the single-axis form
 
-#### No masks on columns
+Boolean masks are not accepted inside the two-axis form:
 
 ```python
-t[:, mask]
-t[mask, 'col']
+t[mask, 'col']   # raises — write t[mask]['col'] or t['col'][mask]
 ```
 
-Masks apply **only** to the row axis.
-
-#### No name-based column selection inside two-axis forms
-
-Since two-axis indexing is removed entirely, the following are invalid:
-
-```python
-t[:, 'a']
-t[5, 'b']
-```
-
-Column names are always used in **single-axis column selection**.
+Masks filter rows via the single-axis form only.
 
 ## 3. Recommended Idioms
 
@@ -188,7 +176,7 @@ footprint and speeds up operations:
 
 ```python
 t['a', 'b'][1000:2000]
-t.cols([2, 4, 5])[mask]
+t['a', 'b'][mask]
 ```
 
 ### Row-first selection (equally valid)
@@ -211,12 +199,13 @@ Either direction is legal and predictable.
 ## 4. Design Philosophy
 
 - Table is column-major; columns are the primary structural axis.
-- Indexing is single-axis, but fully composable.
-- Only integer, slice, or boolean mask indexing is allowed on rows.
-- Only names or `.cols()` are allowed for column selection.
+- Every subscript form has exactly one meaning: single-axis selects rows
+  or named columns; the two-axis form addresses cells and regions.
+- Rows are indexed by integer, slice, or boolean mask.
+- Columns are selected by name, or positionally via `.cols()`.
 - Multi-column selection via `t['a', 'b', 'c']` is first-class and preferred.
 - Both full names and disambiguated names are valid for column selection.
-- No advanced indexing, no broadcasting, no silent reindexing.
+- No broadcasting, no silent reindexing.
 - If an operation is legal in one context, it is legal everywhere else.
 
 The model is intentionally strict, minimal, and easy to reason about.

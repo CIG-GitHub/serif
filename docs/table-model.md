@@ -7,7 +7,11 @@ It is column-major by design.
 Tables are built via:
 - column stacking: `v1 >> v2 >> v3`
 - explicit constructor: `Table([v1, v2, ...])`
-- no row-based construction API is provided
+- dict constructor: `Table({'a': [...], 'b': [...]})` — keys become column names
+- row-major lists of uniform length are transposed into columns:
+  `Table([[1, 'x'], [2, 'y']])` is a 2-row table
+
+However built, the table stores columns.
 
 ## 2. Access
 `table[i]` → i-th row (tuple-like)  
@@ -33,14 +37,17 @@ Consequences:
   same view, all pointing at the final row. To materialize rows, copy
   explicitly: `[tuple(row) for row in table]`.
 
-## 5. Column-major memory alignment
-Operations such as:
-- mean  
-- stdev  
-- masking  
-- sorting  
+## 5. Why column-major
+Real-world data workflows are column-major, even though Python lists are
+row-major:
+- CSVs are tall, not wide  
+- SQL tables are column-defined  
+- analytics operate column-wise  
 
-…operate more naturally and efficiently on column-major layouts.
+Operations such as mean, stdev, masking, and sorting all follow this
+grain: they operate more naturally and efficiently on column-major
+layouts. Storing tables as a list of column vectors aligns the structure
+with actual usage.
 
 ## 6. Combining tables
 `>>` stacks columns, not rows.  

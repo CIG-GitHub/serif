@@ -7,20 +7,22 @@ behavior for data work.
 
 These differences fall into a small, well-defined set:
 
-## 1. No Aliasing (Value Semantics for Vectors)
+## 1. No Hidden Sharing (Value Semantics Between Vectors)
 
 ```python
 a = Vector([1, 2, 3])
-b = a
-b[1] = 99
+b = a[:]        # slices and derived vectors are distinct vectors
+b[1] = 99       # mutates b only — a is untouched
 ```
 
-In Python, this would mutate `a` as well.
-Vector does not allow this.
+Distinct vectors never share mutable state. Internally they may share
+immutable storage, but mutation always rebuilds the mutated vector's
+storage (copy-on-write), so no vector can change another behind your
+back — including columns already snapshotted into tables or pipelines.
 
-Each assignment or mutation produces a new vector.
-This avoids hidden state and prevents accidental data corruption when
-vectors are combined into tables or pipelines.
+Plain name-binding is unchanged Python: `b = a` makes two names for one
+object, and mutating through either is visible through both. The value
+semantics are between *vectors*, not between *names*.
 
 ## 2. Column Behavior Inside Tables
 
@@ -83,7 +85,7 @@ Vector is Pythonic in syntax but analytic in semantics.
 
 If you are a Python programmer, the two areas to be most aware of are:
 
-1. Vectors use value semantics (no aliasing).
+1. Distinct vectors never share mutable state (value semantics between vectors).
 2. Shift operators (`<<` and `>>`) build tables, not bit-shifts.
 
 Everything else behaves naturally once you work with the data model.
