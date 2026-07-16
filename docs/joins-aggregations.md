@@ -16,6 +16,9 @@ result = left.inner_join(right, left_on='id', right_on='id')
 # Returns rows for id 2 and 3
 ```
 
+Matched key columns are de-duplicated: the result carries a single `id`
+column (from the left side), not `id` and `id__2`.
+
 ### Left Join
 
 Returns all rows from the left table, with `None` for unmatched right table values.
@@ -44,14 +47,21 @@ result = left.inner_join(right,
 
 ### Cardinality Expectations
 
-Validate join behavior with the `expect` parameter:
+Joins validate key uniqueness with the `expect_left_unique` and
+`expect_right_unique` flags:
 
 ```python
-result = left.inner_join(right, 
-    left_on='id', 
+result = left.inner_join(right,
+    left_on='id',
     right_on='customer_id',
-    expect='many_to_one')  # Validates right side has unique keys
+    expect_left_unique=False,   # left keys may repeat (default)
+    expect_right_unique=True)   # duplicate right keys raise (default)
 ```
+
+`inner_join` and `join` default to `expect_right_unique=True` — a
+many-to-many key match raises instead of silently multiplying rows.
+`full_join` defaults both flags to `False`. State the cardinality you
+expect; the join enforces it.
 
 **Complexity:** O(n + m) where n and m are table lengths. Uses hash-based lookups.
 
@@ -125,6 +135,18 @@ result = t.aggregate(
     aggregations={'product': lambda group: reduce(mul, group.value, 1)}
 )
 ```
+
+`len` is a callable too — the idiomatic row count per group:
+
+```python
+result = t.aggregate(
+    groupby=t.customer,
+    aggregations={'n': len},   # rows per group (counts None rows)
+)
+```
+
+Note the distinction: `{'n': len}` counts group rows; `{'n': t.col.count}`
+counts non-null values in a column. On nullable columns they differ.
 
 **Complexity:** O(n) to build partitions, then O(n × k) where k is cost per group aggregation.
 

@@ -4,14 +4,12 @@ These rules define the contract of the library.
 Breaking any of them requires updating this file and providing strong rationale.
 
 ## 1. A Vector has exactly one dtype
-All elements share a single Python-native type:
-- int  
-- float  
-- bool  
-- str  
-- date  
+All elements share a single Python-native kind. The common kinds are
+`int`, `float`, `bool`, `str`, and `date`; `datetime`, `complex`, and
+`bytes` are also supported.
 
-No mixed types.  
+Nothing mixes silently. Mixed content requires explicitly opting out of
+the type system into object dtype (`v.to_object()`).  
 No implicit coercion except Python-standard numeric coercions.
 
 ## 2. A Table is a list of column vectors
@@ -21,11 +19,14 @@ A table is:
 - row-major access is derived, not stored  
 - nested tables are never allowed
 
-## 3. Filtering is only done via boolean masks
+## 3. Filtering is done via boolean masks
 No string queries.  
 No lambdas.  
 No SQL-like syntax.  
-Explicit mask vectors only.
+Explicit mask vectors are the sanctioned path.
+
+(Row selection by integer-index lists exists but is discouraged and
+warns — see docs/gotchas.md.)
 
 ## 4. Math preserves shape
 Elementwise operations require matching lengths.  
@@ -46,11 +47,9 @@ Dot-access always resolves to the first match.
 This is acceptable because explicit column selection by index is always available.
 
 ## 7. Sanitized attribute names are purely syntactic sugar
-Dot-access uses:
-- alphanumeric  
-- underscores  
-- single underscore collapsing  
-- no leading underscore  
+Dot-access names are derived from column names by a deterministic
+sanitization pipeline — the exact rules live in docs/naming.md, and
+only there.
 
 Sanitized names never affect actual column names.
 

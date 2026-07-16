@@ -7,7 +7,11 @@ It is column-major by design.
 Tables are built via:
 - column stacking: `v1 >> v2 >> v3`
 - explicit constructor: `Table([v1, v2, ...])`
-- no row-based construction API is provided
+- dict constructor: `Table({'a': [...], 'b': [...]})` — keys become column names
+- row-major lists of uniform length are transposed into columns:
+  `Table([[1, 'x'], [2, 'y']])` is a 2-row table
+
+However built, the table stores columns.
 
 ## 2. Access
 `table[i]` → i-th row (tuple-like)  

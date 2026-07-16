@@ -6,17 +6,24 @@ Serif prevents accidental shared-state bugs through automatic copy-on-write.
 
 ### How It Works
 
+Distinct vectors never share mutable state, even when they share storage
+internally:
+
 ```python
 a = Vector([1, 2, 3])
-b = a  # b shares underlying tuple with a
+b = a[:]     # a distinct Vector; internally shares a's immutable storage
 
-# Attempting mutation triggers copy-on-write
-b[0] = 99  # Creates new tuple, a unchanged
-print(a)   # Vector([1, 2, 3])
-print(b)   # Vector([99, 2, 3])
+b[0] = 99    # b rebuilds its own storage; a's is untouched
+a            # 1, 2, 3
+b            # 99, 2, 3
 ```
 
 Serif never mutates storage in place: `__setitem__` materializes the data, applies the updates, and rebuilds a fresh storage object. Any other Vector still pointing at the old storage is untouched — copy-on-write by construction, no registry or identity tracking needed.
+
+Plain name-binding is ordinary Python: `b = a` makes two names for one
+object, and a mutation through either name is visible through both,
+exactly as with any Python object. Copy-on-write protects *vectors* from
+each other; it does not (and should not) change what `=` means.
 
 ### When Copies Happen
 
@@ -86,7 +93,10 @@ Fingerprints use a **rolling hash**, computed lazily on first access and cached.
 
 ### Limitations
 
-- Fingerprints detect **data changes**, not structural equivalence
-- Two vectors with identical content may have different fingerprints if constructed differently
-- Use `==` for value equality, `.fingerprint()` for change detection
+- Fingerprints hash element **values** only — dtype is not part of the
+  hash, so `Vector([1])` and `Vector([1.0])` share a fingerprint
+  (`hash(1) == hash(1.0)`).
+- Fingerprints answer "did this data change?", not "are these equal?".
+  For comparison, remember `==` is **elementwise** (it returns a boolean
+  vector, with `None` where either side is null).
 
