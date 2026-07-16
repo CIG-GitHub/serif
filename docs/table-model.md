@@ -33,14 +33,17 @@ Consequences:
   same view, all pointing at the final row. To materialize rows, copy
   explicitly: `[tuple(row) for row in table]`.
 
-## 5. Column-major memory alignment
-Operations such as:
-- mean  
-- stdev  
-- masking  
-- sorting  
+## 5. Why column-major
+Real-world data workflows are column-major, even though Python lists are
+row-major:
+- CSVs are tall, not wide  
+- SQL tables are column-defined  
+- analytics operate column-wise  
 
-…operate more naturally and efficiently on column-major layouts.
+Operations such as mean, stdev, masking, and sorting all follow this
+grain: they operate more naturally and efficiently on column-major
+layouts. Storing tables as a list of column vectors aligns the structure
+with actual usage.
 
 ## 6. Combining tables
 `>>` stacks columns, not rows.  

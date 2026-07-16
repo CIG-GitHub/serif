@@ -102,7 +102,19 @@ Performance optimizations should not introduce semantic differences.
 
 ---
 
-## **Principle 7 — Fewer Concepts, Better Concepts**
+## **Principle 7 — Predictability Over Performance**
+
+Serif values correctness, clarity, obviousness, and exploration speed over
+micro-optimized performance.
+
+Serif is the exploratory, expressive, human-scale layer: the place where
+you think. Performance work is welcome, but never at the cost of
+semantics — a faster path that behaves differently at scale is a bug
+(see Principle 6).
+
+---
+
+## **Principle 8 — Fewer Concepts, Better Concepts**
 
 Whenever possible, Serif favors:
 
@@ -124,6 +136,7 @@ Serif philosophy is straightforward:
 - Avoid ambiguity, especially around boolean masks.  
 - Show users clear, helpful representations.  
 - Maintain predictable semantics at any scale.  
+- Value predictability and exploration speed over micro-optimization.  
 - Choose clarity and minimalism over kitchen-sink convenience.
 
 Any future addition should be judged on whether it strengthens or weakens these principles.

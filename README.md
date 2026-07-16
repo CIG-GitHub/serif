@@ -126,9 +126,7 @@ u = read_parquet("sales.parquet")
 ## Documentation
 
 - [Design Philosophy](docs/design-philosophy.md) — the principles everything else answers to
-- [Rationale](docs/rationale.md) — why the library is shaped this way
 - [Serif vs Python](docs/serif-vs-python.md) — the few intentional departures
-- [Vector Semantics](docs/vector-semantics.md) — Vector behavior in full
 - [Table Model](docs/table-model.md) — the column-major table
 - [Indexing](docs/indexing.md) — slicing, masking, and selection rules
 - [Null Semantics](docs/null-semantics.md) — `None`, three-valued logic, verdicts

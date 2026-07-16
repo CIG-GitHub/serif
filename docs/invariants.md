@@ -36,6 +36,9 @@ No auto-broadcasting.
 Only copies inherit names.  
 Derived vectors start unnamed.
 
+`v.copy()` reproduces values, dtype, and name; every other operation
+produces an unnamed result unless explicitly aliased.
+
 ## 6. Column names do not need to be unique
 Tables may contain repeated names.  
 Dot-access always resolves to the first match.
@@ -71,4 +74,8 @@ No auto-joins.
 No auto-broadcasting across columns.
 
 All joins/merges must be explicit.
+
+## 11. Vector iteration yields scalars
+`for x in v:` yields plain Python scalars in index order.  
+Null positions yield `None`.
 
