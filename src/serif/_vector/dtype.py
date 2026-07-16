@@ -100,6 +100,7 @@ def promote_dtype(schema: Schema, value: Any) -> Schema:
 
 def infer_kind(value: Any) -> Optional[Type]:
     """Infer Python type for a single scalar. Returns None for None values."""
+    from decimal import Decimal
     if value is None:
         return None
     if isinstance(value, bool):
@@ -108,6 +109,8 @@ def infer_kind(value: Any) -> Optional[Type]:
         return int
     if isinstance(value, float):
         return float
+    if isinstance(value, Decimal):
+        return Decimal
     if isinstance(value, complex):
         return complex
     if isinstance(value, str):
