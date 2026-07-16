@@ -1,72 +1,90 @@
 # Development Guide
 
+## Setup
+
+```bash
+git clone https://github.com/CIG-GitHub/serif.git
+cd serif
+pip install -e .[dev]
+```
+
+Requires Python 3.10+. The only dev dependency is pytest; the library
+itself has zero dependencies.
+
 ## Running Tests
 
 ```bash
-pytest -q                    # Run all tests
-pytest testing/test_*.py -v  # Verbose output
-pytest testing/test_Table.py::TestJoins -v  # Run specific test class
+python -m pytest tests/ -q          # full suite
+python -m pytest tests/ -v          # verbose (what CI runs)
+python -m pytest tests/test_joins.py -v   # one file
 ```
+
+CI runs the suite on Python 3.10–3.13 for every push and pull request
+(`.github/workflows/tests.yml`).
+
+### Warnings are load-bearing
+
+Warnings in serif are deliberate signals, not noise. A green test run
+must have an empty warnings summary: a test that intentionally exercises
+warning-producing behavior wraps it in `pytest.warns(...)`, which both
+silences it and pins the warning as required behavior. A warning
+appearing in the summary means something to investigate.
 
 ## Project Structure
 
 ```
-serif/
-├── serif.py           # Core Vector class and typed subclasses
-├── py_table.py            # Table (joins, aggregate, window)
-├── _errors.py             # Exception types
-├── _typeutils.py          # Helper utilities
-├── _alias_tracker.py      # Alias tracking implementation
-├── __init__.py            # Public API exports
-├── testing/               # Test suite (pytest)
-│   ├── test_Vector_*.py
-│   ├── test_Table.py
-│   ├── test_joins.py
-│   ├── test_aggregate_window.py
-│   └── ...
-└── docs/                  # Documentation
-    ├── design-philosophy.md
-    ├── performance.md
-    └── ...
+src/serif/
+├── __init__.py        # public API exports
+├── table.py           # Table: construction, indexing, joins, aggregate/window
+├── display.py         # repr logic, footer dtype grouping, _SchemaView (t._)
+├── naming.py          # column-name sanitization and disambiguation
+├── errors.py          # Serif* exception hierarchy
+├── _vector/
+│   ├── base.py        # core Vector: operators, masks, aggregations, fingerprints
+│   ├── dtype.py       # dtype inference and validation
+│   ├── storage.py     # ArrayStorage / TupleStorage / StringStorage
+│   ├── numeric.py     # _Int, _Float typed subclasses
+│   ├── string.py      # _String
+│   ├── dates.py       # _Date
+│   ├── categorical.py # _Category
+│   └── nullable.py    # null-mask storage support
+└── io/
+    ├── csv.py         # read_csv
+    └── parquet.py     # read_parquet / write_parquet (serif-native, no pyarrow)
+
+tests/                 # pytest suite
+docs/                  # documentation (start with design-philosophy.md)
 ```
+
+The package uses a `src/` layout (`package-dir` in `pyproject.toml`), so
+an editable install (`pip install -e .`) is the way to work on it — the
+installed package then tracks your working tree.
 
 ## Key Modules
 
-### `serif.py`
-- Core `Vector` class with typed subclasses (`_Int`, `_Float`, `_String`, `_Date`)
-- Arithmetic operations and operator overloading
-- Fingerprinting and alias tracking
-- Elementwise operations
+- **`_vector/base.py`** — the `Vector` class: elementwise operators,
+  boolean masks, aggregations, copy-on-write mutation, fingerprinting.
+  Typed subclasses (`_Int`, `_Float`, `_String`, `_Date`, `_Category`)
+  layer dtype-specific methods on top.
+- **`table.py`** — `Table` (a vector of column vectors): construction,
+  single- and two-axis indexing, joins, `aggregate()`/`window()`, and
+  the column map behind dot access.
+- **`errors.py`** — `SerifError` base plus `SerifKeyError`,
+  `SerifValueError`, `SerifTypeError`, `SerifIndexError`, and
+  `SerifEmptyReductionError`. See docs/exceptions.md.
+- **`naming.py`** — the sanitization pipeline. The exact rules live in
+  docs/naming.md.
+- **`display.py`** — everything repr: head/tail truncation,
+  `set_repr_rows`, the grouped-dtype footer, and the `t._` schema view.
 
-### `table.py`
-- `Table` class (vector-of-vectors)
-- Join operations (inner, left, full outer)
-- Aggregate and window functions
-- Column access and sanitization
+## Versioning
 
-### `_errors.py`
-- Custom exception hierarchy
-- `VectorError` base class
-- Specific exceptions: `VectorKeyError`, `VectorValueError`, `VectorTypeError`, `VectorIndexError`
-
-### `_alias_tracker.py`
-- Identity-based alias tracking via weakref registry
-- Copy-on-write triggering for shared data
-
-### `_typeutils.py`
-- Helper utilities (e.g., `slice_length`)
-
-## Development Status
-
-**Current State:** Pre-release. API may change.
-
-**No versioning/changelog yet**—this is active development.
+Versioned releases (currently `0.1.6` in `pyproject.toml`) with a
+changelog at `CHANGELOG.md`. Publishing runs through
+`.github/workflows/publish.yml`.
 
 ## Contributing
 
-(Future: Add contribution guidelines, code style, PR process)
-
-## Design Philosophy
-
-See `docs/design-philosophy.md` for detailed rationale behind Vector's design decisions.
-
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines and the PR
+process, and [docs/design-philosophy.md](design-philosophy.md) for the
+principles a change must satisfy — features must earn their place.
