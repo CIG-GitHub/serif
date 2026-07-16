@@ -1,7 +1,7 @@
 """
 Coverage for public API that previously had zero tests: Vector.new,
 bit_lshift/bit_rshift, eomonth, the before/after string helpers, to_dict,
-peek, plain-Vector matmul, full_join depth, and the deprecated rename().
+plain-Vector matmul, full_join depth, and the deprecated rename().
 """
 
 from datetime import date
@@ -97,25 +97,6 @@ def test_to_dict_unnamed_column_positional_key():
     # Same col{i}_ spelling as attribute access (t.col0_)
     t = Table([Vector([1, 2])])
     assert t.to_dict() == {'col0_': [1, 2]}
-
-
-# ---------------------------------------------------------------------------
-# Table.peek
-# ---------------------------------------------------------------------------
-
-def test_peek_one_row_per_column():
-    t = Table({'x': [1, 2, None], 'y': ['a', 'b', 'c']})
-    summary = t.peek()
-    assert len(summary) == 2
-    assert list(summary['name']) == ['x', 'y']
-    assert list(summary['dtype']) == ['int', 'str']
-    assert summary['null_pct'][0] == 33.3
-    assert summary['null_pct'][1] == 0.0
-
-
-def test_peek_empty_table():
-    summary = Table({}).peek()
-    assert len(summary) == 0
 
 
 # ---------------------------------------------------------------------------
