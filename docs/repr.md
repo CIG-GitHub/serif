@@ -31,7 +31,7 @@ A table repr includes:
 - column headers
 - aligned rows (head/tail)
 - ellipsis row separating head/tail
-- footer showing shape and dtypes
+- footer showing shape and a grouped dtype summary
 
 Column names appear literally, not sanitized.
 
@@ -45,7 +45,19 @@ col_a   col_b
   999   2025-10-31
  1000   2025-10-31
 
-# 1000x2 table <int, date>
+# 1000×2 table <int, date>
+
+### Footer dtype summary
+Per-column dtypes are aggregated into counted groups in column order
+(first appearance), so the footer reads like the table does. A count
+prefix is used when a dtype repeats in a heterogeneous table; a
+homogeneous table shows the bare dtype. With five or more dtype groups,
+the first three are shown and the remaining columns fold into `+N`:
+
+    # 1000000×2 table <int>
+    # 1000000×3 table <str, int, date>
+    # 1000000×9 table <6×str, 2×int, date>
+    # 1000000×40 table <18×str, 12×int, 6×float, +4>
 
 ## Principles
 - repr should be unambiguous and legible  
