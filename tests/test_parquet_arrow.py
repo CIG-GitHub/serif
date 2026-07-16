@@ -16,6 +16,7 @@ Skipped entirely when pyarrow isn't installed.
 import os
 import tempfile
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -56,6 +57,18 @@ def _assert_identical(pure_t, arrow_t):
         pv, av = pure_t[name], arrow_t[name]
         assert av.schema().kind is pv.schema().kind, name
         assert av.schema().nullable is pv.schema().nullable, name
+        # Schema carries only (kind, nullable); a decimal's scale/precision
+        # live in DecimalStorage, so the two paths must agree there too or a
+        # column could round-trip the right values at the wrong exponent.
+        if pv.schema().kind is Decimal:
+            from serif._vector.storage import DecimalStorage
+            ps, as_ = pv._storage, av._storage
+            assert isinstance(ps, DecimalStorage), f"{name}: pure not DecimalStorage"
+            assert isinstance(as_, DecimalStorage), f"{name}: arrow not DecimalStorage"
+            assert as_._scale == ps._scale, \
+                f"{name}: scale {as_._scale} != {ps._scale}"
+            assert as_._precision == ps._precision, \
+                f"{name}: precision {as_._precision} != {ps._precision}"
         for i, (p, a) in enumerate(zip(pv, av)):
             if p is None:
                 assert a is None, f"{name}[{i}]: expected None, got {a!r}"
@@ -64,7 +77,7 @@ def _assert_identical(pure_t, arrow_t):
                 # python in → python out: concrete Python types only, no
                 # pyarrow/numpy scalars leaking through the boundary
                 assert type(a) is type(p), f"{name}[{i}]: {type(a)} vs {type(p)}"
-                assert type(a) in (int, float, str, bool, date, datetime), \
+                assert type(a) in (int, float, str, bool, date, datetime, Decimal), \
                     f"{name}[{i}]: {type(a)}"
 
 
@@ -156,6 +169,33 @@ def test_conformance_all_six_kinds_together():
     }))
 
 
+def test_conformance_decimal():
+    # decimal128 (16-byte FIXED_LEN_BYTE_ARRAY) now conforms: both paths
+    # reinflate the same DecimalStorage — same values, same scale/precision,
+    # nulls in the same slots. Two columns with different scales prove scale
+    # is tracked per column.
+    _conform(Table({
+        'amt':  [Decimal('123.45'), Decimal('-0.01'), Decimal('999999.99'), None],
+        'rate': [Decimal('0.001'), Decimal('1.500'), None, Decimal('-2.750')],
+    }))
+
+
+def test_conformance_without_numpy(monkeypatch):
+    # numpy is OPTIONAL: pyarrow >= 25 no longer requires it, so the
+    # accelerator must run with pyarrow alone. Force the numpy-free
+    # fallbacks even where numpy IS installed, so CI covers the pure-Python
+    # bitmap-unpack (_byte_mask) and decimal byte-swap paths. Nullable
+    # int/float/str exercise the mask fallback; the decimal column exercises
+    # the byte-swap fallback. Same identical-to-pure-reader guarantee.
+    monkeypatch.setattr(_arrow, '_np', None)
+    _conform(Table({
+        'n':   [10, None, 30, None],
+        'f':   [None, 2.5, None, -0.0],
+        's':   [None, 'bob', '', 'δ 🎉'],
+        'amt': [Decimal('123.45'), Decimal('-0.01'), None, Decimal('999999.99')],
+    }))
+
+
 # ---------------------------------------------------------------------------
 # Semantics stay serif's: types serif rejects decline the WHOLE file, so
 # the pure reader's refusals surface identically with pyarrow installed
@@ -175,10 +215,13 @@ def test_nanosecond_timestamps_still_raise():
         os.unlink(path)
 
 
-def test_decimal_still_raises():
+def test_decimal256_declines():
+    # serif has no 256-bit backend, so a decimal256 column declines the WHOLE
+    # file to the pure reader, which raises its own error (only decimal128 /
+    # 16-byte FIXED_LEN_BYTE_ARRAY is supported). 256-bit is a future PR.
     path = tempfile.mktemp(suffix='.parquet')
-    pq.write_table(pa.table({'amt': pa.array(
-        [1234, 567], type=pa.decimal128(9, 2))}), path)
+    pq.write_table(pa.table({'big': pa.array(
+        [1234, 567], type=pa.decimal256(40, 2))}), path)
     try:
         assert _arrow.try_read(path) is None
         with pytest.raises(SerifTypeError, match='DECIMAL'):

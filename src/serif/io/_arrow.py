@@ -2,9 +2,11 @@
 OPTIONAL pyarrow-accelerated Parquet reading — EXPERIMENT.
 
 serif stays zero-dependency: this module only imports when pyarrow happens
-to be installed, and nothing anywhere requires it. numpy is used freely
-here — pyarrow cannot be installed without it, so inside this module it is
-definitionally available. The doctrine being prototyped:
+to be installed, and nothing anywhere requires it. numpy is OPTIONAL — it
+accelerates two steps (validity-bitmap unpacking and the decimal byte-swap),
+but pyarrow >= 25 no longer pulls it in, so when it is absent those steps
+fall back to pure Python: identical results, just slower. The doctrine
+being prototyped:
 
   * python in → python out. Whatever backend decodes the file, the Table
     that comes back surfaces concrete Python values (int, float, str,
@@ -29,7 +31,7 @@ Why this is fast: serif's storage layout is deliberately arrow-shaped.
   * validity  — arrow validity bitmaps and BitMask share the identical
                 layout (one packed bit per element, LSB-first, 1=valid),
                 so arrow's validity buffer IS a BitMask buffer: one memcpy,
-                no bit twiddling, no per-row Python loop.
+                no bit twiddling, no per-row Python loop, no numpy needed.
   * objects   — bool/date/datetime columns are TupleStorage of Python
                 objects either way; arrow's C-implemented to_pylist() is
                 the fastest available boxer, with None already in place.
@@ -39,7 +41,10 @@ from __future__ import annotations
 
 import array as _pyarray
 
-import numpy as _np
+try:
+    import numpy as _np
+except ImportError:            # pyarrow >= 25 no longer pulls numpy in
+    _np = None
 import pyarrow as _pa
 import pyarrow.parquet as _pq
 
@@ -121,6 +126,7 @@ def _bit_mask(arr):
     bytes BitMask holds (arrow pads the buffer to a wider alignment; the
     trailing bytes and any bits past n are never read but we drop them so the
     buffer length matches what BitMask.from_iterable would have produced).
+    No numpy needed on this path, with or without it installed.
 
     Callers must pass an array at offset 0 (try_read declines otherwise); a
     non-zero offset would misalign every bit against this bytewise copy.
@@ -164,21 +170,27 @@ def _to_vector(arr, field):
 
     if _pa.types.is_decimal(t):
         # Arrow decimal128 is little-endian; DecimalStorage is big-endian
-        # (Parquet-native).  numpy reshapes then reverses each 16-byte row
-        # in one vectorised call — all C, no per-value loop.
+        # (Parquet-native), so each 16-byte row is byte-reversed. With numpy
+        # that's one vectorised reshape + reverse (all C); without numpy a
+        # per-row slice-reverse loop yields the identical big-endian bytes.
         scale     = t.scale
         precision = t.precision
+        dtype     = _Schema(_Decimal, field.nullable)
         if n == 0:
-            dtype = _Schema(_Decimal, field.nullable)
             return Vector._from_storage(
                 DecimalStorage(bytearray(), scale, precision, None),
                 dtype, name=field.name)
-        le_buf  = bytes(memoryview(arr.buffers()[1]))[:n * 16]
-        le_rows = _np.frombuffer(le_buf, dtype=_np.uint8).reshape(n, 16)
-        be_bytes = le_rows[:, ::-1].tobytes()   # reverse each row → big-endian
-        storage  = DecimalStorage.from_raw_be(be_bytes, scale, precision,
-                                              _bit_mask(arr))
-        dtype = _Schema(_Decimal, field.nullable)
+        le_buf = bytes(memoryview(arr.buffers()[1]))[:n * 16]
+        if _np is not None:
+            le_rows  = _np.frombuffer(le_buf, dtype=_np.uint8).reshape(n, 16)
+            be_bytes = le_rows[:, ::-1].tobytes()  # reverse each row → big-endian
+        else:
+            be = bytearray(n * 16)
+            for i in range(n):
+                be[i * 16:(i + 1) * 16] = le_buf[i * 16:(i + 1) * 16][::-1]
+            be_bytes = bytes(be)
+        storage = DecimalStorage.from_raw_be(be_bytes, scale, precision,
+                                             _bit_mask(arr))
         return Vector._from_storage(storage, dtype, name=field.name)
 
     # bool / date32 / timestamp → TupleStorage of Python objects, the same
