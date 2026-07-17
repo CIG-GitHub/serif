@@ -130,7 +130,7 @@ def test_row_isna(null_t):
 
 
 def test_row_isinstance(num_t):
-    assert list(num_t[0].isinstance(int)) == [True, True, True]
+    assert list(num_t[0].is_type(int)) == [True, True, True]
 
 
 # ---------------------------------------------------------------------------

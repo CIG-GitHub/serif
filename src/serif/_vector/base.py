@@ -732,9 +732,11 @@ class Vector():
             Schema(bool, False),
         )
 
-    def isinstance(self, types):
+    def is_type(self, types):
         """
-        Check if each element is an instance of the given type(s).
+        Boolean mask: True where each element is an instance of the given
+        type(s). Uses isinstance semantics — subclasses count (e.g. a bool
+        element matches int).
         
         Parameters
         ----------
@@ -749,11 +751,11 @@ class Vector():
         Examples
         --------
         >>> v = Vector([1, "hello", 3.14, None])
-        >>> v.isinstance(int)
+        >>> v.is_type(int)
         Vector([True, False, False, False])
-        >>> v.isinstance((int, float))
+        >>> v.is_type((int, float))
         Vector([True, False, True, False])
-        >>> v.isinstance(type(None))
+        >>> v.is_type(type(None))
         Vector([False, False, False, True])
         """
         return Vector._from_iterable_known_dtype(
