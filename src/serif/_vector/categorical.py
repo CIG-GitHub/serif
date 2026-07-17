@@ -28,7 +28,7 @@ class _Category(Vector):
     """String vector with a fixed, ordered category list."""
 
     _categories: tuple  # ordered category strings
-    _code_storage: ArrayStorage  # int codes; -1 sentinel is masked by ByteMask
+    _code_storage: ArrayStorage  # int codes; -1 sentinel is masked by BitMask
 
     # Override _ndims from parent
     _ndims = 1
@@ -115,9 +115,9 @@ class _Category(Vector):
                 null_flags.append(False)
                 codes_list.append(cat_index[v])
 
-        from .nullable import ByteMask
+        from .nullable import BitMask
         raw = array('q', codes_list)
-        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        mask = BitMask.from_iterable(null_flags) if has_nulls else None
         code_storage = ArrayStorage(raw, mask)
 
         return cls(code_storage, cat_tuple, name=name, nullable=has_nulls)
@@ -175,9 +175,9 @@ class _Category(Vector):
                         codes_list.append(self._code_storage[i])
 
             from array import array
-            from .nullable import ByteMask
+            from .nullable import BitMask
             raw = array('q', codes_list)
-            mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+            mask = BitMask.from_iterable(null_flags) if has_nulls else None
             new_codes = ArrayStorage(raw, mask)
             return _Category(new_codes, self._categories, name=self._name,
                                 nullable=has_nulls)
@@ -402,7 +402,7 @@ class _Category(Vector):
         order = sorted(range(n), key=key_fn, reverse=reverse)
 
         from array import array
-        from .nullable import ByteMask
+        from .nullable import BitMask
         new_codes_list = []
         new_null_flags = []
         has_nulls = False
@@ -417,7 +417,7 @@ class _Category(Vector):
                 new_codes_list.append(self._code_storage[i])
 
         raw = array('q', new_codes_list)
-        mask = ByteMask.from_iterable(new_null_flags) if has_nulls else None
+        mask = BitMask.from_iterable(new_null_flags) if has_nulls else None
         new_code_storage = ArrayStorage(raw, mask)
         return _Category(new_code_storage, self._categories, name=self._name,
                             nullable=self._dtype.nullable)
