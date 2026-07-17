@@ -91,7 +91,7 @@ def test_setattr_column_copies_and_preserves_caller():
     t.x = v
 
     assert list(t.x) == [5, 6]
-    assert v.name == 'mycol', "caller's vector must not be renamed"
+    assert v.vector_name == 'mycol', "caller's vector must not be renamed"
 
     t.x[0] = 99
     assert list(v) == [5, 6], "caller's vector must not share storage with the table"
