@@ -964,7 +964,7 @@ class Table(Vector):
                     # Reject scalars - user must be explicit
                     raise SerifValueError(
                         f"Column '{col_name}' value must be iterable (list, Vector, etc.), not scalar. "
-                        f"Use Vector.new({values!r}, {len(self)}) for scalar broadcast."
+                        f"Use Vector.filled({values!r}, {len(self)}) for scalar broadcast."
                     )
                 
                 # Validate length
@@ -1002,7 +1002,7 @@ class Table(Vector):
             # mask the intended error below.
             return Vector((other,),
                 dtype=self._dtype)
-        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.new(element, length).")
+        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.filled(value, length).")
 
 
     def __lshift__(self, other):
