@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.7 – API Cleanup & Bit-Packed Masks
+
+### Changed
+Breaking, pre-1.0 API cleanup (#39, #40):
+- Name property split: `Vector.name` → `Vector.vector_name`, `Table.table_name`.
+  This frees `name` as a column — `t.name` now returns a column called `name`
+  instead of the property shadowing it.
+- `Table.join` → `Table.left_join`; the joins are now `inner_join` /
+  `left_join` / `full_join`.
+- `rename_column` / `rename_columns` → `Table.rename({old: new})`: returns a new
+  table; string keys rename by name (an ambiguous duplicate name raises),
+  integer keys rename by position.
+- `Vector.new` → `Vector.filled(value, length)`.
+- `Vector.isinstance` → `Vector.is_type` (element-wise; isinstance/subclass semantics).
+- `Vector.alias` now (re)names any vector, not just unnamed ones — the chainable
+  counterpart to the `.vector_name` setter.
+
+Other:
+- `peek()` replaced by the `t._` accessor: a schema listing, one row per column
+  with its dot-accessor. (#36)
+- repr lists column dtypes in the footer. (#35)
+
+### Added
+- `Table.drop(*names)` — drop column(s) by name (varargs or a list); returns a
+  new table. (#40)
+- Reserved-name collision warning: naming a column after a method/attribute
+  (`sum`, `count`, …) warns at construction, since dot-access resolves to the
+  method — reach the column with `t['sum']` or the `.sum_` accessor. (#40)
+- Bit-packed null masks (`BitMask`): one bit per element in Apache Arrow
+  validity layout (1=valid, LSB-first), replacing the byte-per-element mask —
+  ~8× smaller and the groundwork for zero-copy Arrow interop. (#38)
+- `DecimalStorage`: Arrow-format 16-byte decimal128 storage backend — the
+  foundation for decimal columns, with full support arriving alongside pyarrow
+  in 0.2.0. (#41)
+
+### Removed
+- `Vector.product()`. (#40)
+- Deprecated `Vector.rename()` — set `.vector_name`, or use `.alias()`. (#40)
+
+### Docs
+- README refresh. (#37)
+
+
 ## 0.1.6 – Parquet, Null Doctrine & the Hardening Pass
 
 ### Added
