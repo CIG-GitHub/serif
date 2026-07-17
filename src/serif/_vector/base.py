@@ -722,15 +722,16 @@ class Vector():
         storage = self._storage
         from .storage import StringStorage
         if isinstance(storage, (ArrayStorage, StringStorage)):
-            # Fast path: the null mask is already a packed byte array —
-            # avoids unboxing numerics / decoding UTF-8 just to test None.
-            # If there is no mask, no elements are null. Built via
-            # _from_storage (not _clone) so the result is a plain unnamed
-            # bool Vector, per the naming invariant for derived vectors.
+            # Fast path: iterate the null mask directly — it already knows
+            # which slots are null (yields True per null), so we avoid
+            # unboxing numerics / decoding UTF-8 just to test None. If there
+            # is no mask, no elements are null. Built via _from_storage (not
+            # _clone) so the result is a plain unnamed bool Vector, per the
+            # naming invariant for derived vectors.
             if storage._mask is None:
                 mask_tuple = (False,) * len(storage)
             else:
-                mask_tuple = tuple(b == 0 for b in storage._mask._data)
+                mask_tuple = tuple(storage._mask)
             return Vector._from_storage(TupleStorage(mask_tuple), Schema(bool, False))
         return Vector._from_iterable_known_dtype(
             (elem is None for elem in storage),

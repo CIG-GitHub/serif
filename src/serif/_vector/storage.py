@@ -27,7 +27,7 @@ from array import array
 from typing import Any
 from typing import Iterator
 from collections.abc import Iterable
-from .nullable import ByteMask
+from .nullable import BitMask
 
 
 class ArrayStorage:
@@ -35,13 +35,13 @@ class ArrayStorage:
     Contiguous numeric storage using array.array.
 
     None cannot live in array.array, so nulls are tracked with a separate
-    ByteMask (1=valid, 0=null). mask=None means no nulls present.
+    BitMask (1=valid, 0=null). mask=None means no nulls present.
     Let array.array raise on bad typecodes or overflow — not duplicated here.
     """
 
     __slots__ = ('_data', '_mask')
 
-    def __init__(self, data: array, mask: ByteMask | None = None):
+    def __init__(self, data: array, mask: BitMask | None = None):
         self._data = data
         self._mask = mask
 
@@ -60,7 +60,7 @@ class ArrayStorage:
                 data_list.append(val)
 
         data = array(typecode, data_list)  # raises TypeError/OverflowError on bad values
-        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        mask = BitMask.from_iterable(null_flags) if has_nulls else None
         return cls(data, mask)
 
     def __len__(self) -> int:
@@ -90,7 +90,7 @@ class ArrayStorage:
         new_data = array(self._data.typecode, (self._data[i] for i in indices))
         if self._mask is not None:
             null_flags = [self._mask.is_null(i) for i in indices]
-            new_mask = ByteMask.from_iterable(null_flags) if any(null_flags) else None
+            new_mask = BitMask.from_iterable(null_flags) if any(null_flags) else None
         else:
             new_mask = None
         return ArrayStorage(new_data, new_mask)
@@ -154,7 +154,7 @@ class StringStorage:
     ------
     _buf:     bytes          — all string data concatenated (UTF-8)
     _offsets: array('I')    — length n+1; string i lives at buf[off[i]:off[i+1]]
-    _mask:    ByteMask|None — null flags (1=valid, 0=null per new convention)
+    _mask:    BitMask|None — null flags (1=valid, 0=null per new convention)
 
     Accessing string i:  buf[offsets[i]:offsets[i+1]].decode('utf-8')
 
@@ -174,7 +174,7 @@ class StringStorage:
 
     __slots__ = ('_buf', '_offsets', '_mask')
 
-    def __init__(self, buf: bytes, offsets: array, mask: ByteMask | None = None):
+    def __init__(self, buf: bytes, offsets: array, mask: BitMask | None = None):
         self._buf     = buf
         self._offsets = offsets  # array('I'), length = n+1
         self._mask    = mask
@@ -207,12 +207,12 @@ class StringStorage:
 
         buf  = b''.join(buf_parts)
         arr  = array('I', offsets)
-        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        mask = BitMask.from_iterable(null_flags) if has_nulls else None
         return cls(buf, arr, mask)
 
     @classmethod
     def from_raw(cls, buf: bytes, offsets: array,
-                 mask: ByteMask | None = None) -> StringStorage:
+                 mask: BitMask | None = None) -> StringStorage:
         """
         Wrap pre-built components with zero copying.
         Used by the Parquet reader which builds _buf directly from page bytes.
@@ -286,7 +286,7 @@ class StringStorage:
 
         new_buf  = b''.join(buf_parts)
         new_arr  = array('I', new_offs)
-        new_mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        new_mask = BitMask.from_iterable(null_flags) if has_nulls else None
         return StringStorage(new_buf, new_arr, new_mask)
 
     def to_tuple(self) -> tuple:

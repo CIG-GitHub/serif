@@ -788,7 +788,7 @@ def write_parquet(table, path: str) -> None:
 
         # Separate nullability.
         # to_tuple() already returns None at null positions for both
-        # ArrayStorage (via ByteMask) and TupleStorage (inline None).
+        # ArrayStorage (via BitMask) and TupleStorage (inline None).
         if nullable:
             null_flags = [v is None for v in data_tuple]
             non_null   = [v for v in data_tuple if v is not None]
@@ -1330,7 +1330,7 @@ def _decode_str_raw(page_body: bytes, body_pos: int,
 
     # Nullable: expand partial_offs to cover every position (including nulls).
     # Null positions get a zero-length entry (duplicate offset).
-    from .._vector.nullable import ByteMask
+    from .._vector.nullable import BitMask
     full_offs = [0]
     null_list = []
     has_nulls = False
@@ -1347,7 +1347,7 @@ def _decode_str_raw(page_body: bytes, body_pos: int,
             full_offs.append(full_offs[-1] + seg_len)
             raw_idx += 1
 
-    mask = ByteMask.from_iterable(null_list) if has_nulls else None
+    mask = BitMask.from_iterable(null_list) if has_nulls else None
     return StringStorage.from_raw(raw_buf, _pyarray.array('I', full_offs), mask)
 
 
@@ -1367,11 +1367,11 @@ def _concat_string_storages(a: StringStorage, b: StringStorage) -> StringStorage
     if a._mask is None and b._mask is None:
         new_mask = None
     else:
-        from .._vector.nullable import ByteMask
+        from .._vector.nullable import BitMask
         a_flags = [a._mask.is_null(i) if a._mask else False for i in range(a_len)]
         b_flags = [b._mask.is_null(i) if b._mask else False for i in range(b_len)]
         all_flags = a_flags + b_flags
-        new_mask = ByteMask.from_iterable(all_flags) if any(all_flags) else None
+        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
 
     return StringStorage.from_raw(new_buf, new_offs, new_mask)
 
