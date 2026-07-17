@@ -307,7 +307,7 @@ class DecimalStorage:
                                Null positions hold 16 zero bytes (sentinel).
     _scale:     int          — fixed exponent: actual = unscaled / 10^scale
     _precision: int          — max significant digits (Parquet schema metadata)
-    _mask:      ByteMask|None— null flags (1=valid, 0=null); None = no nulls
+    _mask:      BitMask|None— null flags (1=valid, 0=null); None = no nulls
 
     Matches the physical layout of both Parquet FIXED_LEN_BYTE_ARRAY + DECIMAL
     and (after a byte-swap) Arrow decimal128, so I/O fast paths hand the buffer
@@ -318,7 +318,7 @@ class DecimalStorage:
     __slots__ = ('_buf', '_scale', '_precision', '_mask')
 
     def __init__(self, buf: bytearray, scale: int, precision: int,
-                 mask: ByteMask | None = None):
+                 mask: BitMask | None = None):
         self._buf       = buf
         self._scale     = scale
         self._precision = precision
@@ -355,12 +355,12 @@ class DecimalStorage:
                 buf.extend(unscaled.to_bytes(16, 'big', signed=True))
                 null_flags.append(False)
 
-        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        mask = BitMask.from_iterable(null_flags) if has_nulls else None
         return cls(buf, scale, precision, mask)
 
     @classmethod
     def from_raw_be(cls, buf, scale: int, precision: int,
-                    mask: ByteMask | None = None) -> 'DecimalStorage':
+                    mask: BitMask | None = None) -> 'DecimalStorage':
         """
         Wrap a pre-built big-endian buffer (Parquet reader). Near-zero copy.
         ``buf`` may be bytes or bytearray.
@@ -423,7 +423,7 @@ class DecimalStorage:
             null_flags.append(is_null)
             if is_null:
                 has_nulls = True
-        new_mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        new_mask = BitMask.from_iterable(null_flags) if has_nulls else None
         return DecimalStorage(new_buf, self._scale, self._precision, new_mask)
 
     def to_tuple(self) -> tuple:
