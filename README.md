@@ -31,7 +31,7 @@ t
 #          20          5     100     10.0
 #          30          6     180     18.0
 #
-# 3×4 table <3×int, float>
+# 3×4 table <int:3, float>
 ```
 
 ## Installation

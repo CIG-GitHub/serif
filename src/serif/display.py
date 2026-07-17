@@ -168,39 +168,45 @@ def _dtype_str(col) -> str:
 
 
 def _group_dtypes(dtypes: List[str]) -> str:
-    """Summarize per-column dtypes as counted groups for the table footer.
+    """Summarize per-column dtypes for the table footer.
 
-    Groups appear in column order (first appearance), so the footer reads
-    like the table does. A count prefix (e.g. '6×str') is used when a dtype
-    repeats, unless the table is homogeneous, where the bare dtype suffices.
-    With five or more groups, only the first three are shown followed by
-    '+N' — the number of columns folded away.
+    Distinct dtypes are listed most-common-first as 'type:count' pairs, so the
+    footer reads as an at-a-glance dominance summary. A count of one is dropped
+    (the ':1' is noise), and a homogeneous table drops the count entirely — the
+    total already lives in the R×C prefix. Ties keep column (first-appearance)
+    order. With six or more distinct dtypes, the first four are shown and the
+    rest fold into ' ...+N', where the '...' signals there is more not shown
+    and N (always ≥ 2) counts the hidden dtype groups.
 
         <int>
         <str, int, date>
-        <6×str, 2×int, date>
-        <18×str, 12×int, 6×float, +4>
+        <str:6, int:2, date>
+        <str:18, int:12, float:6, date:4>
+        <str:50, int:20, float:10, date:5 ...+2>
     """
     counts = {}
     for dt in dtypes:
         counts[dt] = counts.get(dt, 0) + 1
 
-    # dict preserves insertion order == first appearance == column order
-    groups = list(counts)
+    # Homogeneous: the count already lives in the R×C prefix.
+    if len(counts) == 1:
+        return next(iter(counts))
 
-    if len(groups) == 1:
-        return groups[0]
+    # Most common first; sorted() is stable, so ties keep first-appearance
+    # (column) order.
+    groups = sorted(counts, key=lambda dt: -counts[dt])
 
-    if len(groups) > 4:
-        hidden = sum(counts[dt] for dt in groups[3:])
-        groups = groups[:3]
+    if len(groups) >= 6:
+        hidden = len(groups) - 4
+        groups = groups[:4]
     else:
         hidden = 0
 
-    parts = [f"{counts[dt]}×{dt}" if counts[dt] > 1 else dt for dt in groups]
+    parts = [f"{dt}:{counts[dt]}" if counts[dt] > 1 else dt for dt in groups]
+    summary = ", ".join(parts)
     if hidden:
-        parts.append(f"+{hidden}")
-    return ", ".join(parts)
+        summary += f" ...+{hidden}"
+    return summary
 
 
 class _SchemaView:
@@ -483,7 +489,7 @@ def _repr_table(tbl) -> str:
 
     lines.append("")
 
-    # Footer: grouped dtype summary, e.g. <6×str, 2×int, date>
+    # Footer: grouped dtype summary, e.g. <str:6, int:2, date>
     lines.append(_footer(tbl, dtype_text=_group_dtypes(dtypes_all)))
 
     return "\n".join(lines)

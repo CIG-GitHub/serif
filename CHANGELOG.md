@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.8 – Readable Footer dtype Summary
+
+### Changed
+- Table repr footer now summarizes dtypes as `type:count` pairs, most common
+  first, so it reads as an at-a-glance dominance summary. The old `N×dtype`
+  form (`<18×str, 12×int, 6×float, +4>`) crowded counts against type names and
+  reused `×` for both dimensions and multiplication; the new form
+  (`<str:18, int:12, float:6, date:4>`) separates them and frees `×` to mean
+  dimensions only.
+  - A count of one is dropped (`date`, not `date:1`); a homogeneous table drops
+    the count entirely (`<int>`) since the total is already in the `R×C` prefix.
+  - Ties keep column (first-appearance) order.
+  - With six or more distinct dtypes, the first four are shown and the rest fold
+    into ` ...+N` — e.g. `<str:50, int:20, float:10, date:5 ...+2>` — where `...`
+    signals more is hidden and N (always ≥ 2) counts the folded dtype groups.
+
 ## 0.1.7 – API Cleanup & Bit-Packed Masks
 
 ### Changed

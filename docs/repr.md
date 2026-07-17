@@ -54,16 +54,19 @@ Example:
     # 1000×2 table <int, date>
 
 ### Footer dtype summary
-Per-column dtypes are aggregated into counted groups in column order
-(first appearance), so the footer reads like the table does. A count
-prefix is used when a dtype repeats in a heterogeneous table; a
-homogeneous table shows the bare dtype. With five or more dtype groups,
-the first three are shown and the remaining columns fold into `+N`:
+Per-column dtypes are summarized as `type:count` pairs, most common first,
+so the footer reads as an at-a-glance dominance summary. A count of one is
+dropped (the `:1` is noise), and a homogeneous table drops the count
+entirely — the total already lives in the `R×C` prefix. Ties keep column
+(first-appearance) order. With six or more distinct dtypes, the first four
+are shown and the rest fold into ` ...+N`, where the `...` signals there is
+more not shown and N (always ≥ 2) counts the hidden dtype groups:
 
     # 1000000×2 table <int>
     # 1000000×3 table <str, int, date>
-    # 1000000×9 table <6×str, 2×int, date>
-    # 1000000×40 table <18×str, 12×int, 6×float, +4>
+    # 1000000×9 table <str:6, int:2, date>
+    # 1000000×40 table <str:18, int:12, float:6, date:4>
+    # 1000000×95 table <str:50, int:20, float:10, date:5 ...+2>
 
 ## Schema listing: `t._`
 
