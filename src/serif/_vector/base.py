@@ -514,15 +514,19 @@ class Vector():
         self._fp = None
 
     @classmethod
-    def new(cls, default_element, length, typesafe=False):
-        """ create a new, initialized vector of length * default_element"""
+    def filled(cls, value, length, typesafe=False):
+        """Create a vector of `length` copies of `value` (a fill-constructor).
+
+        Example: ``Vector.filled(0.5, length=15)`` → fifteen 0.5s.
+        A length of 0 yields an empty vector that still carries `value`'s dtype.
+        """
         if length:
             assert isinstance(length, int)
-            dtype = infer_dtype([default_element])
+            dtype = infer_dtype([value])
             if typesafe:
                 dtype = Schema(dtype.kind, False)
-            return cls([default_element for _ in range(length)], dtype=dtype)
-        dtype = infer_dtype([default_element]) if default_element is not None else Schema(object, False)
+            return cls([value for _ in range(length)], dtype=dtype)
+        dtype = infer_dtype([value]) if value is not None else Schema(object, False)
         if typesafe:
             dtype = Schema(dtype.kind, False)
         return cls(dtype=dtype)
@@ -728,9 +732,11 @@ class Vector():
             Schema(bool, False),
         )
 
-    def isinstance(self, types):
+    def is_type(self, types):
         """
-        Check if each element is an instance of the given type(s).
+        Boolean mask: True where each element is an instance of the given
+        type(s). Uses isinstance semantics — subclasses count (e.g. a bool
+        element matches int).
         
         Parameters
         ----------
@@ -745,11 +751,11 @@ class Vector():
         Examples
         --------
         >>> v = Vector([1, "hello", 3.14, None])
-        >>> v.isinstance(int)
+        >>> v.is_type(int)
         Vector([True, False, False, False])
-        >>> v.isinstance((int, float))
+        >>> v.is_type((int, float))
         Vector([True, False, True, False])
-        >>> v.isinstance(type(None))
+        >>> v.is_type(type(None))
         Vector([False, False, False, True])
         """
         return Vector._from_iterable_known_dtype(
@@ -1729,7 +1735,7 @@ class Vector():
             # mask the intended error below.
             return Vector((other,),
                 dtype=self._dtype)
-        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.new(element, length).")
+        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.filled(value, length).")
 
     def __rlshift__(self, other):
         """ The << operator behavior has been overridden to attempt to concatenate (append)

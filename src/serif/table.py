@@ -603,49 +603,66 @@ class Table(Vector):
             f"Column '{attr}' does not exist. Use >>= to add new columns."
         )
 
-    def rename_column(self, old_name, new_name):
-        """Rename a column (modifies in place, returns self for chaining)"""
-        for col in self._storage:
-            if col._name == old_name:
-                col._name = new_name
-                self._column_map = self._build_column_map()
-                return self
-        raise _missing_col_error(old_name)
-    
-    def rename_columns(self, old_names, new_names):
+    def rename(self, mapping):
+        """Return a NEW Table with columns renamed per {old: new}.
+
+        Non-mutating (matches drop / pandas / polars). Keys may be:
+          - a column NAME (str): must match exactly ONE column. A name shared
+            by several columns is ambiguous and raises — rename it by index.
+          - a column INDEX (int): renames the column at that position; the
+            unambiguous way to target one of several same-named columns (and
+            the only way to reach the first of a duplicated name).
+
+        Renames resolve against the original layout (simultaneous), so
+        {'a': 'b', 'b': 'c'} does not cascade. Raises SerifKeyError for a
+        missing name, an ambiguous name, or an out-of-range index.
         """
-        Atomically rename multiple columns using parallel old_names and new_names lists.
+        cols  = [col.copy() for col in self._storage]
+        names = [c._name for c in cols]
+        for key, new_name in mapping.items():
+            # bool is an int subclass — reject so True/False can't act as index 1/0.
+            if isinstance(key, bool):
+                raise SerifTypeError(
+                    f"rename key must be a column name (str) or index (int), not bool: {key!r}"
+                )
+            if isinstance(key, int):
+                if not (0 <= key < len(cols)):
+                    raise SerifKeyError(
+                        f"Column index {key} out of range (table has {len(cols)} columns)"
+                    )
+                cols[key]._name = new_name
+                continue
+            matches = [i for i, nm in enumerate(names) if nm == key]
+            if not matches:
+                raise _missing_col_error(key)
+            if len(matches) > 1:
+                raise SerifKeyError(
+                    f"Column name '{key}' is ambiguous ({len(matches)} columns share it); "
+                    f"rename by position instead, e.g. rename({{{matches[0]}: {new_name!r}}})."
+                )
+            cols[matches[0]]._name = new_name
+        return Table._from_columns_nocopy(cols)
 
-        Rules:
-        - old_names and new_names must be same length
-        - each list-element renames EXACTLY ONE matching occurrence
-        (left-to-right positional matching)
-        - if renaming fails (old name not found), no columns are renamed and KeyError is raised
+    def drop(self, *names):
+        """Return a NEW Table without the named column(s).
+
+        Non-mutating — the original table is unchanged (like rename). Names
+        may be passed as varargs or a single
+        list/tuple: `t.drop('a')`, `t.drop('a', 'b')`, `t.drop(['a', 'b'])`.
+        Raises SerifKeyError if any name is not a column.
         """
+        # Accept a single list/tuple as well as varargs.
+        if len(names) == 1 and isinstance(names[0], (list, tuple)):
+            names = tuple(names[0])
 
-        if len(old_names) != len(new_names):
-            raise SerifValueError("old_names and new_names must have the same length")
+        existing = [col._name for col in self._storage]
+        for n in names:
+            if n not in existing:
+                raise _missing_col_error(n)
 
-        # Simulate renames using a temporary list (avoid mid-state partial renames)
-        simulated = [col._name for col in self._storage]
-
-        for old, new in zip(old_names, new_names):
-            try:
-                idx = simulated.index(old)
-            except ValueError:
-                raise _missing_col_error(old)
-            simulated[idx] = new  # simulate rename
-
-        # Apply renames for real
-        for old, new in zip(old_names, new_names):
-            # rename the FIRST matching column in the real table
-            for col in self._storage:
-                if col._name == old:
-                    col._name = new
-                    break
-
-        self._column_map = self._build_column_map()
-        return self
+        drop_set = set(names)
+        kept = [col for col in self._storage if col._name not in drop_set]
+        return Table(kept)  # constructor copies columns → no aliasing
 
     @property
     def T(self):
@@ -964,7 +981,7 @@ class Table(Vector):
                     # Reject scalars - user must be explicit
                     raise SerifValueError(
                         f"Column '{col_name}' value must be iterable (list, Vector, etc.), not scalar. "
-                        f"Use Vector.new({values!r}, {len(self)}) for scalar broadcast."
+                        f"Use Vector.filled({values!r}, {len(self)}) for scalar broadcast."
                     )
                 
                 # Validate length
@@ -1002,7 +1019,7 @@ class Table(Vector):
             # mask the intended error below.
             return Vector((other,),
                 dtype=self._dtype)
-        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.new(element, length).")
+        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.filled(value, length).")
 
 
     def __lshift__(self, other):

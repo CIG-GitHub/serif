@@ -1,7 +1,7 @@
 """
-Coverage for public API that previously had zero tests: Vector.new,
+Coverage for public API that previously had zero tests: Vector.filled,
 bit_lshift/bit_rshift, eomonth, the before/after string helpers, to_dict,
-plain-Vector matmul, full_join depth, and the deprecated rename().
+plain-Vector matmul, and full_join depth.
 """
 
 from datetime import date
@@ -12,23 +12,29 @@ from serif import Vector, Table, Schema, SerifValueError
 
 
 # ---------------------------------------------------------------------------
-# Vector.new
+# Vector.filled
 # ---------------------------------------------------------------------------
 
-def test_vector_new_repeats_default_element():
-    v = Vector.new(0, 3)
+def test_vector_filled_repeats_value():
+    v = Vector.filled(0, 3)
     assert list(v) == [0, 0, 0]
     assert v.schema() == Schema(int, False)
 
 
-def test_vector_new_str():
-    v = Vector.new('x', 2)
+def test_vector_filled_str():
+    v = Vector.filled('x', 2)
     assert list(v) == ['x', 'x']
     assert v.schema().kind is str
 
 
-def test_vector_new_zero_length_keeps_dtype():
-    v = Vector.new(0, 0)
+def test_vector_filled_length_keyword():
+    v = Vector.filled(0.5, length=15)
+    assert list(v) == [0.5] * 15
+    assert v.schema().kind is float
+
+
+def test_vector_filled_zero_length_keeps_dtype():
+    v = Vector.filled(0, 0)
     assert len(v) == 0
     assert v.schema() == Schema(int, False)
 

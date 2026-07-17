@@ -84,18 +84,18 @@ def test_multiple_columns_rename_independently():
 	assert list(t.beta) == [4, 5, 6]
 
 
-def test_rename_then_rename_column_method():
-	"""Test interaction between vector.vector_name property and table.rename_column()"""
+def test_vector_name_then_table_rename_method():
+	"""Test interaction between vector.vector_name property and table.rename()"""
 	t = Table({
 		'col1': [1, 2, 3],
 		'col2': [4, 5, 6]
 	})
-	
-	# Use vector's name property
+
+	# Use vector's name property (mutates the live column in place)
 	t.col1.vector_name = 'temp'
-	
-	# Now use table's rename_column on the new name
-	t.rename_column('temp', 'final')
+
+	# Now use the table's rename() on the new name (returns a new table)
+	t = t.rename({'temp': 'final'})
 	
 	# All old names should fail
 	with pytest.raises(AttributeError):

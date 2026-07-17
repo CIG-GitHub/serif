@@ -1,13 +1,14 @@
 import pytest
 from serif import Vector
 from serif import Table
+from serif.errors import SerifKeyError
 
 
 def test_Vector_rename():
 	"""Test that Vector.vector_name property changes the name"""
 	v = Vector([1, 2, 3], name="old_name")
 	assert v.vector_name == "old_name"
-	
+
 	v.vector_name = "new_name"
 	assert v.vector_name == "new_name"
 	assert v._wild == True  # Name setter marks as wild
@@ -18,7 +19,7 @@ def test_Vector_rename_chaining():
 	v = Vector([1, 2, 3], name="original")
 	v.vector_name = "renamed"
 	v2 = v.copy()
-	
+
 	assert v.vector_name == "renamed"
 	assert v2.vector_name == "renamed"
 
@@ -30,233 +31,156 @@ def test_Vector_rename_to_none():
 	assert v.vector_name is None
 
 
-def test_Table_rename_column():
-	"""Test renaming a single column in Table"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6],
-		'c': [7, 8, 9]
-	})
-	
-	assert t['a']._name == 'a'
-	
-	result = t.rename_column('a', 'alpha')
-	
-	assert t['alpha']._name == 'alpha'
-	assert result is t  # Returns self for chaining
-	
-	# Old name should not work
+# ---------------------------------------------------------------------------
+# Table.rename({old: new}) — returns a NEW table (non-mutating)
+# ---------------------------------------------------------------------------
+
+def test_Table_rename_single():
+	"""rename({old: new}) returns a NEW table with the column renamed."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6], 'c': [7, 8, 9]})
+
+	t2 = t.rename({'a': 'alpha'})
+
+	assert t2.column_names() == ['alpha', 'b', 'c']
+	assert t2 is not t                          # non-mutating: a new table
+	assert t.column_names() == ['a', 'b', 'c']  # original unchanged
 	with pytest.raises(KeyError):
-		t['a']
+		t2['a']
 
 
-def test_Table_rename_column_not_found():
-	"""Test that renaming a non-existent column raises KeyError"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6]
-	})
-	
-	with pytest.raises(KeyError, match="Column 'z' not found"):
-		t.rename_column('z', 'zeta')
+def test_Table_rename_not_found():
+	"""A missing old name raises SerifKeyError."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+	with pytest.raises(SerifKeyError, match="Column 'z' not found"):
+		t.rename({'z': 'zeta'})
 
 
-def test_Table_rename_columns_dict():
-	"""Test renaming multiple columns at once"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6],
-		'c': [7, 8, 9]
-	})
-	
-	result = t.rename_columns(['a', 'b', 'c'], ['alpha', 'beta', 'gamma'])
-	
-	assert t['alpha']._name == 'alpha'
-	assert t['beta']._name == 'beta'
-	assert t['gamma']._name == 'gamma'
-	assert result is t  # Returns self for chaining
+def test_Table_rename_multiple():
+	"""A dict renames several columns at once."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6], 'c': [7, 8, 9]})
+	t2 = t.rename({'a': 'alpha', 'b': 'beta', 'c': 'gamma'})
+	assert t2.column_names() == ['alpha', 'beta', 'gamma']
 
 
-def test_Table_rename_columns_partial():
-	"""Test renaming only some columns"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6],
-		'c': [7, 8, 9]
-	})
-	
-	t.rename_columns(['a', 'c'], ['alpha', 'gamma'])
-	
-	assert t['alpha']._name == 'alpha'
-	assert t['b']._name == 'b'  # Unchanged
-	assert t['gamma']._name == 'gamma'
+def test_Table_rename_partial():
+	"""Unlisted columns are left alone."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6], 'c': [7, 8, 9]})
+	t2 = t.rename({'a': 'alpha', 'c': 'gamma'})
+	assert t2.column_names() == ['alpha', 'b', 'gamma']
 
 
-def test_Table_rename_columns_not_found():
-	"""Test that renaming a non-existent column raises KeyError"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6]
-	})
-	
-	with pytest.raises(KeyError, match="Column 'z' not found"):
-		t.rename_columns(['a', 'z'], ['alpha', 'zeta'])
+def test_Table_rename_does_not_cascade():
+	"""Renames resolve against the original layout — simultaneous, not chained."""
+	t = Table({'a': [1, 2], 'b': [3, 4]})
+	t2 = t.rename({'a': 'b', 'b': 'c'})
+	assert t2.column_names() == ['b', 'c']
+	assert list(t2['c']) == [3, 4]  # original 'b' → 'c'; 'a' did not cascade through
 
 
-def test_Table_rename_columns_atomic():
-	"""Test that rename_columns is atomic - either all succeed or none"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6],
-		'c': [7, 8, 9]
-	})
-	
-	# Try to rename with one invalid column
-	with pytest.raises(KeyError, match="Column 'invalid' not found"):
-		t.rename_columns(['a', 'invalid', 'b'], ['alpha', 'oops', 'beta'])
-	
-	# No changes should have been made - 'a' should NOT be renamed to 'alpha'
-	assert t._storage[0]._name == 'a'
-	assert t._storage[1]._name == 'b'
-	assert t._storage[2]._name == 'c'
-	
-	# Should still be accessible by original names
-	assert list(t['a']) == [1, 2, 3]
-	assert list(t['b']) == [4, 5, 6]
+def test_Table_rename_bad_key_changes_nothing():
+	"""A bad key raises before anything lands; original is untouched (non-mutating)."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6], 'c': [7, 8, 9]})
+	with pytest.raises(SerifKeyError, match="Column 'invalid' not found"):
+		t.rename({'a': 'alpha', 'invalid': 'oops', 'b': 'beta'})
+	assert t.column_names() == ['a', 'b', 'c']
 
 
-def test_Table_rename_columns_chaining():
-	"""Test that rename_columns returns self for chaining"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6]
-	})
-	
-	# Chain multiple operations
-	t.rename_columns(['a'], ['alpha']).rename_column('b', 'beta')
-	
-	assert t['alpha']._name == 'alpha'
-	assert t['beta']._name == 'beta'
+def test_Table_rename_chaining():
+	"""Functional chaining: each rename returns a new table."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+	t2 = t.rename({'a': 'alpha'}).rename({'b': 'beta'})
+	assert t2.column_names() == ['alpha', 'beta']
 
 
-def test_Table_duplicate_column_names():
-	"""Test the horrible real-world condition: duplicate column names"""
-	# Create table with duplicate column names - warning expected
-	col1 = Vector([1, 2, 3], name='a')
-	col2 = Vector([4, 5, 6], name='a')
-	col3 = Vector([7, 8, 9], name='b')
+def test_Table_rename_ambiguous_name_raises():
+	"""A duplicated name can't be renamed by name — it's ambiguous."""
 	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
-		t = Table([col1, col2, col3])
-	
-	# Should have two columns named 'a' and one named 'b'
-	assert t._storage[0]._name == 'a'
-	assert t._storage[1]._name == 'a'
-	assert t._storage[2]._name == 'b'
-	
-	# Accessing t['a'] should return the first match
-	assert list(t['a']) == [1, 2, 3]
-	
-	# Renaming one 'a' should only rename the first match
-	t.rename_column('a', 'alpha')
-	assert t._storage[0]._name == 'alpha'
-	assert t._storage[1]._name == 'a'  # Second 'a' unchanged
-	assert t._storage[2]._name == 'b'
-	
-	# Now we have alpha, a, b
-	assert list(t['alpha']) == [1, 2, 3]
-	assert list(t['a']) == [4, 5, 6]  # Gets the remaining 'a'
+		t = Table([Vector([1, 2, 3], name='a'),
+		           Vector([4, 5, 6], name='a'),
+		           Vector([7, 8, 9], name='b')])
+	with pytest.raises(SerifKeyError, match="ambiguous"):
+		t.rename({'a': 'alpha'})
 
 
-def test_Table_rename_all_duplicates():
-	"""Test renaming ALL columns with duplicate names"""
-	# Create table with duplicate column names - warning expected
-	col1 = Vector([1, 2, 3], name='a')
-	col2 = Vector([4, 5, 6], name='a')
-	col3 = Vector([7, 8, 9], name='a')
+def test_Table_rename_duplicates_by_index():
+	"""Integer keys are the unambiguous escape for same-named columns."""
 	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
-		t = Table([col1, col2, col3])
-	
-	# All three columns named 'a'
-	assert all(c._name == 'a' for c in t._storage)
-	
-	# rename_columns with parallel lists renames each match in order
-	t.rename_columns(['a', 'a', 'a'], ['x', 'y', 'z'])
-	
-	# Each 'a' renamed in order
-	assert t._storage[0]._name == 'x'
-	assert t._storage[1]._name == 'y'
-	assert t._storage[2]._name == 'z'
+		t = Table([Vector([1, 2, 3], name='a'),
+		           Vector([4, 5, 6], name='a'),
+		           Vector([7, 8, 9], name='a')])
+	t2 = t.rename({0: 'x', 1: 'y', 2: 'z'})
+	assert t2.column_names() == ['x', 'y', 'z']
+	assert list(t2['x']) == [1, 2, 3]
+	assert list(t2['z']) == [7, 8, 9]
 
 
-def test_Table_rename_duplicate_columns_separately():
-	"""Test renaming duplicate columns to different names using parallel sequences"""
-	# Create table with duplicate column names - warning expected
-	col1 = Vector([1, 2, 3], name='data')
-	col2 = Vector([4, 5, 6], name='data')
-	col3 = Vector([7, 8, 9], name='label')
-	with pytest.warns(UserWarning, match="Duplicate column name 'data'"):
-		t = Table([col1, col2, col3])
-	
-	# We want to rename both 'data' columns to different names
-	# This is where parallel lists shine
-	t.rename_columns(['data', 'data'], ['measurement', 'control'])
-	
-	assert t._storage[0]._name == 'measurement'
-	assert t._storage[1]._name == 'control'
-	assert t._storage[2]._name == 'label'
-	
-	# Verify data preserved
-	assert list(t['measurement']) == [1, 2, 3]
-	assert list(t['control']) == [4, 5, 6]
-	assert list(t['label']) == [7, 8, 9]
+def test_Table_rename_index_out_of_range():
+	t = Table({'a': [1, 2]})
+	with pytest.raises(SerifKeyError, match="out of range"):
+		t.rename({5: 'x'})
 
 
-def test_Table_getattr_after_rename():
-	"""Test that __getattr__ works after renaming"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6]
-	})
-	
-	# Should work before rename
-	assert list(t.a) == [1, 2, 3]
-	
-	t.rename_column('a', 'alpha')
-	
-	# Old attribute should raise AttributeError (column was renamed away)
+def test_Table_rename_getattr_after():
+	"""Dot-access follows the renamed (new) table; the original is unchanged."""
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+	t2 = t.rename({'a': 'alpha'})
+
+	assert list(t.a) == [1, 2, 3]       # original still has 'a'
+	assert list(t2.alpha) == [1, 2, 3]  # new table has 'alpha'
 	with pytest.raises(AttributeError):
-		_ = t.a
-	
-	# New attribute should work
-	assert list(t.alpha) == [1, 2, 3]
+		_ = t2.a                        # ...and not 'a'
 
 
 def test_rename_preserves_data():
 	"""Test that renaming doesn't affect the data"""
 	v = Vector([1, 2, 3], name="old")
 	original_data = list(v)
-	
+
 	v.vector_name = "new"
-	
+
 	assert list(v) == original_data
 	assert v.vector_name == "new"
 
 
 def test_Table_rename_preserves_data():
 	"""Test that renaming columns doesn't affect the data"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6]
-	})
-	
-	original_a = list(t['a'])
-	original_b = list(t['b'])
-	
-	t.rename_columns(['a', 'b'], ['x', 'y'])
-	
-	assert list(t['x']) == original_a
-	assert list(t['y']) == original_b
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+	t2 = t.rename({'a': 'x', 'b': 'y'})
+	assert list(t2['x']) == [1, 2, 3]
+	assert list(t2['y']) == [4, 5, 6]
 
 
+# ---------------------------------------------------------------------------
+# Table.drop — returns a NEW table without the named column(s)
+# ---------------------------------------------------------------------------
+
+def test_drop_single_column():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	t2 = t.drop('b')
+	assert t2.column_names() == ['a', 'c']
+	assert list(t2['a']) == [1, 2]
+	# non-mutating: original is unchanged
+	assert t.column_names() == ['a', 'b', 'c']
 
 
+def test_drop_multiple_varargs():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	assert t.drop('a', 'c').column_names() == ['b']
+
+
+def test_drop_list_form():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	assert t.drop(['a', 'b']).column_names() == ['c']
+
+
+def test_drop_missing_column_raises():
+	t = Table({'a': [1, 2]})
+	with pytest.raises(SerifKeyError):
+		t.drop('nope')
+
+
+def test_drop_does_not_alias_original():
+	t = Table({'a': [1, 2], 'b': [3, 4]})
+	t2 = t.drop('b')
+	t2['a'][0] = 99
+	assert list(t['a']) == [1, 2]  # original column must be untouched
