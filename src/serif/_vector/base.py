@@ -446,12 +446,17 @@ class Vector():
         return (len(self),)
 
     @property
-    def name(self):
-        """Get the name of this vector."""
+    def vector_name(self):
+        """Get the name of this vector.
+
+        Named `vector_name`, not `name`, so that a column literally called
+        'name' — the single most common column name — is NOT shadowed by this
+        property on a Table. See Table.table_name for the table-level counterpart.
+        """
         return self._name
-    
-    @name.setter
-    def name(self, new_name):
+
+    @vector_name.setter
+    def vector_name(self, new_name):
         """Set the name of this vector."""
         self._name = new_name
         self._wild = True  # Mark as wild when renamed
@@ -555,30 +560,15 @@ class Vector():
 
     def alias(self, new_name):
         """
-        Assign a name to an unnamed vector (returns self for chaining).
-        
-        This method only works on unnamed vectors. If the vector already has a name,
-        use the .name property directly or .copy(name=...) to create a named copy.
-        """
-        if self._name is not None:
-            raise SerifValueError(
-                "alias() is reserved for unnamed vectors only. "
-                "To rename: use .name = 'new'. "
-                "To copy with new name: use .copy(name='new')"
-            )
-        self._name = new_name
-        self._wild = True  # Mark as wild when named
-        return self
+        Set this vector's name and return self, for chaining.
 
-    def rename(self, new_name):
-        """Deprecated: Use .name property or .alias() for unnamed vectors."""
-        warnings.warn(
-            "rename() is deprecated. Use .name = 'new' to rename, or .alias() for unnamed vectors.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        self.name = new_name
-        self._wild = True  # Mark as wild when renamed
+        The chainable counterpart to the `.vector_name` setter — use it inside
+        expressions, e.g. `(a * 2).alias('twice_a')` or
+        `Table([v.alias('x'), ...])`. Works whether or not the vector is
+        already named (it just sets the name).
+        """
+        self._name = new_name
+        self._wild = True  # Mark as wild when (re)named
         return self
     
     def _mark_tame(self):
@@ -1439,16 +1429,6 @@ class Vector():
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
-    def product(self):
-        """Product of valid values; 1 (the multiplicative identity) if none."""
-        if self.ndims() == 2:
-            return self.copy((c.product() for c in self.cols()), name=None)
-        result = 1
-        for v in self._storage:
-            if v is not None:
-                result = result * v
-        return result
-
     def _no_verdict(self, method_name, on_empty):
         if on_empty is not None:
             return on_empty
@@ -1647,7 +1627,7 @@ class Vector():
             if hasattr(other, 'cols') and other.ndims() == 2:
                 # Returns a tuple of vectors, wrapped in a new Vector (which becomes Table)
                 result = self.copy(tuple(self @ col for col in other.cols()))
-                result.name = None
+                result._name = None
                 return result
 
             # 1b. Matrix @ Vector

@@ -2,7 +2,7 @@
 
 ## Joins
 
-Table supports three join types: `inner_join`, `join` (left join), and `full_join`.
+Table supports three join types: `inner_join`, `left_join`, and `full_join`.
 
 ### Inner Join
 
@@ -24,7 +24,7 @@ column (from the left side), not `id` and `id__2`.
 Returns all rows from the left table, with `None` for unmatched right table values.
 
 ```python
-result = left.join(right, left_on='id', right_on='id')
+result = left.left_join(right, left_on='id', right_on='id')
 # Returns all 3 left rows; id=1 has None for score
 ```
 
@@ -58,7 +58,7 @@ result = left.inner_join(right,
     expect_right_unique=True)   # duplicate right keys raise (default)
 ```
 
-`inner_join` and `join` default to `expect_right_unique=True` — a
+`inner_join` and `left_join` default to `expect_right_unique=True` — a
 many-to-many key match raises instead of silently multiplying rows.
 `full_join` defaults both flags to `False`. State the cardinality you
 expect; the join enforces it.
@@ -161,7 +161,7 @@ counts non-null values in a column. On nullable columns they differ.
 sales = Table({'customer_id': [1, 2, 1, 3], 'amount': [100, 200, 150, 300]})
 customers = Table({'id': [1, 2, 3], 'region': ['East', 'West', 'East']})
 
-joined = sales.join(customers, left_on='customer_id', right_on='id')
+joined = sales.left_join(customers, left_on='customer_id', right_on='id')
 result = joined.aggregate(
     groupby=joined.region,
     aggregations={'total': joined.amount.sum}

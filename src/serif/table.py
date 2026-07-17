@@ -8,6 +8,7 @@ from ._vector.base import _null_sort_flag
 
 from .naming import _sanitize_user_name
 from .naming import _disambiguate
+from .naming import _reserved_collision
 from ._vector.storage import TupleStorage, ArrayStorage
 
 from .errors import SerifKeyError
@@ -270,6 +271,9 @@ class Table(Vector):
         # Set _dtype to None explicitly since Table bypasses Vector.__new__
         self._dtype = None
         self._column_map = None
+        # Names already warned about (reserved-method collisions) — warn once
+        # per name per table, since _build_column_map reruns on rename.
+        self._warned_collisions = set()
         
         # Call parent constructor
         super().__init__(initial, dtype=dtype, name=name)
@@ -290,6 +294,23 @@ class Table(Vector):
         n_cols = len(self._storage) if hasattr(self, '_storage') else 0
         return (len(self) if n_cols else 0, n_cols)
 
+    @property
+    def table_name(self):
+        """Get the table's name (None if unnamed). Set via `t.table_name = ...`.
+
+        A Table is structurally a Vector of columns, but its name is a TABLE
+        name — so the Vector-level `.vector_name` is de-linked here (it raises)
+        and this is the accessor to use.
+        """
+        return self._name
+
+    @property
+    def vector_name(self):
+        # De-linked from Vector: a Table's name is a table_name.
+        raise AttributeError(
+            "Table has no 'vector_name' — use '.table_name'."
+        )
+
     def _build_column_map(self):
         """Build mapping from sanitized column names to column indices.
         
@@ -300,6 +321,21 @@ class Table(Vector):
         seen = {}
         for idx, col in enumerate(self._storage):
             if col._name is not None:
+                # Reserved-method collision: `t.<name>` will resolve to the
+                # method, not this column. Warn once per name so the user
+                # knows the column moved to `.<name>_` / `t['<name>']`.
+                collision = _reserved_collision(col._name)
+                if collision is not None and collision not in self._warned_collisions:
+                    self._warned_collisions.add(collision)
+                    warnings.warn(
+                        f"Column '{col._name}' collides with the reserved "
+                        f"method/attribute '{collision}': dot access "
+                        f"'t.{collision}' returns the method, not this column. "
+                        f"Use 't.{collision}_' or 't[{col._name!r}]' to get the "
+                        f"column, or rename it.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 base = _sanitize_user_name(col._name)
                 if base is None:
                     sanitized = f'col{idx}_'
@@ -473,9 +509,19 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions'):
             object.__setattr__(self, attr, value)
             return
+
+        # Table name lives on an explicit, non-colliding property so that
+        # columns own the rest of the attribute namespace (a column named
+        # 'name' must resolve to the column, not shadow a property).
+        if attr == 'table_name':
+            object.__setattr__(self, '_name', value)
+            object.__setattr__(self, '_wild', True)
+            return
+        if attr == 'vector_name':
+            raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
         
         # After initialization, check if setting an existing column
         if self._column_map is not None:
@@ -1376,7 +1422,7 @@ class Table(Vector):
             keep_unmatched_right=False,
         )
 
-    def join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+    def left_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
         """
         Left join two Tables on specified key columns.
         Returns all rows from left table, with matching rows from right (or None for no match).
@@ -1891,6 +1937,7 @@ class Table(Vector):
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)
+        object.__setattr__(t, '_warned_collisions', set())
         object.__setattr__(t, '_storage',
             TupleStorage.from_iterable(tuple(columns), nullable=False))
         object.__setattr__(t, '_column_map',    t._build_column_map())

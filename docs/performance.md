@@ -6,7 +6,7 @@
 - **Subscript lists** (`v[[1,5,9]]`): O(k) but **not recommended** for large vectors (emits warning)
 
 ## Joins
-- `inner_join`, `join`, `full_join`: O(n + m) hash table construction + lookups
+- `inner_join`, `left_join`, `full_join`: O(n + m) hash table construction + lookups
 - Multi-key joins: same complexity, tuple keys
 
 ## Aggregations

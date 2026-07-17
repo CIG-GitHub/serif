@@ -8,7 +8,6 @@
   and GZIP files from other tools (#27, #33)
 - Arrow-style string storage (`StringStorage`): contiguous UTF-8 buffer +
   offset array, lazy per-value decode (#28)
-- `product()` reduction — multiplicative identity `1` over empty/all-null (#32)
 - Join cardinality contracts: generic `on=` for shared key names,
   `expect_right_unique` / `expect_left_unique` (#24)
 

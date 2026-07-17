@@ -33,46 +33,74 @@ def _get_reserved_names():
     return _get_reserved_names._cache
 
 
-def _sanitize_user_name(name) -> str | None:
-    """Sanitize column name to valid Python identifier.
-    
+def _normalize_name(name) -> str | None:
+    """Sanitize a column name to a valid Python identifier, WITHOUT the
+    reserved-collision suffix.
+
     Rules:
     - Convert to lowercase
     - Replace runs of non-alphanumeric chars (except _) with single _
     - Strip leading/trailing underscores
     - Prefix with 'c' if starts with digit
-    - Append '_' if conflicts with reserved method names
+    - Append '_' if it looks like the indexed-accessor pattern (name__digits)
     - Return None if empty after sanitization
+
+    This is the shared pipeline; _sanitize_user_name adds the reserved-name
+    suffix on top, and _reserved_collision checks membership against it — so
+    the three stay in lockstep with no duplicated normalization.
     """
     if not isinstance(name, str):
         name = str(name)
-    
+
     # Lowercase
     name = name.lower()
-    
+
     # Replace runs of invalid characters with _
     sanitized = re.sub(r'[^a-z0-9_]+', '_', name)
-    
+
     # Strip leading/trailing _
     sanitized = sanitized.strip('_')
-    
+
     # Empty → None
     if sanitized == "":
         return None
-    
+
     # Starts with digit → prefix c
     if sanitized[0].isdigit():
         sanitized = "c" + sanitized
-    
+
     # If name looks like indexed accessor pattern (name__digits), append _ to disambiguate
     if re.match(r'^.+__\d+$', sanitized):
         sanitized = sanitized + '_'
-    
+
+    return sanitized
+
+
+def _sanitize_user_name(name) -> str | None:
+    """Sanitize a column name to a valid Python identifier, appending '_' when
+    it would collide with a reserved method/attribute name. Returns None if
+    empty after sanitization.
+    """
+    sanitized = _normalize_name(name)
+    if sanitized is None:
+        return None
+
     # Conflicts with reserved name → append _
     if sanitized in _get_reserved_names():
         sanitized = sanitized + '_'
 
     return sanitized
+
+
+def _reserved_collision(name) -> str | None:
+    """Return the reserved method/attribute name a column name collides with,
+    or None. When non-None, dot access `t.<name>` resolves to the method, not
+    the column — the column is reachable as `t.<name>_` or `t['<original>']`.
+    """
+    sanitized = _normalize_name(name)
+    if sanitized is not None and sanitized in _get_reserved_names():
+        return sanitized
+    return None
 
 
 def _disambiguate(base: str, idx: int) -> str:

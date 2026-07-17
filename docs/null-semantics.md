@@ -16,7 +16,7 @@ where SQL is just old.
 >
 > **Aggregate: summarize what you know.**
 > Skip nulls. If nothing remains: true math folds return their identity
-> (`sum` → `0`, `product` → `1`, `count` → `0`); statistics with no
+> (`sum` → `0`, `count` → `0`); statistics with no
 > identity return `None` (`max`, `min`, `mean`, `stdev`); and the verdict
 > reductions `all()`/`any()` refuse to guess — they raise unless
 > `on_empty=` says what the verdict should be.
@@ -69,7 +69,6 @@ remains (all-null or empty input), there are three tiers:
 | aggregate | all-null / empty result | why                        |
 |-----------|-------------------------|----------------------------|
 | `sum`     | `0`                     | additive identity          |
-| `product` | `1`                     | multiplicative identity    |
 | `count`   | `0`                     | counting identity          |
 | `max`     | `None`                  | no identity exists         |
 | `min`     | `None`                  | no identity exists         |

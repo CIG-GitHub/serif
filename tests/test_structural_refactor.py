@@ -78,7 +78,7 @@ def test_left_join_right_columns_become_nullable():
     t1 = Table({'id': [1, 2, 3]})
     t2 = Table({'id': [1], 'v': [10]})
 
-    j = t1.join(t2, 'id', 'id')
+    j = t1.left_join(t2, 'id', 'id')
 
     assert list(j['v']) == [10, None, None]
     assert j['v'].schema() == Schema(int, True)
@@ -141,7 +141,7 @@ def test_window_key_stays_categorical():
 def test_isna_returns_unnamed_plain_bool_vector(data):
     v = Vector(data, name='src')
     m = v.isna()
-    assert m.name is None, "derived vectors start unnamed (invariant 5)"
+    assert m.vector_name is None, "derived vectors start unnamed (invariant 5)"
     assert type(m).__name__ == 'Vector'
     assert m.schema() == Schema(bool, False)
     assert list(m) == [x is None for x in data]

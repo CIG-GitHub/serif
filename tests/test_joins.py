@@ -58,7 +58,7 @@ def test_join_left():
 		'age': [25, 35]
 	})
 	
-	result = left.join(right, left_on='id', right_on='id')
+	result = left.left_join(right, left_on='id', right_on='id')
 
 	assert len(result) == 3
 	assert list(result['name']) == ['Alice', 'Bob', 'Charlie']
@@ -196,7 +196,7 @@ def test_left_join_with_multiple_right_matches():
 		'order': ['Order1', 'Order2']
 	})
 	
-	result = left.join(right, left_on='id', right_on='id', expect_left_unique=True, expect_right_unique=False)
+	result = left.left_join(right, left_on='id', right_on='id', expect_left_unique=True, expect_right_unique=False)
 
 	assert len(result) == 2
 	assert list(result['name']) == ['Alice', 'Alice']
