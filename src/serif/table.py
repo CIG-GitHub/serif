@@ -294,6 +294,23 @@ class Table(Vector):
         n_cols = len(self._storage) if hasattr(self, '_storage') else 0
         return (len(self) if n_cols else 0, n_cols)
 
+    @property
+    def table_name(self):
+        """Get the table's name (None if unnamed). Set via `t.table_name = ...`.
+
+        A Table is structurally a Vector of columns, but its name is a TABLE
+        name — so the Vector-level `.vector_name` is de-linked here (it raises)
+        and this is the accessor to use.
+        """
+        return self._name
+
+    @property
+    def vector_name(self):
+        # De-linked from Vector: a Table's name is a table_name.
+        raise AttributeError(
+            "Table has no 'vector_name' — use '.table_name'."
+        )
+
     def _build_column_map(self):
         """Build mapping from sanitized column names to column indices.
         
@@ -495,6 +512,16 @@ class Table(Vector):
         if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions'):
             object.__setattr__(self, attr, value)
             return
+
+        # Table name lives on an explicit, non-colliding property so that
+        # columns own the rest of the attribute namespace (a column named
+        # 'name' must resolve to the column, not shadow a property).
+        if attr == 'table_name':
+            object.__setattr__(self, '_name', value)
+            object.__setattr__(self, '_wild', True)
+            return
+        if attr == 'vector_name':
+            raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
         
         # After initialization, check if setting an existing column
         if self._column_map is not None:

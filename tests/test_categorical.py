@@ -310,4 +310,4 @@ class TestCategoricalSchema:
     def test_name_preserved(self):
         v = Vector(['s', 'm', 'l'], name='size')
         c = v.categorize(SIZES)
-        assert c.name == 'size'
+        assert c.vector_name == 'size'

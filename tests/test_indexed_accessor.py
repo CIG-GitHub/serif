@@ -5,6 +5,11 @@ Tests for indexed column accessor pattern (e.g., t.total__5).
 import pytest
 from serif import Table, Vector
 
+# This suite deliberately names columns after reserved methods ('sum', 'count')
+# to exercise the indexed / collision accessors, so the reserved-name collision
+# warning is expected here — silence it rather than assert it per construction.
+pytestmark = pytest.mark.filterwarnings("ignore:.*reserved.*:UserWarning")
+
 
 def test_indexed_accessor_basic():
     """Test basic indexed accessor retrieval."""

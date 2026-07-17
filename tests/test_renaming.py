@@ -4,30 +4,30 @@ from serif import Table
 
 
 def test_Vector_rename():
-	"""Test that Vector.name property changes the name"""
+	"""Test that Vector.vector_name property changes the name"""
 	v = Vector([1, 2, 3], name="old_name")
-	assert v.name == "old_name"
+	assert v.vector_name == "old_name"
 	
-	v.name = "new_name"
-	assert v.name == "new_name"
+	v.vector_name = "new_name"
+	assert v.vector_name == "new_name"
 	assert v._wild == True  # Name setter marks as wild
 
 
 def test_Vector_rename_chaining():
 	"""Test that name change persists across copy"""
 	v = Vector([1, 2, 3], name="original")
-	v.name = "renamed"
+	v.vector_name = "renamed"
 	v2 = v.copy()
 	
-	assert v.name == "renamed"
-	assert v2.name == "renamed"
+	assert v.vector_name == "renamed"
+	assert v2.vector_name == "renamed"
 
 
 def test_Vector_rename_to_none():
-	"""Test that we can clear a name with .name = None"""
+	"""Test that we can clear a name with .vector_name = None"""
 	v = Vector([1, 2, 3], name="has_name")
-	v.name = None
-	assert v.name is None
+	v.vector_name = None
+	assert v.vector_name is None
 
 
 def test_Table_rename_column():
@@ -236,10 +236,10 @@ def test_rename_preserves_data():
 	v = Vector([1, 2, 3], name="old")
 	original_data = list(v)
 	
-	v.name = "new"
+	v.vector_name = "new"
 	
 	assert list(v) == original_data
-	assert v.name == "new"
+	assert v.vector_name == "new"
 
 
 def test_Table_rename_preserves_data():

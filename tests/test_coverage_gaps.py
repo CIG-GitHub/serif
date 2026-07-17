@@ -157,4 +157,4 @@ def test_rename_warns_deprecation_and_still_renames():
     with pytest.warns(DeprecationWarning, match="rename"):
         result = v.rename('new')
     assert result is v
-    assert v.name == 'new'
+    assert v.vector_name == 'new'

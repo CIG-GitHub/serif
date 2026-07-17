@@ -141,7 +141,7 @@ def test_window_key_stays_categorical():
 def test_isna_returns_unnamed_plain_bool_vector(data):
     v = Vector(data, name='src')
     m = v.isna()
-    assert m.name is None, "derived vectors start unnamed (invariant 5)"
+    assert m.vector_name is None, "derived vectors start unnamed (invariant 5)"
     assert type(m).__name__ == 'Vector'
     assert m.schema() == Schema(bool, False)
     assert list(m) == [x is None for x in data]
