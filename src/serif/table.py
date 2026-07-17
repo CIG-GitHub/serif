@@ -8,6 +8,7 @@ from ._vector.base import _null_sort_flag
 
 from .naming import _sanitize_user_name
 from .naming import _disambiguate
+from .naming import _reserved_collision
 from ._vector.storage import TupleStorage, ArrayStorage
 
 from .errors import SerifKeyError
@@ -270,6 +271,9 @@ class Table(Vector):
         # Set _dtype to None explicitly since Table bypasses Vector.__new__
         self._dtype = None
         self._column_map = None
+        # Names already warned about (reserved-method collisions) — warn once
+        # per name per table, since _build_column_map reruns on rename.
+        self._warned_collisions = set()
         
         # Call parent constructor
         super().__init__(initial, dtype=dtype, name=name)
@@ -300,6 +304,21 @@ class Table(Vector):
         seen = {}
         for idx, col in enumerate(self._storage):
             if col._name is not None:
+                # Reserved-method collision: `t.<name>` will resolve to the
+                # method, not this column. Warn once per name so the user
+                # knows the column moved to `.<name>_` / `t['<name>']`.
+                collision = _reserved_collision(col._name)
+                if collision is not None and collision not in self._warned_collisions:
+                    self._warned_collisions.add(collision)
+                    warnings.warn(
+                        f"Column '{col._name}' collides with the reserved "
+                        f"method/attribute '{collision}': dot access "
+                        f"'t.{collision}' returns the method, not this column. "
+                        f"Use 't.{collision}_' or 't[{col._name!r}]' to get the "
+                        f"column, or rename it.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 base = _sanitize_user_name(col._name)
                 if base is None:
                     sanitized = f'col{idx}_'
@@ -1891,6 +1910,7 @@ class Table(Vector):
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)
+        object.__setattr__(t, '_warned_collisions', set())
         object.__setattr__(t, '_storage',
             TupleStorage.from_iterable(tuple(columns), nullable=False))
         object.__setattr__(t, '_column_map',    t._build_column_map())

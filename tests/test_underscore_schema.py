@@ -40,7 +40,8 @@ def test_clean_names_collapse_to_two_columns():
 def test_reserved_name_collision_shows_original():
     # 'name' collides with the Vector.name property, so it sanitizes to
     # 'name_' — a structural change, so the original is shown
-    t = Table({'name': ['a']})
+    with pytest.warns(UserWarning, match="reserved"):
+        t = Table({'name': ['a']})
     assert lines(t) == [".name_   str   'name'"]
 
 

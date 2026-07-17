@@ -119,7 +119,8 @@ def test_sort_by_with_none_reverse_true_na_last_false():
 
 def test_sort_by_empty_table():
 	"""Test sorting an empty table."""
-	t = Table({'name': [], 'age': []})
+	with pytest.warns(UserWarning, match="reserved"):
+		t = Table({'name': [], 'age': []})
 	result = t.sort_by('name')
 	assert len(result) == 0
 	assert result.column_names() == ['name', 'age']
