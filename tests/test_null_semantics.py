@@ -3,7 +3,7 @@ The null doctrine (docs/null-semantics.md):
 
   Element-wise: unknown in, unknown out. Kleene logic for & and |.
   Aggregate: skip nulls; empty remainder yields the identity element
-  (sum 0, product 1, count 0) or None (max, min, mean, stdev); the
+  (sum 0, count 0) or None (max, min, mean, stdev); the
   verdict reductions all()/any() raise unless on_empty= is passed.
 
 Plus the dtype dispatch for &/|/^: Kleene logical on bool vectors,
@@ -199,7 +199,6 @@ def test_masked_assignment_skips_null_entries():
 def test_aggregates_skip_nulls():
     v = Vector([1, None, 3])
     assert v.sum() == 4
-    assert v.product() == 3
     assert v.count() == 2
     assert v.mean() == 2
     assert v.max() == 3
@@ -207,7 +206,7 @@ def test_aggregates_skip_nulls():
 
 
 @pytest.mark.parametrize("agg,expected", [
-    ('sum', 0), ('product', 1), ('count', 0),
+    ('sum', 0), ('count', 0),
     ('max', None), ('min', None), ('mean', None), ('stdev', None),
 ])
 def test_all_null_aggregate_identity_rule(agg, expected):

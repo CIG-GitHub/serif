@@ -1439,16 +1439,6 @@ class Vector():
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
-    def product(self):
-        """Product of valid values; 1 (the multiplicative identity) if none."""
-        if self.ndims() == 2:
-            return self.copy((c.product() for c in self.cols()), name=None)
-        result = 1
-        for v in self._storage:
-            if v is not None:
-                result = result * v
-        return result
-
     def _no_verdict(self, method_name, on_empty):
         if on_empty is not None:
             return on_empty
