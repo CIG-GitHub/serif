@@ -146,15 +146,3 @@ def test_full_join_expect_left_unique_violation():
     t2 = Table({'k': [1], 'w': [5]})
     with pytest.raises(SerifValueError, match="expect_left_unique"):
         t1.full_join(t2, 'k', 'k', expect_left_unique=True)
-
-
-# ---------------------------------------------------------------------------
-# Deprecated rename()
-# ---------------------------------------------------------------------------
-
-def test_rename_warns_deprecation_and_still_renames():
-    v = Vector([1, 2], name='old')
-    with pytest.warns(DeprecationWarning, match="rename"):
-        result = v.rename('new')
-    assert result is v
-    assert v.vector_name == 'new'

@@ -560,30 +560,15 @@ class Vector():
 
     def alias(self, new_name):
         """
-        Assign a name to an unnamed vector (returns self for chaining).
-        
-        This method only works on unnamed vectors. If the vector already has a name,
-        set .vector_name directly or use .copy(name=...) to create a named copy.
-        """
-        if self._name is not None:
-            raise SerifValueError(
-                "alias() is reserved for unnamed vectors only. "
-                "To rename: set .vector_name = 'new'. "
-                "To copy with new name: use .copy(name='new')"
-            )
-        self._name = new_name
-        self._wild = True  # Mark as wild when named
-        return self
+        Set this vector's name and return self, for chaining.
 
-    def rename(self, new_name):
-        """Deprecated: set .vector_name, or use .alias() for unnamed vectors."""
-        warnings.warn(
-            "rename() is deprecated. Set .vector_name = 'new' to rename, or .alias() for unnamed vectors.",
-            DeprecationWarning,
-            stacklevel=2
-        )
+        The chainable counterpart to the `.vector_name` setter — use it inside
+        expressions, e.g. `(a * 2).alias('twice_a')` or
+        `Table([v.alias('x'), ...])`. Works whether or not the vector is
+        already named (it just sets the name).
+        """
         self._name = new_name
-        self._wild = True  # Mark as wild when renamed
+        self._wild = True  # Mark as wild when (re)named
         return self
     
     def _mark_tame(self):

@@ -242,16 +242,14 @@ def test_alias_names_unnamed_vector():
 	assert v._wild == True  # Marks as wild
 
 
-def test_alias_fails_on_named_vector():
-	"""Test that alias() fails if vector already has a name"""
-	from serif.errors import SerifValueError
+def test_alias_renames_named_vector():
+	"""alias() sets the name whether or not one already exists (chainable)."""
 	v = Vector([1, 2, 3], name="existing")
-	
-	with pytest.raises(SerifValueError, match="alias\\(\\) is reserved for unnamed vectors only"):
-		v.alias("new_name")
-	
-	# Name should be unchanged
-	assert v._name == "existing"
+
+	result = v.alias("new_name")
+	assert result is v            # returns self for chaining
+	assert v._name == "new_name"  # renames in place
+	assert v._wild == True
 
 
 def test_name_property_getter():
