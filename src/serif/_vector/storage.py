@@ -291,3 +291,140 @@ class StringStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
+
+
+# ---------------------------------------------------------------------------
+# DecimalStorage — Arrow-format 16-byte big-endian decimal buffer
+# ---------------------------------------------------------------------------
+
+class DecimalStorage:
+    """
+    Fixed-width 16-byte big-endian decimal storage (decimal128).
+
+    Layout
+    ------
+    _buf:       bytearray    — n*16 bytes, big-endian two's complement.
+                               Null positions hold 16 zero bytes (sentinel).
+    _scale:     int          — fixed exponent: actual = unscaled / 10^scale
+    _precision: int          — max significant digits (Parquet schema metadata)
+    _mask:      ByteMask|None— null flags (1=valid, 0=null); None = no nulls
+
+    Matches the physical layout of both Parquet FIXED_LEN_BYTE_ARRAY + DECIMAL
+    and (after a byte-swap) Arrow decimal128, so I/O fast paths hand the buffer
+    in with minimal copying.  All values share the same scale — mixed-scale
+    inputs degrade to object dtype through the normal promote_dtype path.
+    """
+
+    __slots__ = ('_buf', '_scale', '_precision', '_mask')
+
+    def __init__(self, buf: bytearray, scale: int, precision: int,
+                 mask: ByteMask | None = None):
+        self._buf       = buf
+        self._scale     = scale
+        self._precision = precision
+        self._mask      = mask
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_iterable(cls, values, scale: int, precision: int,
+                      nullable: bool = False) -> 'DecimalStorage':
+        """
+        Build from an iterable of Decimal | None with a fixed scale.
+
+        Each value is shifted to `scale` decimal places (ROUND_HALF_EVEN).
+        Null positions store a 16-byte zero sentinel.
+        """
+        from decimal import Decimal, ROUND_HALF_EVEN
+        buf        = bytearray()
+        null_flags: list[bool] = []
+        has_nulls  = False
+        multiplier = Decimal(10) ** scale
+
+        for val in values:
+            if val is None:
+                has_nulls = True
+                null_flags.append(True)
+                buf.extend(b'\x00' * 16)
+            else:
+                unscaled = int(
+                    (val * multiplier).to_integral_value(rounding=ROUND_HALF_EVEN)
+                )
+                buf.extend(unscaled.to_bytes(16, 'big', signed=True))
+                null_flags.append(False)
+
+        mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        return cls(buf, scale, precision, mask)
+
+    @classmethod
+    def from_raw_be(cls, buf, scale: int, precision: int,
+                    mask: ByteMask | None = None) -> 'DecimalStorage':
+        """
+        Wrap a pre-built big-endian buffer (Parquet reader). Near-zero copy.
+        ``buf`` may be bytes or bytearray.
+        """
+        return cls(bytearray(buf), scale, precision, mask)
+
+    # ------------------------------------------------------------------
+    # Core interface (matches ArrayStorage / TupleStorage / StringStorage)
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self._buf) // 16
+
+    def __bool__(self) -> bool:
+        return len(self._buf) > 0
+
+    def __getitem__(self, idx: int):
+        n = len(self)
+        if idx < 0:
+            idx += n
+        if not 0 <= idx < n:
+            raise IndexError('decimal index out of range')
+        if self._mask is not None and self._mask.is_null(idx):
+            return None
+        from decimal import Decimal
+        unscaled = int.from_bytes(self._buf[idx * 16:(idx + 1) * 16], 'big', signed=True)
+        return Decimal(unscaled).scaleb(-self._scale)
+
+    def __iter__(self):
+        from decimal import Decimal
+        scale = self._scale
+        mask  = self._mask
+        buf   = self._buf
+        n     = len(self)
+        for i in range(n):
+            if mask is not None and mask.is_null(i):
+                yield None
+            else:
+                unscaled = int.from_bytes(buf[i * 16:(i + 1) * 16], 'big', signed=True)
+                yield Decimal(unscaled).scaleb(-scale)
+
+    def is_null(self, idx: int) -> bool:
+        return self._mask is not None and self._mask.is_null(idx)
+
+    def slice(self, slc: slice) -> 'DecimalStorage':
+        indices  = range(*slc.indices(len(self)))
+        new_buf  = bytearray()
+        for i in indices:
+            new_buf.extend(self._buf[i * 16:(i + 1) * 16])
+        new_mask = self._mask[slc] if self._mask is not None else None
+        return DecimalStorage(new_buf, self._scale, self._precision, new_mask)
+
+    def take(self, indices) -> 'DecimalStorage':
+        new_buf    = bytearray()
+        null_flags: list[bool] = []
+        has_nulls  = False
+        for i in indices:
+            new_buf.extend(self._buf[i * 16:(i + 1) * 16])
+            is_null = self._mask is not None and self._mask.is_null(i)
+            null_flags.append(is_null)
+            if is_null:
+                has_nulls = True
+        new_mask = ByteMask.from_iterable(null_flags) if has_nulls else None
+        return DecimalStorage(new_buf, self._scale, self._precision, new_mask)
+
+    def to_tuple(self) -> tuple:
+        return tuple(self)
