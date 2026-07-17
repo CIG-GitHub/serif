@@ -253,7 +253,7 @@ def test_join_external_key_does_not_drop_same_named_column():
     # column is NOT the key and must survive the join.
     ext_key = Vector([1, 2]).alias('id')
     with pytest.warns(UserWarning, match="Duplicate column name"):
-        j = t1.join(t2, 'id', ext_key)
+        j = t1.left_join(t2, 'id', ext_key)
     assert j.column_names() == ['id', 'id', 'v']
     assert list(j.cols(1)) == [10, 20]
 
@@ -261,7 +261,7 @@ def test_join_external_key_does_not_drop_same_named_column():
 def test_join_own_key_column_still_dropped():
     t1 = Table({'id': [1, 2], 'a': [5, 6]})
     t2 = Table({'id': [1, 2], 'b': [7, 8]})
-    j = t1.join(t2, 'id', 'id')
+    j = t1.left_join(t2, 'id', 'id')
     assert j.column_names() == ['id', 'a', 'b']
 
 

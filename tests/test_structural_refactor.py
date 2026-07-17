@@ -78,7 +78,7 @@ def test_left_join_right_columns_become_nullable():
     t1 = Table({'id': [1, 2, 3]})
     t2 = Table({'id': [1], 'v': [10]})
 
-    j = t1.join(t2, 'id', 'id')
+    j = t1.left_join(t2, 'id', 'id')
 
     assert list(j['v']) == [10, None, None]
     assert j['v'].schema() == Schema(int, True)

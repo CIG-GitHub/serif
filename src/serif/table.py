@@ -1422,7 +1422,7 @@ class Table(Vector):
             keep_unmatched_right=False,
         )
 
-    def join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
+    def left_join(self, other, left_on, right_on, expect_left_unique=False, expect_right_unique=True):
         """
         Left join two Tables on specified key columns.
         Returns all rows from left table, with matching rows from right (or None for no match).
