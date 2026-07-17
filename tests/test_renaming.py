@@ -1,6 +1,7 @@
 import pytest
 from serif import Vector
 from serif import Table
+from serif.errors import SerifKeyError
 
 
 def test_Vector_rename():
@@ -253,9 +254,45 @@ def test_Table_rename_preserves_data():
 	original_b = list(t['b'])
 	
 	t.rename_columns(['a', 'b'], ['x', 'y'])
-	
+
 	assert list(t['x']) == original_a
 	assert list(t['y']) == original_b
+
+
+# ---------------------------------------------------------------------------
+# Table.drop — returns a NEW table without the named column(s)
+# ---------------------------------------------------------------------------
+
+def test_drop_single_column():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	t2 = t.drop('b')
+	assert t2.column_names() == ['a', 'c']
+	assert list(t2['a']) == [1, 2]
+	# non-mutating: original is unchanged
+	assert t.column_names() == ['a', 'b', 'c']
+
+
+def test_drop_multiple_varargs():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	assert t.drop('a', 'c').column_names() == ['b']
+
+
+def test_drop_list_form():
+	t = Table({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+	assert t.drop(['a', 'b']).column_names() == ['c']
+
+
+def test_drop_missing_column_raises():
+	t = Table({'a': [1, 2]})
+	with pytest.raises(SerifKeyError):
+		t.drop('nope')
+
+
+def test_drop_does_not_alias_original():
+	t = Table({'a': [1, 2], 'b': [3, 4]})
+	t2 = t.drop('b')
+	t2['a'][0] = 99
+	assert list(t['a']) == [1, 2]  # original column must be untouched
 
 
 

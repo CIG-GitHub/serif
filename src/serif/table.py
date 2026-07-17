@@ -647,6 +647,27 @@ class Table(Vector):
         self._column_map = self._build_column_map()
         return self
 
+    def drop(self, *names):
+        """Return a NEW Table without the named column(s).
+
+        Non-mutating — the original table is unchanged (unlike rename_column,
+        which edits in place). Names may be passed as varargs or a single
+        list/tuple: `t.drop('a')`, `t.drop('a', 'b')`, `t.drop(['a', 'b'])`.
+        Raises SerifKeyError if any name is not a column.
+        """
+        # Accept a single list/tuple as well as varargs.
+        if len(names) == 1 and isinstance(names[0], (list, tuple)):
+            names = tuple(names[0])
+
+        existing = [col._name for col in self._storage]
+        for n in names:
+            if n not in existing:
+                raise _missing_col_error(n)
+
+        drop_set = set(names)
+        kept = [col for col in self._storage if col._name not in drop_set]
+        return Table(kept)  # constructor copies columns → no aliasing
+
     @property
     def T(self):
         # Transpose 2D table: columns become rows. Tables are always 2-D
