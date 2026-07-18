@@ -280,6 +280,8 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     monkeypatch.setattr(reduce_mod, 'sum_', spy)
     Vector([1, 2, 3]).sum()                    # int: engages
     Vector([1.5, None]).sum()                  # nullable float: engages
-    Vector([2**62] * 3).sum()                  # overflow risk: declines
+    Vector([2**62] * 3).sum()                  # past int64, ZERO spread:
+    #                                            the residue engine answers
+    Vector([-2**63, 5]).sum()                  # full-range spread: declines
     Vector([True, False]).sum()                # BoolStorage: declines
-    assert engaged == [True, True, False, False]
+    assert engaged == [True, True, True, False, False]
