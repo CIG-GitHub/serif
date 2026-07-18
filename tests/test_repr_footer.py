@@ -160,3 +160,22 @@ def test_footer_uniformly_nullable():
 def test_footer_mixed_nullability_stars():
     t = Table({'a': [1, 2], 'b': [3, None], 'c': [0.5, 1.5]})
     assert footer(t) == '# 2×3 table <int*, float>'
+
+
+# ---------------------------------------------------------------------------
+# Vector footers stay EXACT (no crowd to scan): schema params show
+# ---------------------------------------------------------------------------
+
+def test_vector_footer_decimal_params():
+    v = _decimal_col('amt', [Decimal('1.25'), Decimal('2.50')], 2, 3)
+    assert footer(v) == '# 2 element vector <Decimal(3,2)>'
+
+
+def test_vector_footer_category_params():
+    v = _Category.from_values(['low', 'mid'], ['low', 'mid', 'high'], name='g')
+    assert footer(v) == '# 2 element vector <category(3)>'
+
+
+def test_vector_footer_plain_kinds_unchanged():
+    assert footer(Vector([1, None])) == '# 2 element vector <int?>'
+    assert footer(Vector(['a', 'b'])) == '# 2 element vector <str>'

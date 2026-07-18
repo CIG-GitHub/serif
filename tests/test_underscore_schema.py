@@ -1,10 +1,11 @@
 """
 Table._ — the column schema listing that replaced peek().
 
-One row per column: dot-accessor name, dtype, and the original name where
-sanitization structurally changed it. Left-aligned columns; the original-
-name column disappears entirely when no name was changed. Metadata only —
-no data scan — and every column is shown (up to 1000).
+One row per column: dot-accessor name, dtype (with schema params —
+'Decimal(4,2)?', 'category(3)'), the category ordering where one exists,
+and the original name where sanitization structurally changed it.
+Left-aligned columns; optional columns disappear entirely when empty.
+Metadata only — no data scan — and every column is shown (up to 1000).
 """
 
 from datetime import date
@@ -98,6 +99,66 @@ def test_duplicate_names_show_disambiguated_accessor():
 def test_nullable_dtype_shows_question_mark():
     t = Table({'a': [1, None]})
     assert lines(t) == ['.a   int?']
+
+
+# ---------------------------------------------------------------------------
+# Schema params: t._ is the EXACT view. The table footer is deliberately
+# lossy ('Decimal*' = mixed flavors) and points here, so here is where
+# decimal precision/scale and category cardinality + ordering must show.
+# ---------------------------------------------------------------------------
+
+def _decimal_col(name, values, scale, precision, nullable=False):
+    from serif import Vector
+    from serif._vector.dtype import Schema
+    from serif._vector.storage import DecimalStorage
+    from decimal import Decimal
+    storage = DecimalStorage.from_iterable(values, scale, precision,
+                                           nullable=nullable)
+    return Vector._from_storage(storage, Schema(Decimal, nullable), name=name)
+
+
+def test_decimal_storage_shows_precision_and_scale():
+    from decimal import Decimal
+    t = Table._from_columns_nocopy([
+        _decimal_col('amt', [Decimal('12.34')], 2, 4),
+        _decimal_col('rate', [Decimal('0.00012345'), None], 8, 9, nullable=True),
+    ])
+    assert lines(t) == [
+        '.amt    Decimal(4,2)',
+        '.rate   Decimal(9,8)?',
+    ]
+
+
+def test_tuple_decimal_shows_bare_kind():
+    # A TupleStorage decimal column declares no fixed scale — showing
+    # invented params would lie, so the kind stays bare.
+    from decimal import Decimal
+    t = Table({'amt': [Decimal('12.34'), Decimal('5.678')]})
+    assert lines(t) == ['.amt   Decimal']
+
+
+def test_category_shows_cardinality_and_order():
+    from serif._vector.categorical import _Category
+    grade = _Category.from_values(['low', 'mid'], ['low', 'mid', 'high'],
+                                  name='grade')
+    t = Table._from_columns_nocopy([grade])
+    assert lines(t) == ['.grade   category(3)   low < mid < high']
+
+
+def test_category_long_order_elides_middle():
+    from serif._vector.categorical import _Category
+    cats = [f'cat_{i:02d}' for i in range(20)]
+    c = _Category.from_values([cats[0]], cats, name='c')
+    t = Table._from_columns_nocopy([c])
+    assert lines(t) == ['.c   category(20)   cat_00 < cat_01 < … < cat_19']
+
+
+def test_category_order_and_original_name_coexist():
+    from serif._vector.categorical import _Category
+    grade = _Category.from_values(['low'], ['low', 'high'], name='Grade Level')
+    t = Table._from_columns_nocopy([grade])
+    # Ordering hugs the dtype it annotates; the original name stays last.
+    assert lines(t) == [".grade_level   category(2)   low < high   'Grade Level'"]
 
 
 # ---------------------------------------------------------------------------
