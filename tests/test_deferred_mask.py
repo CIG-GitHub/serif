@@ -342,6 +342,178 @@ def test_row_access_materializes_correctly(tier):
 
 
 # ---------------------------------------------------------------------------
+# Doctrine: read through the column, write through the table.
+# On a deferred result the write latches first, then swaps as usual.
+# ---------------------------------------------------------------------------
+
+def test_owner_write_latches_then_swaps(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    v = q.a                      # handed out before the write
+    q[0, 'a'] = 99               # row 0 OF THE SELECTION (source row 3)
+    assert q._mat is not None    # the write materialized the selection
+    assert list(q.a) == [99, 5, 6]
+    assert list(v) == [4, 5, 6]  # swap-on-write: read-outs are stable
+    assert list(t.a) == [1, 2, 3, 4, 5, 6]  # source untouched
+
+
+def test_owner_write_mask_addressed(tier):
+    t = make_table()
+    mask = t.a > 3
+    q, e = t[mask], eager(t, mask)
+    q[q.a > 4, 'a'] = 0
+    e[e.a > 4, 'a'] = 0
+    assert_same_table(q, e)
+
+
+def test_column_replacement_write_on_deferred(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    q.a = [7, 8, 9]
+    assert list(q.a) == [7, 8, 9]
+    assert list(t.a) == [1, 2, 3, 4, 5, 6]
+
+
+def test_vector_addressed_write_raises_post_latch(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    repr(q)  # latch
+    with pytest.raises(SerifTypeError, match="owned by a Table"):
+        q.a[0] = 0
+
+
+def test_batch_on_deferred_table(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    with q.batch() as m:
+        m[0, 'a'] = 40           # point write, table-addressed
+        m.a[1] = 50              # vector-addressed works on thawed columns
+    assert list(q.a) == [40, 50, 6]
+    assert list(t.a) == [1, 2, 3, 4, 5, 6]   # source untouched
+    with pytest.raises(SerifTypeError, match="owned by a Table"):
+        q.a[0] = 0               # refrozen on scope exit
+
+
+def test_mask_inside_deferred_batch_scope_is_eager(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    with q.batch() as m:
+        r = m[m.a > 4]
+        assert type(r) is Table
+        assert list(r.a) == [5, 6]
+
+
+def test_redefer_after_write_snapshots_current_state(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    q[0, 'a'] = 99
+    q2 = q[q.a > 5]              # defers on the WRITTEN state of q
+    assert type(q2) is MaskedTable
+    assert list(q2.a) == [99, 6]
+    q[1, 'a'] = 0                # later writes to q don't reach q2
+    assert list(q2.a) == [99, 6]
+
+
+# ---------------------------------------------------------------------------
+# Fallthrough: everything downstream of the latch behaves as a plain Table
+# ---------------------------------------------------------------------------
+
+def test_sort_by_matches_eager(tier):
+    t = make_table()
+    mask = t.a > 1
+    q, e = t[mask], eager(t, mask)
+    qs, es = q.sort_by('a', reverse=True), e.sort_by('a', reverse=True)
+    assert type(qs) is Table
+    assert_same_table(qs, es)
+    assert_same_table(q.sort_by('n', na_last=False),
+                      e.sort_by('n', na_last=False))
+
+
+def test_join_with_deferred_left_side(tier):
+    t = make_table()
+    lookup = Table({'s': ['x', 'y', 'z'], 'rank': [1, 2, 3]})
+    mask = t.a > 2
+    q, e = t[mask], eager(t, mask)
+    qj = q.left_join(lookup, 's', 's')
+    assert type(qj) is Table
+    assert_same_table(qj, e.left_join(lookup, 's', 's'))
+
+
+def test_join_with_deferred_right_side(tier):
+    t = make_table()
+    lookup = Table({'s': ['x', 'y', 'z'], 'rank': [1, 2, 3]})
+    mask = t.a > 3   # survivors' s = ['x', 'y', 'z'] — unique right keys
+    qj = lookup.left_join(t[mask], 's', 's')
+    ej = lookup.left_join(eager(t, mask), 's', 's')
+    assert type(qj) is Table
+    assert_same_table(qj, ej)
+
+
+def test_aggregate_matches_eager(tier):
+    t = make_table()
+    mask = t.a > 1
+    q, e = t[mask], eager(t, mask)
+    qa = q.aggregate(groupby=q.s, aggregations={'total': q.a.sum})
+    ea = e.aggregate(groupby=e.s, aggregations={'total': e.a.sum})
+    assert type(qa) is Table
+    assert_same_table(qa, ea)
+    assert_same_table(
+        q.aggregate(groupby='s', aggregations={'hi': q.b.max}),
+        e.aggregate(groupby='s', aggregations={'hi': e.b.max}))
+
+
+def test_transpose_matches_eager(tier):
+    t = Table({'a': [1, 2, 3, 4], 'b': [5, 6, 7, 8]})
+    mask = t.a > 1
+    qt, et = t[mask].T, eager(t, mask).T
+    assert type(qt) is Table
+    assert [list(c) for c in qt.cols()] == [list(c) for c in et.cols()]
+
+
+def test_to_dict_matches_eager(tier):
+    t = make_table()
+    mask = t.a > 3
+    assert t[mask].to_dict() == eager(t, mask).to_dict()
+
+
+def test_compose_adds_column(tier):
+    t = make_table()
+    mask = t.a > 3
+    q, e = t[mask], eager(t, mask)
+    qc = q >> {'w': [7, 8, 9]}
+    assert type(qc) is Table
+    assert_same_table(qc, e >> {'w': [7, 8, 9]})
+
+
+def test_drop_and_rename_are_plain_and_nonmutating(tier):
+    t = make_table()
+    mask = t.a > 3
+    q, e = t[mask], eager(t, mask)
+    qd = q.drop('a')
+    assert type(qd) is Table
+    assert_same_table(qd, e.drop('a'))
+    qr = q.rename({'a': 'z'})
+    assert type(qr) is Table
+    assert qr.column_names() == ['z', 'b', 's', 'n', 'f']
+    assert q.column_names() == ['a', 'b', 's', 'n', 'f']  # non-mutating
+
+
+def test_arithmetic_matches_eager(tier):
+    t = Table({'a': [1, 2, 3, 4], 'b': [5.0, 6.0, 7.0, 8.0]})
+    mask = t.a > 1
+    q, e = t[mask], eager(t, mask)
+    assert type(q + 1) is Table
+    assert_same_table(q + 1, e + 1)
+    assert_same_table(q * 2, e * 2)
+
+
+def test_schema_view_matches_eager(tier):
+    t = make_table()
+    mask = t.a > 3
+    assert repr(t[mask]._) == repr(eager(t, mask)._)
+
+
+# ---------------------------------------------------------------------------
 # Popcount conformance (accel vs pure)
 # ---------------------------------------------------------------------------
 
