@@ -32,8 +32,9 @@ proven by the pyarrow reader (serif/io/_arrow.py):
 Modules: mask (row gathering — filter, take, padded take), reduce
 (sum/mean/stdev/min/max), ops (elementwise), group (single-key
 bucketing for partitions), join (vectorized single-key join probe),
-arrow (the pyarrow bridge: zero-copy wrap/unwrap between storage
-buffers and arrow arrays).
+arrow (the pyarrow backend: zero-copy wrap/unwrap between storage
+buffers and arrow arrays, and the string-content kernels that run
+over them).
 
 _USE_NUMPY here and _USE_ARROW in arrow.py are private switches for
 tests/benchmarks, not API.

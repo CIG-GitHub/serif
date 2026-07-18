@@ -397,12 +397,18 @@ def _accel_binop(storage, rhs, op_func, result_dtype):
 
 
 def _accel_compare(storage, rhs, op_func, nullable):
-    """Numpy-accelerated elementwise comparison; None = decline."""
+    """Accelerated elementwise comparison; None = decline to the pure
+    path, whose behavior is the specification. Both backends get a try
+    (see serif/_accel/__init__.py): numpy for fixed-width lanes, then
+    arrow for the string content numpy cannot see."""
     from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .._accel.ops import compare_storage
-    fast = compare_storage(storage, rhs, op_func)
+    fast = None
+    if _accel._USE_NUMPY:
+        from .._accel.ops import compare_storage
+        fast = compare_storage(storage, rhs, op_func)
+    if fast is None:
+        from .._accel.arrow import compare_strings
+        fast = compare_strings(storage, rhs, op_func)
     if fast is None:
         return None
     result = Vector._from_storage(fast, Schema(bool, nullable))

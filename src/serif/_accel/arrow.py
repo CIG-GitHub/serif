@@ -43,10 +43,14 @@ _USE_ARROW is a private switch for tests/benchmarks, not API.
 
 from __future__ import annotations
 
+import operator as _op
+
 try:
     import pyarrow as _pa
+    import pyarrow.compute as _pc
 except ImportError:            # pyarrow not installed — every call declines
     _pa = None
+    _pc = None
 
 from . import _np
 from .._vector.nullable import BitMask
@@ -55,6 +59,15 @@ from .._vector.storage import BoolStorage, StringStorage
 _USE_ARROW = _pa is not None
 
 _I32_MAX = 2**31 - 1
+
+_CMP_KERNELS = {
+    _op.eq: 'equal',
+    _op.ne: 'not_equal',
+    _op.lt: 'less',
+    _op.le: 'less_equal',
+    _op.gt: 'greater',
+    _op.ge: 'greater_equal',
+}
 
 
 def string_array(storage):
@@ -92,6 +105,33 @@ def bitmask(arr):
     n   = len(arr)
     buf = bytearray(memoryview(arr.buffers()[0])[:(n + 7) // 8])
     return BitMask(buf, n)
+
+
+def compare_strings(storage, rhs, op_func):
+    """Comparison on string buffers → BoolStorage, or None to DECLINE.
+
+    StringStorage vs str scalar only (vector-vector is the next step).
+    This sits in the BIT-IDENTICAL tier (ops.py's contract): UTF-8 byte
+    order IS codepoint order, so arrow's bytewise compare and Python's
+    str compare agree on all six operators — equality because UTF-8 is
+    injective, ordering because UTF-8 sorts bytewise in codepoint order.
+
+    The rhs guard is exact (`type(rhs) is str`): a str SUBCLASS may
+    override comparison, and the pure path would honor it — subclasses
+    decline. None rhs declines too (the pure path yields all-null, with
+    the warning already emitted upstream). Null lanes never compare:
+    arrow propagates input validity straight to the result, exactly the
+    pure path's `None if x is None` — no sentinel ever leaks.
+    """
+    if type(rhs) is not str:
+        return None
+    kernel = _CMP_KERNELS.get(op_func)
+    if kernel is None:
+        return None
+    arr = string_array(storage)
+    if arr is None:
+        return None
+    return bool_storage(getattr(_pc, kernel)(arr, rhs))
 
 
 def bool_storage(arr):
