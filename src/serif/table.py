@@ -1451,10 +1451,11 @@ class Table(Vector):
         # ------------------------------------------------------------------
         # 2. Match rows → (left_take, right_take) gather index lists, with
         #    -1 as the pad sentinel. A single int64 key pair probes
-        #    entirely in numpy (sort + searchsorted + ragged expand);
-        #    cardinality violations come back as tags so the error is
-        #    raised HERE with the exact text the pure matcher uses. Any
-        #    decline runs the pure matcher: hash index + row loop.
+        #    entirely in numpy (sort + searchsorted + ragged expand), and
+        #    a single string key pair rides arrow codes into the same
+        #    probe; cardinality violations come back as tags so the error
+        #    is raised HERE with the exact text the pure matcher uses.
+        #    Any decline runs the pure matcher: hash index + row loop.
         # ------------------------------------------------------------------
         probed = (_accel_join_probe(
                       left_keys[0]._storage, right_keys[0]._storage,

@@ -180,6 +180,52 @@ def group_strings(storage):
     return {(keys[c],): groups[c] for c in range(k)}
 
 
+def join_probe_strings(left_storage, right_storage,
+                       expect_left_unique, expect_right_unique,
+                       keep_unmatched_left, keep_unmatched_right):
+    """Vectorized join probe for string key columns; None to DECLINE.
+
+    Same two-backend composition as group_strings (both switches gate):
+    arrow encodes, numpy probes. BOTH key columns encode through ONE
+    dictionary — concat then dictionary_encode — so every distinct
+    string on either side gets its own code, and the codes feed
+    join.probe_codes exactly as int64 keys would. Encoding the sides
+    separately would be wrong, not just awkward: strings absent from
+    the other side would share one "missing" code, and two DISTINCT
+    unmatched left keys would falsely trip expect_left_unique.
+
+    Nullable keys decline: the pure loop joins None keys like any other
+    value ((None,) == (None,) matches), and codes cannot carry that.
+
+    Cardinality tags come back holding a duplicate CODE; the string it
+    encodes — the key the pure loop's error text reports — goes out.
+    """
+    from . import _USE_NUMPY
+    if not _USE_NUMPY or _np is None:
+        return None
+    if not (isinstance(left_storage, StringStorage)
+            and isinstance(right_storage, StringStorage)):
+        return None
+    if left_storage._mask is not None or right_storage._mask is not None:
+        return None
+    left_arr  = string_array(left_storage)
+    right_arr = string_array(right_storage)
+    if left_arr is None or right_arr is None:
+        return None
+
+    from .join import probe_codes
+    enc   = _pa.concat_arrays([left_arr, right_arr]).dictionary_encode()
+    codes = enc.indices.to_numpy(zero_copy_only=True)
+    n_l   = len(left_storage)
+    result = probe_codes(codes[:n_l], codes[n_l:],
+                         expect_left_unique, expect_right_unique,
+                         keep_unmatched_left, keep_unmatched_right)
+    if result[0] == 'ok':
+        return result
+    tag, (code,), count = result
+    return (tag, (enc.dictionary[code].as_py(),), count)
+
+
 def bool_storage(arr):
     """pa.BooleanArray (a kernel result) → BoolStorage; None to DECLINE.
 

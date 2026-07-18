@@ -18,6 +18,12 @@ intp arrays and -1 as the pad sentinel; ('right_dup', key, count) or
 so the error text lives in one layer next to the pure loop's) — or None
 to DECLINE (either key column not int64 ArrayStorage, or nullable). The
 pure matcher's behavior is the specification.
+
+The match itself never looks at what the ints MEAN, so the core lives
+in probe_codes, which probes any pair of integer lane arrays: int64 key
+values here, dictionary codes for the arrow string probe
+(serif/_accel/arrow.py). Keys inside its dup tags are raw lane values —
+probe_int64 surfaces them as-is; code-space callers translate.
 """
 
 from __future__ import annotations
@@ -60,7 +66,17 @@ def probe_int64(left_storage, right_storage,
 
     left_vals  = _np.frombuffer(left_storage._data,  dtype=_np.int64)
     right_vals = _np.frombuffer(right_storage._data, dtype=_np.int64)
+    return probe_codes(left_vals, right_vals,
+                       expect_left_unique, expect_right_unique,
+                       keep_unmatched_left, keep_unmatched_right)
 
+
+def probe_codes(left_vals, right_vals,
+                expect_left_unique, expect_right_unique,
+                keep_unmatched_left, keep_unmatched_right):
+    """The probe core over two integer lane arrays (any int dtype): the
+    module docstring's algorithm, verbatim. Never declines — storage-
+    level gates live in the callers. Dup-tag keys are raw lane values."""
     order       = _np.argsort(right_vals, kind='stable')
     sorted_keys = right_vals[order]
 

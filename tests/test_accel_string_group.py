@@ -198,7 +198,8 @@ def test_string_group_fast_path_engages(monkeypatch):
     left = Table({'k': ['a', 'b'], 'x': [1, 2]})
     right = Table({'k': ['b'], 'y': [2.5]})
     left.left_join(right, 'k', 'k')
-    assert calls == [True]    # right-index build buckets via arrow
+    assert calls == []        # the arrow join PROBE answers string joins
+    #                           now; the right-index build never runs
 
     calls.clear()
     t2 = Table({'g': [1, 2, 1], 'x': [1.0, 2.0, 3.0]})

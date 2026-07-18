@@ -359,16 +359,24 @@ def _accel_group(storage):
 def _accel_join_probe(left_storage, right_storage,
                       expect_left_unique, expect_right_unique,
                       keep_unmatched_left, keep_unmatched_right):
-    """Numpy-accelerated single-key join probe. Returns a tagged tuple
-    (see serif/_accel/join.py) or None = decline to the pure matcher,
-    whose behavior is the specification."""
+    """Accelerated single-key join probe. Returns a tagged tuple (see
+    serif/_accel/join.py) or None = decline to the pure matcher, whose
+    behavior is the specification. numpy probes int64 keys; string keys
+    encode through arrow into the same probe core (serif/_accel/arrow.py,
+    which gates on both switches itself)."""
     from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .._accel.join import probe_int64
-    return probe_int64(left_storage, right_storage,
-                       expect_left_unique, expect_right_unique,
-                       keep_unmatched_left, keep_unmatched_right)
+    fast = None
+    if _accel._USE_NUMPY:
+        from .._accel.join import probe_int64
+        fast = probe_int64(left_storage, right_storage,
+                           expect_left_unique, expect_right_unique,
+                           keep_unmatched_left, keep_unmatched_right)
+    if fast is None:
+        from .._accel.arrow import join_probe_strings
+        fast = join_probe_strings(left_storage, right_storage,
+                                  expect_left_unique, expect_right_unique,
+                                  keep_unmatched_left, keep_unmatched_right)
+    return fast
 
 
 def _accel_reduce(storage, op, **kwargs):
