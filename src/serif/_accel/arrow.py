@@ -110,28 +110,37 @@ def bitmask(arr):
 def compare_strings(storage, rhs, op_func):
     """Comparison on string buffers → BoolStorage, or None to DECLINE.
 
-    StringStorage vs str scalar only (vector-vector is the next step).
-    This sits in the BIT-IDENTICAL tier (ops.py's contract): UTF-8 byte
-    order IS codepoint order, so arrow's bytewise compare and Python's
-    str compare agree on all six operators — equality because UTF-8 is
-    injective, ordering because UTF-8 sorts bytewise in codepoint order.
+    StringStorage vs str scalar, or StringStorage vs StringStorage (the
+    caller has already length-checked). This sits in the BIT-IDENTICAL
+    tier (ops.py's contract): UTF-8 byte order IS codepoint order, so
+    arrow's bytewise compare and Python's str compare agree on all six
+    operators — equality because UTF-8 is injective, ordering because
+    UTF-8 sorts bytewise in codepoint order.
 
-    The rhs guard is exact (`type(rhs) is str`): a str SUBCLASS may
+    The scalar guard is exact (`type(rhs) is str`): a str SUBCLASS may
     override comparison, and the pure path would honor it — subclasses
-    decline. None rhs declines too (the pure path yields all-null, with
-    the warning already emitted upstream). Null lanes never compare:
-    arrow propagates input validity straight to the result, exactly the
-    pure path's `None if x is None` — no sentinel ever leaks.
+    decline. (StringStorage needs no such guard: it never holds anything
+    but real str.) None rhs declines too (the pure path yields all-null,
+    with the warning already emitted upstream). Null lanes never
+    compare: arrow propagates input validity straight to the result —
+    either side's null nulls the lane, exactly the pure path's
+    `None if (x is None or y is None)` — so no sentinel ever leaks.
     """
-    if type(rhs) is not str:
-        return None
     kernel = _CMP_KERNELS.get(op_func)
     if kernel is None:
+        return None
+    if type(rhs) is str:
+        other = rhs
+    elif isinstance(rhs, StringStorage):
+        other = string_array(rhs)
+        if other is None:
+            return None
+    else:
         return None
     arr = string_array(storage)
     if arr is None:
         return None
-    return bool_storage(getattr(_pc, kernel)(arr, rhs))
+    return bool_storage(getattr(_pc, kernel)(arr, other))
 
 
 def bool_storage(arr):

@@ -2,8 +2,9 @@
 Conformance tests for the OPTIONAL arrow-accelerated string comparisons.
 
 The guarantee under test — python in → python out, backend-independent:
-for any string vector and scalar, `v <op> scalar` must return an
-IDENTICAL vector whether the arrow backend runs or not. Same values,
+for any string vector and any scalar or second vector, `v <op> other`
+must return an IDENTICAL vector whether the arrow backend runs or not.
+Same values,
 same nulls in the same slots, same schema, same storage type — and every
 surfaced value a concrete Python bool, never an arrow or numpy scalar.
 
@@ -183,3 +184,60 @@ def test_kleene_chaining_and_filter():
     pure_rows = _pure(lambda: list(v[compound()]))
     fast_rows = list(v[compound()])
     assert fast_rows == pure_rows
+
+
+# ---------------------------------------------------------------------------
+# Vector vs vector
+# ---------------------------------------------------------------------------
+
+def test_vector_vector_all_ops_with_nulls():
+    # Nulls staggered across the two sides: left-only, right-only, both.
+    v = Vector(['apple', 'banana', None, '',   'pear', None, 'kiwi'])
+    w = Vector(['apple', 'apple',  'x',  None, 'pear', None, 'lime'])
+    for op in OPS:
+        _conform(v, op, w)
+
+
+def test_vector_vector_no_nulls():
+    v = Vector(['delta', 'alpha', '', 'echo'])
+    w = Vector(['delta', 'beta', 'a', ''])
+    for op in OPS:
+        _conform(v, op, w)
+
+
+def test_vector_vector_unicode():
+    nfc, nfd = chr(0xE9), 'e' + chr(0x301)   # one codepoint vs two
+    v = Vector([nfc, nfd, '\U0001f600', 'z'])
+    w = Vector([nfd, nfc, '\U0001f600', 'a'])
+    for op in OPS:
+        _conform(v, op, w)
+
+
+def test_vector_vector_engages():
+    v = Vector(['apple', None, 'b'])
+    w = Vector(['apple', 'c', None])
+    st = bridge.compare_strings(v._storage, w._storage, operator.eq)
+    assert type(st) is BoolStorage
+    assert list(st) == [True, None, None]
+
+
+def test_vector_vector_empty():
+    v = Vector(['a'])[:0]
+    assert type(v._storage) is StringStorage   # the premise, not the test
+    for op in OPS:
+        _conform(v, op, v)
+
+
+def test_vector_vector_mixed_kind_declines():
+    # String column vs int column: eq/ne compare unequal (False), ordering
+    # raises — both identical to pure, arrow never engages (rhs storage is
+    # not a StringStorage).
+    v = Vector(['apple', 'banana', None])
+    w = Vector([1, 2, 3])
+    assert bridge.compare_strings(v._storage, w._storage, operator.eq) is None
+    _conform(v, operator.eq, w)
+    _conform(v, operator.ne, w)
+    with pytest.raises(TypeError):
+        v < w
+    with pytest.raises(TypeError):
+        _pure(lambda: v < w)
