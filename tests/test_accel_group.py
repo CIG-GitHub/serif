@@ -203,6 +203,37 @@ def test_expect_right_unique_error_matches_pure():
     assert str(fast_err.value) == str(pure_err.value)
 
 
+def test_expect_left_unique_error_matches_pure():
+    def run():
+        left = Table({'id': [7, 8, 7], 'x': [1, 2, 3]})
+        right = Table({'id': [7, 8], 'y': [10, 20]})
+        return left.inner_join(right, 'id', 'id', expect_left_unique=True)
+    with pytest.raises(SerifValueError) as fast_err:
+        run()
+    with pytest.raises(SerifValueError) as pure_err:
+        _pure(run)
+    assert str(fast_err.value) == str(pure_err.value)
+
+
+def test_multi_key_join_declines_conforms():
+    def run():
+        left = Table({'a': [1, 1, 2], 'b': [1, 2, 1], 'x': [10, 20, 30]})
+        right = Table({'a': [1, 2], 'b': [2, 1], 'y': [200, 300]})
+        return left.inner_join(right, ['a', 'b'], ['a', 'b'])
+    _assert_tables_identical(_pure(run), run())
+
+
+def test_left_join_empty_right_conforms():
+    def run():
+        left = Table({'id': [1, 2], 'x': [1.5, 2.5]})
+        right = Table({'id': Vector([], dtype=int),
+                       'y': Vector([], dtype=float)})
+        return left.left_join(right, 'id', 'id')
+    fast, pure = run(), _pure(run)
+    _assert_tables_identical(pure, fast)
+    assert list(fast['y']) == [None, None]
+
+
 # ---------------------------------------------------------------------------
 # Partitions — aggregate conformance incl. first-appearance group order
 # ---------------------------------------------------------------------------
@@ -262,15 +293,21 @@ def test_group_fast_path_engages(monkeypatch):
 
 
 def test_join_fast_paths_engage(monkeypatch):
-    from serif._accel import group as group_mod
+    from serif._accel import join as join_mod
     from serif._accel import mask as mask_mod
-    group_calls, pad_calls = [], []
-    _spy(monkeypatch, group_mod, 'group_indices', group_calls)
+    probe_calls, pad_calls = [], []
+    _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)
     _spy(monkeypatch, mask_mod, 'take_pad_storage', pad_calls)
 
     left = Table({'id': [1, 2, 3], 'a': [1.0, 2.0, 3.0]})
     right = Table({'id': [2, 3], 'b': ['x', 'y']})
     left.left_join(right, 'id', 'id')
 
-    assert group_calls == [True]
+    assert probe_calls == [True]         # int64 keys probe in numpy
     assert pad_calls and all(pad_calls)  # every typed column gathered fast
+
+    probe_calls.clear()
+    left2 = Table({'k': ['a', 'b'], 'x': [1, 2]})
+    right2 = Table({'k': ['b'], 'y': [2.5]})
+    left2.left_join(right2, 'k', 'k')
+    assert probe_calls == [False]        # str keys decline to pure matcher

@@ -334,6 +334,21 @@ def _accel_group(storage):
     return group_indices(storage)
 
 
+def _accel_join_probe(left_storage, right_storage,
+                      expect_left_unique, expect_right_unique,
+                      keep_unmatched_left, keep_unmatched_right):
+    """Numpy-accelerated single-key join probe. Returns a tagged tuple
+    (see serif/_accel/join.py) or None = decline to the pure matcher,
+    whose behavior is the specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.join import probe_int64
+    return probe_int64(left_storage, right_storage,
+                       expect_left_unique, expect_right_unique,
+                       keep_unmatched_left, keep_unmatched_right)
+
+
 def _accel_reduce(storage, op, **kwargs):
     """Try a numpy-accelerated reduction. Returns (True, value) when the
     fast path produced the answer, (False, None) on decline — the caller

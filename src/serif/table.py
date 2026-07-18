@@ -8,6 +8,7 @@ from ._vector.base import _null_sort_flag
 from ._vector.base import _accel_take
 from ._vector.base import _accel_take_pad
 from ._vector.base import _accel_group
+from ._vector.base import _accel_join_probe
 from ._vector.base import _take
 
 from .naming import _sanitize_user_name
@@ -1286,7 +1287,6 @@ class Table(Vector):
             for col in (left_keys + right_keys)
         )
 
-        left_nrows = len(self)
         right_nrows = len(other)
         left_cols = self._storage
         right_cols = other._storage
@@ -1299,6 +1299,75 @@ class Table(Vector):
             idx for idx, col in enumerate(right_cols)
             if any(col is rk and lk._name == rk._name for lk, rk in pairs)
         }
+
+        # ------------------------------------------------------------------
+        # 2. Match rows → (left_take, right_take) gather index lists, with
+        #    -1 as the pad sentinel. A single int64 key pair probes
+        #    entirely in numpy (sort + searchsorted + ragged expand);
+        #    cardinality violations come back as tags so the error is
+        #    raised HERE with the exact text the pure matcher uses. Any
+        #    decline runs the pure matcher: hash index + row loop.
+        # ------------------------------------------------------------------
+        probed = (_accel_join_probe(
+                      left_keys[0]._storage, right_keys[0]._storage,
+                      expect_left_unique, expect_right_unique,
+                      keep_unmatched_left, keep_unmatched_right)
+                  if len(pairs) == 1 else None)
+        if probed is None:
+            left_take, right_take = self._join_probe_pure(
+                left_keys, right_keys, right_nrows,
+                validate_hashable=validate_hashable,
+                expect_left_unique=expect_left_unique,
+                expect_right_unique=expect_right_unique,
+                keep_unmatched_left=keep_unmatched_left,
+                keep_unmatched_right=keep_unmatched_right,
+            )
+        elif probed[0] == 'right_dup':
+            raise SerifValueError(
+                f"expect_right_unique=True violated: right side has duplicate key {probed[1]} "
+                f"(appears {probed[2]} times)."
+            )
+        elif probed[0] == 'left_dup':
+            raise SerifValueError(
+                f"expect_left_unique=True violated: left side has duplicate key {probed[1]}."
+            )
+        else:
+            left_take, right_take = probed[1], probed[2]
+
+        # ------------------------------------------------------------------
+        # 3. Materialize name-preserving output columns: one gather each
+        # ------------------------------------------------------------------
+        if not len(left_take):
+            return Table(())
+
+        # A side only gains injected None rows when the OTHER side keeps its
+        # unmatched rows.
+        left_nullable_pad = keep_unmatched_right
+        right_nullable_pad = keep_unmatched_left
+
+        result_cols = []
+        for orig_col in left_cols:
+            result_cols.append(Table._gather_join_column(
+                orig_col, left_take, left_nullable_pad))
+        for offset, orig_col in enumerate(right_cols):
+            if offset not in drop_right_idx:
+                result_cols.append(Table._gather_join_column(
+                    orig_col, right_take, right_nullable_pad))
+
+        return Table(result_cols)
+
+    def _join_probe_pure(self, left_keys, right_keys, right_nrows, *,
+                         validate_hashable,
+                         expect_left_unique, expect_right_unique,
+                         keep_unmatched_left, keep_unmatched_right):
+        """
+        Pure-python row matcher: hash-index the right side, probe left rows
+        in order, return (left_take, right_take) index lists with -1 as the
+        pad sentinel. THE specification for the vectorized probe
+        (serif/_accel/join.py) — every semantic here (bucket order, raise
+        order, error text) must be reproduced exactly there.
+        """
+        left_nrows = len(self)
 
         # Materialize key columns once -- per-row storage access would pay
         # unboxing/decoding costs inside the hot loops below. (The right
@@ -1350,8 +1419,8 @@ class Table(Vector):
 
         # ------------------------------------------------------------------
         # 4. Probe in left-row order, building gather index lists — the
-        #    rows are only ints here; column emission is deferred to one
-        #    take per column in step 6.
+        #    rows are only ints here; column emission happens back in
+        #    _join_impl, one take per column.
         # ------------------------------------------------------------------
         left_take = []
         right_take = []
@@ -1393,27 +1462,7 @@ class Table(Vector):
                     left_take.append(PAD)
                     right_take.append(right_idx)
 
-        # ------------------------------------------------------------------
-        # 6. Materialize name-preserving output columns: one gather each
-        # ------------------------------------------------------------------
-        if not left_take:
-            return Table(())
-
-        # A side only gains injected None rows when the OTHER side keeps its
-        # unmatched rows.
-        left_nullable_pad = keep_unmatched_right
-        right_nullable_pad = keep_unmatched_left
-
-        result_cols = []
-        for orig_col in left_cols:
-            result_cols.append(Table._gather_join_column(
-                orig_col, left_take, left_nullable_pad))
-        for offset, orig_col in enumerate(right_cols):
-            if offset not in drop_right_idx:
-                result_cols.append(Table._gather_join_column(
-                    orig_col, right_take, right_nullable_pad))
-
-        return Table(result_cols)
+        return left_take, right_take
 
     @staticmethod
     def _gather_join_column(orig_col, indices, nullable_pad):

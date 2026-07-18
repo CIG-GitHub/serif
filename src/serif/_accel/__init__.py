@@ -25,7 +25,7 @@ is the one proven by the pyarrow reader (serif/io/_arrow.py):
 
 Modules: mask (row gathering — filter, take, padded take), reduce
 (sum/mean/stdev/min/max), ops (elementwise), group (single-key
-bucketing for joins and partitions).
+bucketing for partitions), join (vectorized single-key join probe).
 
 _USE_NUMPY is a private switch for tests/benchmarks, not API.
 """
