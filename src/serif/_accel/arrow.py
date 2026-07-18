@@ -143,6 +143,43 @@ def compare_strings(storage, rhs, op_func):
     return bool_storage(getattr(_pc, kernel)(arr, other))
 
 
+def group_strings(storage):
+    """Single-key bucketing for string columns: {(str,): row_indices}
+    with keys in FIRST-APPEARANCE order and row indices ascending within
+    each bucket — the same dict the pure loops build and group.py's
+    group_indices returns for int64, buckets held as numpy arrays for
+    the same zero-conversion flow into the downstream gathers. None to
+    DECLINE.
+
+    A two-backend composition, so BOTH switches gate it: arrow's hash
+    kernel turns UTF-8 content into dense int codes (dictionary_encode
+    builds its dictionary in first-appearance order, so no reorder pass
+    is needed), then the codes ride the same argsort/bincount/split math
+    as group.py. Only the final wrap — one dict entry and one decoded
+    str per DISTINCT key — runs in Python.
+
+    Nullable declines for group.py's reason: None is a legitimate pure-
+    path group key that the buffer math cannot carry.
+    """
+    from . import _USE_NUMPY
+    if not _USE_NUMPY or _np is None:
+        return None
+    if not isinstance(storage, StringStorage) or storage._mask is not None:
+        return None
+    arr = string_array(storage)
+    if arr is None:
+        return None
+    enc    = arr.dictionary_encode()
+    codes  = enc.indices.to_numpy(zero_copy_only=True)
+    k      = len(enc.dictionary)
+    order  = _np.argsort(codes, kind='stable')   # rows grouped by code,
+                                                 # ascending within group
+    counts = _np.bincount(codes, minlength=k)
+    groups = _np.split(order, _np.cumsum(counts)[:-1])
+    keys   = enc.dictionary.to_pylist()          # Python strs, one per distinct
+    return {(keys[c],): groups[c] for c in range(k)}
+
+
 def bool_storage(arr):
     """pa.BooleanArray (a kernel result) → BoolStorage; None to DECLINE.
 

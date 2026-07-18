@@ -340,14 +340,20 @@ def _accel_take_pad(storage, indices):
 
 
 def _accel_group(storage):
-    """Numpy-accelerated single-key bucketing ({(key,): [rows]} in first-
-    appearance order); None = decline to the pure dict loop, whose behavior
-    is the specification."""
+    """Accelerated single-key bucketing ({(key,): [rows]} in first-
+    appearance order); None = decline to the pure dict loop, whose
+    behavior is the specification. numpy buckets int64 keys from buffer
+    math; string keys ride arrow's hash kernel into the same math
+    (serif/_accel/arrow.py, which gates on both switches itself)."""
     from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .._accel.group import group_indices
-    return group_indices(storage)
+    fast = None
+    if _accel._USE_NUMPY:
+        from .._accel.group import group_indices
+        fast = group_indices(storage)
+    if fast is None:
+        from .._accel.arrow import group_strings
+        fast = group_strings(storage)
+    return fast
 
 
 def _accel_join_probe(left_storage, right_storage,
