@@ -1,5 +1,9 @@
 # Aliasing & Fingerprints
 
+For the rules on WHERE writes are allowed (owned columns are frozen;
+write through the table), see [mutation.md](mutation.md). This document
+covers the machinery underneath: why sharing storage is always safe.
+
 ## Alias Tracking
 
 Serif prevents accidental shared-state bugs through automatic copy-on-write.

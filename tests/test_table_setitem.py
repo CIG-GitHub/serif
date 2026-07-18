@@ -1,5 +1,10 @@
 """
 Test Table.__setitem__ with comprehensive slice coverage.
+
+All of these writes are OWNER-ADDRESSED (through the table), which is the
+legal spelling under the mutation doctrine — read through the column,
+write through the table. The vector-addressed spellings raise; see
+test_mutation_doctrine.py.
 """
 
 import pytest

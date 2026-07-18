@@ -93,7 +93,7 @@ def test_setattr_column_copies_and_preserves_caller():
     assert list(t.x) == [5, 6]
     assert v.vector_name == 'mycol', "caller's vector must not be renamed"
 
-    t.x[0] = 99
+    t[0, 'x'] = 99
     assert list(v) == [5, 6], "caller's vector must not share storage with the table"
     assert list(t.x) == [99, 6]
 
@@ -112,7 +112,7 @@ def test_setitem_none_promotes_schema_to_nullable():
 
 def test_setitem_none_then_parquet_roundtrip(tmp_path):
     t = Table({'x': [1, 2, 3]})
-    t.x[0] = None
+    t[0, 'x'] = None
     p = str(tmp_path / 'nullable.parquet')
     t.to_parquet(p)
     back = Table.from_parquet(p)
@@ -129,7 +129,7 @@ def test_setitem_int_keeps_arraystorage_and_parquet_writable(tmp_path):
     assert isinstance(v._storage, ArrayStorage)
 
     t = Table({'x': [1, 2, 3]})
-    t.x[0] = 9
+    t[0, 'x'] = 9
     p = str(tmp_path / 'mutated.parquet')
     t.to_parquet(p)
     assert list(Table.from_parquet(p)['x']) == [9, 2, 3]

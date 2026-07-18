@@ -425,6 +425,14 @@ class Vector():
     _name = None
     _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
+    # Mutation doctrine: read through the column, write through the table.
+    # A table-owned column is FROZEN (__setitem__ raises; write via
+    # t[key, 'col'] = value, which swaps in a fresh column). _inplace_ok is
+    # set only inside a batch() scope, after copy-on-enter privatized the
+    # buffers — it licenses raw in-place writes that would corrupt shared
+    # storage anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
+    _frozen = False
+    _inplace_ok = False
     
     # Fingerprint constants for O(1) change detection
     _FP_P = (1 << 61) - 1  # Mersenne prime (2^61 - 1)
@@ -982,7 +990,33 @@ class Vector():
         raise SerifTypeError(f'Vector indices must be boolean vectors, integer vectors or integers, not {str(type(key))}')
 
 
+    def _require_mutable(self):
+        """Raise if this vector is a frozen table-owned column.
+
+        The doctrine: read through the column, write through the table.
+        A vector read out of a table is a value — it cannot mutate the
+        table (and the table cannot mutate it back: owner writes swap in
+        a fresh column object). Mutation is owner-addressed.
+        """
+        if self._frozen:
+            col = self._name if self._name is not None else 'col'
+            raise SerifTypeError(
+                "Read-out columns are values: this vector is owned by a "
+                "Table and is frozen. Write through the owning table "
+                "instead:\n"
+                f"    t[key, {col!r}] = value\n"
+                "For an independent mutable vector use .copy(); for bulk "
+                "point-write loops use `with t.batch() as m:`."
+            )
+
     def __setitem__(self, key, value):
+        """Public assignment: frozen table-owned columns raise (write
+        through the table — see _require_mutable); everything else
+        delegates to _setitem_impl."""
+        self._require_mutable()
+        self._setitem_impl(key, value)
+
+    def _setitem_impl(self, key, value):
         """
         Optimized in-place assignment for Vector with:
         - boolean masks
@@ -1170,8 +1204,20 @@ class Vector():
                 if saw_none and not self._dtype.nullable:
                     self._dtype = Schema(self._dtype.kind, True)
         # =====================================================================
-        # MUTATE — copy-on-write + fingerprint invalidation
+        # MUTATE — in-place fast path (batch() scope only), else rebuild
         # =====================================================================
+        # Raw writes are legal only inside a batch() scope: copy-on-enter
+        # privatized the buffers, so nothing else can observe them. The
+        # storage declines (False) anything it can't hold — including after
+        # an in-place kind promotion, which swapped in a TupleStorage with
+        # no write_inplace at all — and the rebuild path below remains the
+        # specification.
+        if self._inplace_ok and updates:
+            write = getattr(self._storage, 'write_inplace', None)
+            if write is not None and write(updates):
+                self._invalidate_fp()
+                return
+
         data_list = list(underlying)           # COW materialization
 
         for idx, new_val in updates:

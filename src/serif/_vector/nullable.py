@@ -145,3 +145,19 @@ class BitMask:
         new_buf = bytearray(self._buf)
         new_buf[idx >> 3] |= 1 << (idx & 7)
         return BitMask(new_buf, self._length)
+
+    # ------------------------------------------------------------------
+    # In-place mutation — PRIVATELY-OWNED masks only
+    # ------------------------------------------------------------------
+    # These write into the buffer directly, so they are legal only on a
+    # mask nobody else shares — i.e. one produced by a storage's
+    # private_copy() inside a batch() scope. Everywhere else, use the
+    # copy-on-write mark_null/mark_valid above.
+
+    def set_null(self, idx: int) -> None:
+        """Mark element idx null, in place. Caller guarantees ownership."""
+        self._buf[idx >> 3] &= ~(1 << (idx & 7)) & 0xFF
+
+    def set_valid(self, idx: int) -> None:
+        """Mark element idx valid, in place. Caller guarantees ownership."""
+        self._buf[idx >> 3] |= 1 << (idx & 7)
