@@ -63,7 +63,10 @@ class TestCopy:
         v2 = v1.copy()
         assert list(v1) == list(v2)
         assert v1 is not v2
-        assert v1._storage is not v2._storage
+        # copy() SHARES the frozen storage (O(1) snapshot); independence
+        # comes from rebuild-on-write, pinned by the COW tripwires in
+        # test_storage_protocol.py.
+        assert v1._storage is v2._storage
     
     def test_copy_mutation_independence(self):
         v1 = Vector([1, 2, 3])

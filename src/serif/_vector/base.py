@@ -294,6 +294,61 @@ def _accel_filter(storage, mask):
     return filter_storage(storage, mask)
 
 
+def _accel_take(storage, indices):
+    """Numpy-accelerated positional gather; None = decline to the pure
+    storage.take(), whose behavior is the specification. OPTIONAL numpy —
+    transport, never semantics; see serif/_accel/__init__.py."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import take_storage
+    return take_storage(storage, indices)
+
+
+def _take(storage, indices):
+    """storage.take() behind the accelerator: numpy gather when the backend
+    is supported, the protocol's pure take() otherwise."""
+    fast = _accel_take(storage, indices)
+    return fast if fast is not None else storage.take(indices)
+
+
+def _accel_take_pad(storage, indices):
+    """Numpy-accelerated gather where index -1 emits null (join pad rows);
+    None = decline to the caller's pure emission, whose behavior is the
+    specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import take_pad_storage
+    return take_pad_storage(storage, indices)
+
+
+def _accel_group(storage):
+    """Numpy-accelerated single-key bucketing ({(key,): [rows]} in first-
+    appearance order); None = decline to the pure dict loop, whose behavior
+    is the specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.group import group_indices
+    return group_indices(storage)
+
+
+def _accel_join_probe(left_storage, right_storage,
+                      expect_left_unique, expect_right_unique,
+                      keep_unmatched_left, keep_unmatched_right):
+    """Numpy-accelerated single-key join probe. Returns a tagged tuple
+    (see serif/_accel/join.py) or None = decline to the pure matcher,
+    whose behavior is the specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.join import probe_int64
+    return probe_int64(left_storage, right_storage,
+                       expect_left_unique, expect_right_unique,
+                       keep_unmatched_left, keep_unmatched_right)
+
+
 def _accel_reduce(storage, op, **kwargs):
     """Try a numpy-accelerated reduction. Returns (True, value) when the
     fast path produced the answer, (False, None) on decline — the caller
@@ -471,7 +526,9 @@ class Vector():
                                          dispatch; the only path that may
                                          return a Table.
         copy()                         — same subclass & schema, name kept
-                                         by default; storage rebuilt.
+                                         by default; storage SHARED (rebuild-
+                                         on-write keeps copies independent),
+                                         rebuilt only when new_values given.
         _clone(storage)                — SAME subclass, dtype/name kept:
                                          permutations of existing data only.
                                          Never changes the element kind.
@@ -615,11 +672,22 @@ class Vector():
 
 
     def copy(self, new_values=None, name=...):
+        """
+        Snapshot of this vector. With no new_values this is O(1): the frozen
+        storage object is SHARED, not duplicated — the storage protocol is
+        rebuild-only (storage.py), so mutating either vector rebinds it a NEW
+        storage and the other never sees the write. Pass new_values to build
+        a same-schema vector from different data (storage rebuilt).
+        """
         use_name = self._name if name is ... else name
         if self._dtype is not None:
-            # Typed 1D vector: build storage directly, no inference needed.
-            source = new_values if new_values is not None else self._storage
-            return self._clone(self._build_storage(source, self._dtype.nullable), name=use_name)
+            if new_values is None:
+                result = self._clone(self._storage, name=use_name)
+                result._fp = self._fp  # same frozen data, same fingerprint
+                return result
+            # Typed 1D vector with replacement values: build storage
+            # directly, no inference needed.
+            return self._clone(self._build_storage(new_values, self._dtype.nullable), name=use_name)
         # dtype unknown (Table or untyped vector): full constructor for class
         # dispatch. Explicit None check — an empty new_values means "empty
         # copy", not "copy the original".
@@ -778,7 +846,7 @@ class Vector():
         storage = self._storage
         new_dtype = Schema(self._dtype.kind, False) if self._dtype is not None else None
         kept = [i for i in range(len(storage)) if not storage.is_null(i)]
-        return self._clone(storage.take(kept), dtype=new_dtype)
+        return self._clone(_take(storage, kept), dtype=new_dtype)
 
     def isna(self):
         """
@@ -1723,7 +1791,7 @@ class Vector():
 
         # Permute through the storage protocol — no Vector() constructor,
         # no type inference, works for every backend.
-        return self._clone(storage.take(order))
+        return self._clone(_take(storage, order))
 
 
     def _check_duplicate(self, other):
