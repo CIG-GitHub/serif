@@ -271,6 +271,21 @@ def _accel_filter(storage, mask):
     return filter_storage(storage, mask)
 
 
+def _accel_reduce(storage, op, **kwargs):
+    """Try a numpy-accelerated reduction. Returns (True, value) when the
+    fast path produced the answer, (False, None) on decline — the caller
+    runs the pure path, whose behavior is the specification. None is a
+    legitimate value (max of all-null), hence the flag."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return False, None
+    from .._accel import reduce as _reduce
+    result = getattr(_reduce, op)(storage, **kwargs)
+    if result is _accel.DECLINED:
+        return False, None
+    return True, result
+
+
 def _pick_target_class(dtype):
     """Return the Vector subclass appropriate for the given DataType."""
     if dtype is None:
@@ -1419,12 +1434,18 @@ class Vector():
     def max(self):
         if self.ndims() == 2:
             return self.copy((c.max() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'max_')
+        if ok:
+            return fast
         non_none = [v for v in self._storage if v is not None]
         return max(non_none) if non_none else None
 
     def min(self):
         if self.ndims() == 2:
             return self.copy((c.min() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'min_')
+        if ok:
+            return fast
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
@@ -1453,6 +1474,9 @@ class Vector():
     def sum(self):
         if self.ndims() == 2:
             return self.copy((c.sum() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'sum_')
+        if ok:
+            return fast
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
@@ -1518,6 +1542,9 @@ class Vector():
     def mean(self):
         if self.ndims() == 2:
             return self.copy((c.mean() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'mean')
+        if ok:
+            return fast
         # Exclude None values from mean
         non_none = [v for v in self._storage if v is not None]
         return sum(non_none) / len(non_none) if non_none else None
@@ -1525,13 +1552,17 @@ class Vector():
     def stdev(self, population=False):
         if self.ndims() == 2:
             return self.copy((c.stdev(population) for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'stdev', population=population)
+        if ok:
+            return fast
         # Exclude None values from stdev
         non_none = [v for v in self._storage if v is not None]
         if len(non_none) < 2:
             return None
         m = sum(non_none) / len(non_none)
         # use in-place sum over generator for fastness. I AM SPEED!
-        # This is still 10x slower than numpy.
+        # This is no longer 10x slower than numpy — numpy IS the fast path
+        # above; this is the zero-dependency fallback and the specification.
         num = sum((x-m)*(x-m) for x in non_none)
         return (num/(len(non_none) - 1 + population))**0.5
 

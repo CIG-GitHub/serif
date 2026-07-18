@@ -18,18 +18,9 @@ from __future__ import annotations
 
 import array as _pyarray
 
-from . import _np
+from . import _np, NP_DTYPES, valid_bits as _valid_bits
 from .._vector.nullable import BitMask
 from .._vector.storage import ArrayStorage, BoolStorage
-
-_NP_DTYPES = {'q': 'int64', 'd': 'float64'}
-
-
-def _valid_bits(mask: BitMask, n: int):
-    """BitMask → np bool array, True where VALID (BitMask is LSB-first
-    packed with 1=valid — exactly np.unpackbits(bitorder='little'))."""
-    bits = _np.frombuffer(mask._buf, dtype=_np.uint8)
-    return _np.unpackbits(bits, count=n, bitorder='little').view(_np.bool_)
 
 
 def _selection(mask_storage, n: int):
@@ -70,7 +61,7 @@ def filter_storage(storage, mask):
         return None
 
     if isinstance(storage, ArrayStorage):
-        np_dtype = _NP_DTYPES.get(storage._data.typecode)
+        np_dtype = NP_DTYPES.get(storage._data.typecode)
         if np_dtype is None:
             return None
         vals = _np.frombuffer(storage._data, dtype=np_dtype)  # zero-copy view

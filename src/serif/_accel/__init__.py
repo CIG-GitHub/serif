@@ -35,3 +35,33 @@ except ImportError:            # numpy not installed — every call declines
     _np = None
 
 _USE_NUMPY = _np is not None
+
+# Sentinel for "the accelerator declined" — distinct from None, which is a
+# legitimate reduction RESULT (max of an all-null column is None).
+DECLINED = object()
+
+# array.array typecode → numpy dtype name, for the two accelerated kinds.
+NP_DTYPES = {'q': 'int64', 'd': 'float64'}
+
+
+def valid_bits(mask, n):
+    """BitMask → np bool array, True where VALID (BitMask is LSB-first
+    packed with 1=valid — exactly np.unpackbits(bitorder='little'))."""
+    bits = _np.frombuffer(mask._buf, dtype=_np.uint8)
+    return _np.unpackbits(bits, count=n, bitorder='little').view(_np.bool_)
+
+
+def valid_values(storage):
+    """ArrayStorage → np view of its buffer, compressed to valid lanes.
+
+    Select, don't multiply: masked lanes are EXCLUDED by boolean compress,
+    never neutralized by arithmetic — inf·0 and nan·0 are nan, so any
+    multiply-by-mask scheme corrupts float columns. Returns None to decline
+    (unsupported typecode)."""
+    np_dtype = NP_DTYPES.get(storage._data.typecode)
+    if np_dtype is None:
+        return None
+    vals = _np.frombuffer(storage._data, dtype=np_dtype)  # zero-copy view
+    if storage._mask is not None:
+        vals = vals[valid_bits(storage._mask, len(vals))]
+    return vals
