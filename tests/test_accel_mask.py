@@ -7,7 +7,7 @@ whether numpy is installed or not. Same values, same nulls in the same
 slots, same schema, same storage type, same name — and every surfaced
 value a concrete Python type, never a numpy scalar.
 
-Declines (str/date/object columns, non-BoolStorage masks) must be
+Declines (date/object columns, non-BoolStorage masks) must be
 invisible: the pure path runs and results agree by construction.
 
 Skipped entirely when numpy isn't installed.
@@ -72,6 +72,8 @@ VECTORS = [
     ("float_null",  lambda: Vector([1.5, None, float('nan'), None], name='v')),
     ("bool_dense",  lambda: Vector([True, False, True, False], name='v')),
     ("bool_null",   lambda: Vector([True, None, False, None], name='v')),
+    ("str_dense",   lambda: Vector(['alpha', '', 'γδ 🎉', 'd' * 200], name='v')),
+    ("str_null",    lambda: Vector(['alpha', None, '', None], name='v')),
 ]
 
 MASKS = [
@@ -107,10 +109,30 @@ def test_empty_vector_empty_mask():
 # Declines are invisible
 # ---------------------------------------------------------------------------
 
-def test_str_and_date_columns_take_pure_path_identically():
-    _conform(Vector(['a', None, 'c'], name='s'), Vector([True, True, False]))
+def test_date_columns_take_pure_path_identically():
     _conform(Vector([date(2026, 1, 1), date(2026, 1, 2)], name='d'),
              Vector([False, True]))
+
+
+def test_string_filter_never_decodes():
+    # The fast path gathers raw UTF-8 spans; a filtered vector must decode
+    # each survivor identically to the pure path, byte for byte.
+    v = Vector(['aé', '🎉' * 50, '', 'plain', None], name='s')
+    mask = Vector([True, True, False, True, True])
+    _conform(v, mask)
+    out = v[mask]
+    assert list(out) == ['aé', '🎉' * 50, 'plain', None]
+
+
+def test_string_filter_both_copy_strategies_conform():
+    # The copy strategy is picked by average span length (_JOIN_SPAN_BYTES):
+    # short spans take the per-byte ragged gather, long spans the
+    # slice-and-join. Both must be invisible.
+    short = Vector([f's{i}' for i in range(64)], name='v')        # ~3 B/span
+    long_ = Vector(['x' * 100 + str(i) for i in range(64)], name='v')
+    mask = Vector([i % 3 == 0 for i in range(64)])
+    _conform(short, mask)
+    _conform(long_, mask)
 
 
 def test_table_mask_conforms():
@@ -140,8 +162,9 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     monkeypatch.setattr(mask_mod, 'filter_storage', spy)
     Vector([1, 2, 3])[Vector([True, False, True])]
     Vector([True, False])[Vector([True, True])]
-    assert calls == [True, True]
+    Vector(['a', 'b'])[Vector([True, False])]
+    assert calls == [True, True, True]
 
     calls.clear()
-    Vector(['a', 'b'])[Vector([True, False])]   # str storage → declines
+    Vector([date(2026, 1, 1)])[Vector([True])]  # TupleStorage → declines
     assert calls == [False]
