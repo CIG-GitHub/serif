@@ -152,19 +152,44 @@ def _compute_headers(cols, col_indices):
     return display_names, sanitized_names, dtypes
 
 
-def _dtype_str(col) -> str:
+def _dtype_str(col, with_params: bool = False) -> str:
     """Display string for a column's dtype: 'category', kind name, or 'object',
-    with a '?' suffix when nullable."""
+    with a '?' suffix when nullable.
+
+    with_params adds the schema parameters some backends carry —
+    'Decimal(18,2)?' (precision, scale — the SQL/parquet convention) and
+    'category(3)' (cardinality). Used by t._ and the 1-D vector footer,
+    which are exact; the per-column header tags stay family-level so
+    column widths stay calm."""
     if not col._dtype:
         return "object"
     from serif._vector.categorical import _Category
     if isinstance(col, _Category):
         dtype_str = 'category'
+        if with_params:
+            dtype_str += f'({len(col._categories)})'
     else:
         dtype_str = col._dtype.kind.__name__
+        if with_params:
+            from serif._vector.storage import DecimalStorage
+            st = col._storage
+            if isinstance(st, DecimalStorage):
+                dtype_str += f'({st._precision},{st._scale})'
     if col._dtype.nullable:
         dtype_str += '?'
     return dtype_str
+
+
+def _category_order_str(categories: tuple, max_chars: int = 48) -> str:
+    """Render a category list as its ordering: 'low < mid < high'.
+
+    The '<' chain is the point — category order (not lexicographic) is what
+    makes a categorical semantically different from str. Long lists elide
+    the middle; the cardinality already lives in the 'category(N)' cell."""
+    full = ' < '.join(categories)
+    if len(full) <= max_chars:
+        return full
+    return f"{categories[0]} < {categories[1]} < … < {categories[-1]}"
 
 
 def _family_summary(cols) -> str:
@@ -259,7 +284,19 @@ class _SchemaView:
             return "# 0×0 table"
 
         shown = min(ncols, self._MAX_COLS)
-        disp, san, dtypes = _compute_headers(cols, list(range(shown)))
+        disp, san, _ = _compute_headers(cols, list(range(shown)))
+
+        # t._ is the exact view (the footer is deliberately lossy and points
+        # here): dtypes carry schema params — Decimal(18,2)?, category(3) —
+        # and categoricals get their ordering spelled out, since category
+        # order IS the schema for them.
+        from serif._vector.categorical import _Category
+        dtypes  = [_dtype_str(cols[i], with_params=True) for i in range(shown)]
+        details = [
+            _category_order_str(cols[i]._categories)
+            if isinstance(cols[i], _Category) else ""
+            for i in range(shown)
+        ]
 
         accessors = ["." + s for s in san]
         originals = [
@@ -267,16 +304,19 @@ class _SchemaView:
             for d, s in zip(disp, san)
         ]
 
-        acc_w = max(len(a) for a in accessors)
-        dt_w = max(len(dt) for dt in dtypes)
+        # Optional cell columns drop out entirely when empty; the category
+        # ordering hugs the dtype it annotates, original names stay last.
+        rows = [[a, dt] for a, dt in zip(accessors, dtypes)]
+        for extra in (details, originals):
+            if any(extra):
+                for row, cell in zip(rows, extra):
+                    row.append(cell)
 
-        lines = []
-        if any(originals):
-            for a, dt, orig in zip(accessors, dtypes, originals):
-                lines.append(f"{a.ljust(acc_w)}   {dt.ljust(dt_w)}   {orig}".rstrip())
-        else:
-            for a, dt in zip(accessors, dtypes):
-                lines.append(f"{a.ljust(acc_w)}   {dt}")
+        widths = [max(len(row[c]) for row in rows) for c in range(len(rows[0]))]
+        lines = [
+            "   ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip()
+            for row in rows
+        ]
 
         if ncols > shown:
             lines.append(f"... (+{ncols - shown} more columns)")
@@ -391,18 +431,9 @@ def _footer(pv, dtype_text=None) -> str:
         return "# empty"
     
     if len(shape) == 1:
-        from serif._vector.categorical import _Category
-        if isinstance(pv, _Category):
-            dt = 'category'
-            if pv._dtype and pv._dtype.nullable:
-                dt += '?'
-        elif pv._dtype:
-            dt = pv._dtype.kind.__name__
-            if pv._dtype.nullable:
-                dt += "?"
-        else:
-            dt = "object"
-        return f"# {len(pv)} element vector <{dt}>"
+        # Vector footers are EXACT (unlike the lossy table family summary):
+        # one column has no crowd to scan, so params show here.
+        return f"# {len(pv)} element vector <{_dtype_str(pv, with_params=True)}>"
     
     if len(shape) == 2:
         if dtype_text is not None:
