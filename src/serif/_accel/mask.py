@@ -20,7 +20,12 @@ import array as _pyarray
 
 from . import _np, NP_DTYPES, valid_bits as _valid_bits
 from .._vector.nullable import BitMask
-from .._vector.storage import ArrayStorage, BoolStorage
+from .._vector.storage import ArrayStorage, BoolStorage, StringStorage
+
+# String filtering picks its copy strategy by average surviving span:
+# below this many bytes/span, numpy's per-byte ragged gather wins; above,
+# a Python slice per span + b''.join wins (measured crossover ~28).
+_JOIN_SPAN_BYTES = 32
 
 
 def _selection(mask_storage, n: int):
@@ -75,5 +80,43 @@ def filter_storage(storage, mask):
         out  = vals[sel]
         return BoolStorage(bytearray(out.tobytes()),
                            _filtered_mask(storage._mask, sel, len(out)))
+
+    if isinstance(storage, StringStorage):
+        # No string content is ever touched: the pure path decodes every
+        # surviving string to str and re-encodes it; here the survivors'
+        # byte spans are copied out of the UTF-8 buffer directly.
+        offs     = _np.frombuffer(storage._offsets, dtype=_np.uint32)  # zero-copy
+        starts   = offs[:-1][sel]
+        ends_src = offs[1:][sel]
+        lengths  = (ends_src - starts).astype(_np.int64)
+        k        = len(lengths)
+
+        # New offsets: cumsum with a leading 0. uint32 is safe — total
+        # bytes only shrink under a filter, and the source was uint32.
+        ends = _np.cumsum(lengths)
+        new_offs = _pyarray.array('I')
+        new_offs.frombytes(_np.concatenate(
+            ([0], ends)).astype(_np.uint32).tobytes())
+
+        total = int(ends[-1]) if k else 0
+        if not total:
+            new_buf = b''
+        elif total >= k * _JOIN_SPAN_BYTES:
+            # Long spans: one Python slice per SPAN (~250ns each) beats
+            # numpy's per-BYTE index construction. Measured crossover
+            # ~28 bytes/span on 1M-row filters.
+            buf = storage._buf
+            new_buf = b''.join(
+                [buf[s:e] for s, e in zip(starts.tolist(), ends_src.tolist())])
+        else:
+            # Short spans: ragged gather — one flat index per output byte,
+            # arange over the output shifted per-span to its source start.
+            span_shift = _np.repeat(
+                starts.astype(_np.int64) - _np.concatenate(([0], ends[:-1])),
+                lengths)
+            idx = _np.arange(total, dtype=_np.int64) + span_shift
+            new_buf = _np.frombuffer(storage._buf, dtype=_np.uint8)[idx].tobytes()
+        return StringStorage.from_raw(new_buf, new_offs,
+                                      _filtered_mask(storage._mask, sel, k))
 
     return None
