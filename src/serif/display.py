@@ -152,61 +152,107 @@ def _compute_headers(cols, col_indices):
     return display_names, sanitized_names, dtypes
 
 
-def _dtype_str(col) -> str:
+def _dtype_str(col, with_params: bool = False) -> str:
     """Display string for a column's dtype: 'category', kind name, or 'object',
-    with a '?' suffix when nullable."""
+    with a '?' suffix when nullable.
+
+    with_params adds the schema parameters some backends carry —
+    'Decimal(18,2)?' (precision, scale — the SQL/parquet convention) and
+    'category(3)' (cardinality). Used by t._ and the 1-D vector footer,
+    which are exact; the per-column header tags stay family-level so
+    column widths stay calm."""
     if not col._dtype:
         return "object"
     from serif._vector.categorical import _Category
     if isinstance(col, _Category):
         dtype_str = 'category'
+        if with_params:
+            dtype_str += f'({len(col._categories)})'
     else:
         dtype_str = col._dtype.kind.__name__
+        if with_params:
+            from serif._vector.storage import DecimalStorage
+            st = col._storage
+            if isinstance(st, DecimalStorage):
+                dtype_str += f'({st._precision},{st._scale})'
     if col._dtype.nullable:
         dtype_str += '?'
     return dtype_str
 
 
-def _group_dtypes(dtypes: List[str]) -> str:
-    """Summarize per-column dtypes for the table footer.
+def _category_order_str(categories: tuple, max_chars: int = 48) -> str:
+    """Render a category list as its ordering: 'low < mid < high'.
 
-    Distinct dtypes are listed most-common-first as 'type:count' pairs, so the
-    footer reads as an at-a-glance dominance summary. A count of one is dropped
-    (the ':1' is noise), and a homogeneous table drops the count entirely — the
-    total already lives in the R×C prefix. Ties keep column (first-appearance)
-    order. With six or more distinct dtypes, the first four are shown and the
-    rest fold into ' ...+N', where the '...' signals there is more not shown
-    and N (always ≥ 2) counts the hidden dtype groups.
+    The '<' chain is the point — category order (not lexicographic) is what
+    makes a categorical semantically different from str. Long lists elide
+    the middle; the cardinality already lives in the 'category(N)' cell."""
+    full = ' < '.join(categories)
+    if len(full) <= max_chars:
+        return full
+    return f"{categories[0]} < {categories[1]} < … < {categories[-1]}"
+
+
+def _family_summary(cols) -> str:
+    """Summarize columns as conceptual type FAMILIES for the table footer.
+
+    The footer is NOT a schema dump — it orients: what am I looking at,
+    what kinds of data are present, is anything surprising? Exact
+    per-column schema already lives in the header tags and t._, so the
+    footer is deliberately lossy: one entry per family, most-common first
+    (ties keep column order), no counts (the R×C prefix carries scale),
+    and no folding — the family vocabulary is closed (int, float, str,
+    bool, date, datetime, Decimal, category, object), so the line is
+    intrinsically bounded.
+
+    Per-family marker — bare, '?', or '*':
+        int     every column of the family has the same schema, no nulls
+        int?    same schema, nullable
+        int*    heterogeneous: ANY within-family mix — nullability,
+                decimal scale/precision, future parameterized types.
+                One symbol, one meaning: "not all the same flavor,
+                see t._".
 
         <int>
-        <str, int, date>
-        <str:6, int:2, date>
-        <str:18, int:12, float:6, date:4>
-        <str:50, int:20, float:10, date:5 ...+2>
+        <str, int?, date>
+        <float, int*, str, date>
     """
-    counts = {}
-    for dt in dtypes:
-        counts[dt] = counts.get(dt, 0) + 1
+    from serif._vector.categorical import _Category
+    from serif._vector.storage import DecimalStorage
 
-    # Homogeneous: the count already lives in the R×C prefix.
-    if len(counts) == 1:
-        return next(iter(counts))
+    order   = []   # family names in first-appearance (column) order
+    flavors = {}   # family -> set of (nullable, params) variants seen
+    counts  = {}
 
-    # Most common first; sorted() is stable, so ties keep first-appearance
-    # (column) order.
-    groups = sorted(counts, key=lambda dt: -counts[dt])
+    for col in cols:
+        if isinstance(col, _Category):
+            family = 'category'
+        elif col._dtype:
+            family = col._dtype.kind.__name__
+        else:
+            family = 'object'
+        nullable = bool(col._dtype and col._dtype.nullable)
+        st = col._storage
+        params = ((st._scale, st._precision)
+                  if isinstance(st, DecimalStorage) else None)
+        if family not in flavors:
+            order.append(family)
+            flavors[family] = set()
+            counts[family] = 0
+        flavors[family].add((nullable, params))
+        counts[family] += 1
 
-    if len(groups) >= 6:
-        hidden = len(groups) - 4
-        groups = groups[:4]
-    else:
-        hidden = 0
+    # Most common first; sorted() is stable, so ties keep column order.
+    ranked = sorted(order, key=lambda f: -counts[f])
 
-    parts = [f"{dt}:{counts[dt]}" if counts[dt] > 1 else dt for dt in groups]
-    summary = ", ".join(parts)
-    if hidden:
-        summary += f" ...+{hidden}"
-    return summary
+    parts = []
+    for family in ranked:
+        variants = flavors[family]
+        if len(variants) > 1:
+            parts.append(family + '*')
+        else:
+            nullable, _ = next(iter(variants))
+            parts.append(family + '?' if nullable else family)
+    return ", ".join(parts)
 
 
 class _SchemaView:
@@ -238,7 +284,19 @@ class _SchemaView:
             return "# 0×0 table"
 
         shown = min(ncols, self._MAX_COLS)
-        disp, san, dtypes = _compute_headers(cols, list(range(shown)))
+        disp, san, _ = _compute_headers(cols, list(range(shown)))
+
+        # t._ is the exact view (the footer is deliberately lossy and points
+        # here): dtypes carry schema params — Decimal(18,2)?, category(3) —
+        # and categoricals get their ordering spelled out, since category
+        # order IS the schema for them.
+        from serif._vector.categorical import _Category
+        dtypes  = [_dtype_str(cols[i], with_params=True) for i in range(shown)]
+        details = [
+            _category_order_str(cols[i]._categories)
+            if isinstance(cols[i], _Category) else ""
+            for i in range(shown)
+        ]
 
         accessors = ["." + s for s in san]
         originals = [
@@ -246,16 +304,19 @@ class _SchemaView:
             for d, s in zip(disp, san)
         ]
 
-        acc_w = max(len(a) for a in accessors)
-        dt_w = max(len(dt) for dt in dtypes)
+        # Optional cell columns drop out entirely when empty; the category
+        # ordering hugs the dtype it annotates, original names stay last.
+        rows = [[a, dt] for a, dt in zip(accessors, dtypes)]
+        for extra in (details, originals):
+            if any(extra):
+                for row, cell in zip(rows, extra):
+                    row.append(cell)
 
-        lines = []
-        if any(originals):
-            for a, dt, orig in zip(accessors, dtypes, originals):
-                lines.append(f"{a.ljust(acc_w)}   {dt.ljust(dt_w)}   {orig}".rstrip())
-        else:
-            for a, dt in zip(accessors, dtypes):
-                lines.append(f"{a.ljust(acc_w)}   {dt}")
+        widths = [max(len(row[c]) for row in rows) for c in range(len(rows[0]))]
+        lines = [
+            "   ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip()
+            for row in rows
+        ]
 
         if ncols > shown:
             lines.append(f"... (+{ncols - shown} more columns)")
@@ -364,24 +425,15 @@ def _footer(pv, dtype_text=None) -> str:
     """Generate footer line based on shape and dtypes.
 
     dtype_text, when given, overrides the computed dtype string for the
-    2-D case (the grouped per-column summary from _group_dtypes)."""
+    2-D case (the type-family summary from _family_summary)."""
     shape = pv.shape
     if not shape:
         return "# empty"
     
     if len(shape) == 1:
-        from serif._vector.categorical import _Category
-        if isinstance(pv, _Category):
-            dt = 'category'
-            if pv._dtype and pv._dtype.nullable:
-                dt += '?'
-        elif pv._dtype:
-            dt = pv._dtype.kind.__name__
-            if pv._dtype.nullable:
-                dt += "?"
-        else:
-            dt = "object"
-        return f"# {len(pv)} element vector <{dt}>"
+        # Vector footers are EXACT (unlike the lossy table family summary):
+        # one column has no crowd to scan, so params show here.
+        return f"# {len(pv)} element vector <{_dtype_str(pv, with_params=True)}>"
     
     if len(shape) == 2:
         if dtype_text is not None:
@@ -456,9 +508,6 @@ def _repr_table(tbl) -> str:
     # Headers + dtypes
     disp, san, dtypes_displayed = _compute_headers(cols, col_indices)
 
-    # Get all dtypes for footer
-    dtypes_all = [_dtype_str(col) for col in cols]
-
     # Format columns
     formatted_cols = [_format_column(cols[i], max_preview=max_preview) for i in col_indices]
 
@@ -489,8 +538,8 @@ def _repr_table(tbl) -> str:
 
     lines.append("")
 
-    # Footer: grouped dtype summary, e.g. <str:6, int:2, date>
-    lines.append(_footer(tbl, dtype_text=_group_dtypes(dtypes_all)))
+    # Footer: type-family summary, e.g. <str, int?, date>
+    lines.append(_footer(tbl, dtype_text=_family_summary(cols)))
 
     return "\n".join(lines)
 

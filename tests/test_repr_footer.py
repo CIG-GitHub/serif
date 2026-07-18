@@ -1,88 +1,123 @@
 """
-Table repr footer: grouped dtype summary.
+Table repr footer: conceptual type-family summary.
 
-The footer summarizes per-column dtypes as 'type:count' pairs, most common
-first, so it reads as an at-a-glance dominance summary:
+The footer is NOT a schema dump — it orients: what am I looking at, what
+kinds of data are present, is anything surprising? Exact per-column schema
+already lives in the header tags and t._, so the footer is deliberately
+lossy: one entry per type FAMILY, most-common first (ties keep column
+order), no counts (the R×C prefix carries scale), and no folding — the
+family vocabulary is closed, so the line is intrinsically bounded.
 
-    # 1000000×2 table <int>
-    # 1000000×3 table <str, int, date>
-    # 1000000×9 table <str:6, int:2, date>
-    # 1000000×40 table <str:18, int:12, float:6, date:4>
-    # 1000000×95 table <str:50, int:20, float:10, date:5 ...+2>
+Per-family marker — bare, '?', or '*':
+    int     every column of the family has the same schema, no nulls
+    int?    same schema, nullable
+    int*    heterogeneous: ANY within-family mix (nullability, decimal
+            scale/precision) — one symbol, one meaning: "see t._"
 
-A count of one is dropped (':1' is noise), and a homogeneous table drops the
-count entirely — the total already lives in the R×C prefix. Ties keep column
-(first-appearance) order. With six or more distinct dtypes, the first four are
-shown and the rest fold into '..., +N'.
+    # 2×2 table <int>
+    # 2×3 table <str, int?, date>
+    # 2×4 table <float, int*, str>
 """
 
 from datetime import date
+from decimal import Decimal
 
-from serif import Table
-from serif.display import _group_dtypes
+from serif import Table, Vector
+from serif.display import _family_summary
+from serif._vector.categorical import _Category
+from serif._vector.dtype import Schema
+from serif._vector.storage import DecimalStorage
 
 
 def footer(t):
     return repr(t).splitlines()[-1]
 
 
+def summary(data):
+    return _family_summary(Table(data).cols())
+
+
+def _decimal_col(name, values, scale, precision):
+    """A Decimal column backed by DecimalStorage (as the parquet reader
+    builds), so scale/precision participate in the family-flavor check."""
+    storage = DecimalStorage.from_iterable(values, scale, precision)
+    return Vector._from_storage(storage, Schema(Decimal, False), name=name)
+
+
 # ---------------------------------------------------------------------------
-# _group_dtypes unit tests
+# _family_summary unit tests
 # ---------------------------------------------------------------------------
 
-def test_homogeneous_omits_count():
-    assert _group_dtypes(['int', 'int']) == 'int'
-    assert _group_dtypes(['str'] * 40) == 'str'
+def test_homogeneous_family():
+    assert summary({'a': [1, 2], 'b': [3, 4]}) == 'int'
+    assert summary({f's{i}': ['a', 'b'] for i in range(40)}) == 'str'
 
 
-def test_all_distinct_no_counts():
-    # Every dtype appears once, so counts are dropped; ties keep column order.
-    assert _group_dtypes(['str', 'int', 'date']) == 'str, int, date'
+def test_uniformly_nullable_family_keeps_question_mark():
+    assert summary({'a': [1, None], 'b': [None, 2]}) == 'int?'
 
 
-def test_counts_shown_when_repeated():
-    dtypes = ['str'] * 6 + ['int'] * 2 + ['date']
-    assert _group_dtypes(dtypes) == 'str:6, int:2, date'
+def test_mixed_nullability_stars():
+    assert summary({'a': [1, 2], 'b': [3, None]}) == 'int*'
 
 
-def test_count_descending_order():
+def test_no_counts_ever():
+    data = {f's{i}': ['a', 'b'] for i in range(6)}
+    data.update({f'i{i}': [1, 2] for i in range(2)})
+    data['d'] = [date(2026, 1, 1), date(2026, 1, 2)]
+    assert summary(data) == 'str, int, date'
+
+
+def test_most_common_family_first():
     # str has more columns, so it leads even though int appears first.
-    dtypes = ['int'] + ['str'] * 3 + ['int']
-    assert _group_dtypes(dtypes) == 'str:3, int:2'
+    data = {'i1': [1, 2]}
+    data.update({f's{i}': ['a', 'b'] for i in range(3)})
+    data['i2'] = [3, 4]
+    assert summary(data) == 'str, int'
 
 
 def test_ties_keep_first_appearance_order():
-    assert _group_dtypes(['int', 'str', 'int', 'str']) == 'int:2, str:2'
-    assert _group_dtypes(['str', 'int', 'str', 'int']) == 'str:2, int:2'
+    assert summary({'a': [1], 'b': ['x'], 'c': [2], 'd': ['y']}) == 'int, str'
+    assert summary({'a': ['x'], 'b': [1], 'c': ['y'], 'd': [2]}) == 'str, int'
 
 
-def test_four_groups_all_shown():
-    dtypes = ['str'] * 18 + ['int'] * 12 + ['float'] * 6 + ['date'] * 4
-    assert _group_dtypes(dtypes) == 'str:18, int:12, float:6, date:4'
+def test_no_folding_every_family_shown():
+    # The old footer folded 6+ distinct dtypes into '...+N'. Families need
+    # no cap: the vocabulary is closed, so every family always shows.
+    cols = Table({
+        's': ['a'], 'i': [1], 'f': [1.5], 'b': [True],
+        'd': [date(2026, 1, 1)],
+    }).cols()
+    cols = list(cols) + [
+        _decimal_col('amt', [Decimal('1.25')], 2, 3),
+        _Category.from_values(['x'], ['x', 'y'], name='c'),
+    ]
+    assert _family_summary(cols) == 'str, int, float, bool, date, Decimal, category'
 
 
-def test_five_groups_all_shown():
-    # Five distinct dtypes still fit — folding would leave a banned '+1'.
-    dtypes = ['str'] * 18 + ['int'] * 12 + ['float'] * 6 + ['date'] * 3 + ['bool']
-    assert _group_dtypes(dtypes) == 'str:18, int:12, float:6, date:3, bool'
+def test_category_is_its_own_family():
+    cols = [
+        Vector(['plain'], name='s'),
+        _Category.from_values(['x', 'y'], ['x', 'y'], name='c'),
+    ]
+    # One str column and one category column: neither collapses into the other.
+    assert _family_summary(cols) == 'str, category'
 
 
-def test_six_or_more_groups_folds_into_plus_n():
-    dtypes = (['str'] * 18 + ['int'] * 12 + ['float'] * 6 + ['date'] * 4
-              + ['bool'] * 2 + ['category'])
-    assert _group_dtypes(dtypes) == 'str:18, int:12, float:6, date:4 ...+2'
+def test_decimal_uniform_scale_is_bare():
+    cols = [
+        _decimal_col('a', [Decimal('1.25')], 2, 3),
+        _decimal_col('b', [Decimal('2.50')], 2, 3),
+    ]
+    assert _family_summary(cols) == 'Decimal'
 
 
-def test_fold_hides_the_rarest_groups():
-    # The folded tail is always the smallest groups (descending order).
-    dtypes = (['str'] * 50 + ['int'] * 20 + ['float'] * 10 + ['date'] * 5
-              + ['bool'] * 3 + ['category'] * 2)
-    assert _group_dtypes(dtypes) == 'str:50, int:20, float:10, date:5 ...+2'
-
-
-def test_nullable_is_a_distinct_group():
-    assert _group_dtypes(['int', 'int?']) == 'int, int?'
-    assert _group_dtypes(['int?', 'int?']) == 'int?'
+def test_decimal_mixed_scale_stars():
+    cols = [
+        _decimal_col('a', [Decimal('1.25')], 2, 3),
+        _decimal_col('b', [Decimal('0.00000001')], 8, 9),
+    ]
+    assert _family_summary(cols) == 'Decimal*'
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +129,7 @@ def test_footer_homogeneous_table():
     assert footer(t) == '# 2×2 table <int>'
 
 
-def test_footer_heterogeneous_distinct():
+def test_footer_heterogeneous_families():
     t = Table({
         'name': ['x', 'y'],
         'n': [1, 2],
@@ -103,12 +138,12 @@ def test_footer_heterogeneous_distinct():
     assert footer(t) == '# 2×3 table <str, int, date>'
 
 
-def test_footer_grouped_counts():
+def test_footer_no_counts_for_repeated_families():
     data = {f's{i}': ['a', 'b'] for i in range(6)}
     data.update({f'i{i}': [1, 2] for i in range(2)})
     data['d'] = [date(2026, 1, 1), date(2026, 1, 2)]
     t = Table(data)
-    assert footer(t) == '# 2×9 table <str:6, int:2, date>'
+    assert footer(t) == '# 2×9 table <str, int, date>'
 
 
 def test_footer_replaces_mixed():
@@ -117,6 +152,30 @@ def test_footer_replaces_mixed():
     assert 'mixed' not in repr(t)
 
 
-def test_footer_nullable_dtypes():
+def test_footer_uniformly_nullable():
     t = Table({'a': [1, None], 'b': [0.5, None]})
     assert footer(t) == '# 2×2 table <int?, float?>'
+
+
+def test_footer_mixed_nullability_stars():
+    t = Table({'a': [1, 2], 'b': [3, None], 'c': [0.5, 1.5]})
+    assert footer(t) == '# 2×3 table <int*, float>'
+
+
+# ---------------------------------------------------------------------------
+# Vector footers stay EXACT (no crowd to scan): schema params show
+# ---------------------------------------------------------------------------
+
+def test_vector_footer_decimal_params():
+    v = _decimal_col('amt', [Decimal('1.25'), Decimal('2.50')], 2, 3)
+    assert footer(v) == '# 2 element vector <Decimal(3,2)>'
+
+
+def test_vector_footer_category_params():
+    v = _Category.from_values(['low', 'mid'], ['low', 'mid', 'high'], name='g')
+    assert footer(v) == '# 2 element vector <category(3)>'
+
+
+def test_vector_footer_plain_kinds_unchanged():
+    assert footer(Vector([1, None])) == '# 2 element vector <int?>'
+    assert footer(Vector(['a', 'b'])) == '# 2 element vector <str>'
