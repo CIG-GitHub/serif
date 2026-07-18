@@ -215,11 +215,18 @@ def _collect_and_infer(iterable, dtype_hint):
     all_vectors = True
     dtype = dtype_hint
     saw_none = False
+    saw_vector = False
 
     for val in iterable:
         data.append(val)
-        if not isinstance(val, Vector):
-            all_vectors = False
+        if isinstance(val, Vector):
+            # Columns don't inform a SCALAR dtype: running promote_dtype on
+            # them fires the object-degrade warning for every mixed-kind
+            # table composed via >> (the "column" it degrades is a phantom
+            # — the 1-D reading abandoned once is_table comes back True).
+            saw_vector = True
+            continue
+        all_vectors = False
         if dtype is None:
             # Order-independent inference: a leading None only sets nullable;
             # the kind comes from the first non-None value.
@@ -229,6 +236,22 @@ def _collect_and_infer(iterable, dtype_hint):
             dtype = Schema(infer_kind(val), saw_none)
         else:
             dtype = promote_dtype(dtype, val)
+
+    if saw_vector and not all_vectors:
+        # Degenerate mix of columns and scalars in one collection — not a
+        # table, so the Vectors ARE elements after all. Re-infer over
+        # everything so promotion (and its degrade warning) fires here,
+        # where it's real. Rare path; the second walk costs nothing.
+        dtype = dtype_hint
+        saw_none = False
+        for val in data:
+            if dtype is None:
+                if val is None:
+                    saw_none = True
+                    continue
+                dtype = Schema(infer_kind(val), saw_none)
+            else:
+                dtype = promote_dtype(dtype, val)
 
     if dtype is None and saw_none:
         # All values were None: no kind to infer.
@@ -258,6 +281,62 @@ def _storage_for_dtype(dtype, data, nullable):
         from .storage import StringStorage
         return StringStorage.from_iterable(data)
     return TupleStorage.from_iterable(data, nullable=nullable)
+
+
+def _accel_filter(storage, mask):
+    """Numpy-accelerated boolean-mask filter; None = decline to the pure
+    path, whose behavior is the specification. OPTIONAL numpy — transport,
+    never semantics; see serif/_accel/__init__.py for the doctrine."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import filter_storage
+    return filter_storage(storage, mask)
+
+
+def _accel_reduce(storage, op, **kwargs):
+    """Try a numpy-accelerated reduction. Returns (True, value) when the
+    fast path produced the answer, (False, None) on decline — the caller
+    runs the pure path, whose behavior is the specification. None is a
+    legitimate value (max of all-null), hence the flag."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return False, None
+    from .._accel import reduce as _reduce
+    result = getattr(_reduce, op)(storage, **kwargs)
+    if result is _accel.DECLINED:
+        return False, None
+    return True, result
+
+
+def _accel_binop(storage, rhs, op_func, result_dtype):
+    """Numpy-accelerated elementwise arithmetic; None = decline. The schema
+    is already resolved by _pre_compute_op_schema — the accelerator computes
+    values, never semantics. Returns a Vector or None."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import binop_storage
+    fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, result_dtype)
+    result._wild = True   # match the pure constructors' name-tracking flag
+    return result
+
+
+def _accel_compare(storage, rhs, op_func, nullable):
+    """Numpy-accelerated elementwise comparison; None = decline."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import compare_storage
+    fast = compare_storage(storage, rhs, op_func)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, Schema(bool, nullable))
+    result._wild = True
+    return result
 
 
 def _pick_target_class(dtype):
@@ -807,10 +886,16 @@ class Vector():
             # (SQL WHERE semantics — None is falsy in the filter below).
             if len(self) != len(key):
                 raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+            fast = _accel_filter(self._storage, key._storage)
+            if fast is not None:
+                return self._clone(fast)
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, list) and {type(e) for e in key} == {bool}:
             if len(self) != len(key):
                 raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+            fast = _accel_filter(self._storage, key)
+            if fast is not None:
+                return self._clone(fast)
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, slice):
             return self._clone(self._storage.slice(key))
@@ -1073,6 +1158,9 @@ class Vector():
                 (self._dtype.nullable if self._dtype is not None else True)
                 or (other_schema.nullable if other_schema is not None else True)
             )
+            fast = _accel_compare(self._storage, other._storage, op, nullable)
+            if fast is not None:
+                return fast
             return Vector._from_iterable_known_dtype(
                 (None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
                 Schema(bool, nullable),
@@ -1091,6 +1179,9 @@ class Vector():
                 stacklevel=2
             )
         nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None
+        fast = _accel_compare(self._storage, other, op, nullable)
+        if fast is not None:
+            return fast
         return Vector._from_iterable_known_dtype(
             (None if (x is None or other is None) else bool(op(x, other)) for x in self),
             Schema(bool, nullable),
@@ -1225,6 +1316,10 @@ class Vector():
             if len(self) != len(other):
                 raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
+            if result_dtype is not None:
+                fast = _accel_binop(self._storage, other._storage, op_func, result_dtype)
+                if fast is not None:
+                    return fast
             try:
                 result_values = tuple(
                     None if (x is None or y is None) else op_func(x, y)
@@ -1261,6 +1356,10 @@ class Vector():
 
         # Scalar path
         result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
+        if result_dtype is not None:
+            fast = _accel_binop(self._storage, other, op_func, result_dtype)
+            if fast is not None:
+                return fast
         try:
             result_values = tuple(
                 None if x is None else op_func(x, other)
@@ -1402,12 +1501,18 @@ class Vector():
     def max(self):
         if self.ndims() == 2:
             return self.copy((c.max() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'max_')
+        if ok:
+            return fast
         non_none = [v for v in self._storage if v is not None]
         return max(non_none) if non_none else None
 
     def min(self):
         if self.ndims() == 2:
             return self.copy((c.min() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'min_')
+        if ok:
+            return fast
         non_none = [v for v in self._storage if v is not None]
         return min(non_none) if non_none else None
 
@@ -1436,6 +1541,9 @@ class Vector():
     def sum(self):
         if self.ndims() == 2:
             return self.copy((c.sum() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'sum_')
+        if ok:
+            return fast
         # Exclude None values from sum
         return sum(v for v in self._storage if v is not None)
 
@@ -1501,6 +1609,9 @@ class Vector():
     def mean(self):
         if self.ndims() == 2:
             return self.copy((c.mean() for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'mean')
+        if ok:
+            return fast
         # Exclude None values from mean
         non_none = [v for v in self._storage if v is not None]
         return sum(non_none) / len(non_none) if non_none else None
@@ -1508,13 +1619,17 @@ class Vector():
     def stdev(self, population=False):
         if self.ndims() == 2:
             return self.copy((c.stdev(population) for c in self.cols()), name=None)
+        ok, fast = _accel_reduce(self._storage, 'stdev', population=population)
+        if ok:
+            return fast
         # Exclude None values from stdev
         non_none = [v for v in self._storage if v is not None]
         if len(non_none) < 2:
             return None
         m = sum(non_none) / len(non_none)
         # use in-place sum over generator for fastness. I AM SPEED!
-        # This is still 10x slower than numpy.
+        # This is no longer 10x slower than numpy — numpy IS the fast path
+        # above; this is the zero-dependency fallback and the specification.
         num = sum((x-m)*(x-m) for x in non_none)
         return (num/(len(non_none) - 1 + population))**0.5
 
