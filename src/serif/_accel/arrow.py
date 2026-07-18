@@ -32,6 +32,14 @@ the reader's bit loop when not. When BoolStorage goes bit-packed (the
 0.1.7 bitpacking work), bool_storage() collapses to the same memcpy
 bitmask() already is; the seam is deliberately that one function.
 
+Second job, same doctrine: CHECKED integer arithmetic (binop_ints).
+Not because numpy can't do int64 math — because it can't do it SAFELY
+without predicting: np.int64 wraps silently, so the numpy tier runs a
+bounds pass and declines whenever overflow is POSSIBLE. Arrow's
+*_checked kernels detect ACTUAL overflow instead, so the decline is
+exact, null lanes never compute, and the bounds pass's over-declines
+get a second chance before falling to pure.
+
 Buffer lifetime and mutation: py_buffer holds a reference to the object
 it wraps, so a returned arrow array keeps serif's buffers alive on its
 own. The storage protocol is read-only (storage.py), and batch() writes
@@ -52,13 +60,23 @@ except ImportError:            # pyarrow not installed — every call declines
     _pa = None
     _pc = None
 
+import array as _pyarray
+
 from . import _np
 from .._vector.nullable import BitMask
-from .._vector.storage import BoolStorage, StringStorage
+from .._vector.storage import ArrayStorage, BoolStorage, StringStorage
 
 _USE_ARROW = _pa is not None
 
 _I32_MAX = 2**31 - 1
+_I64_MAX = 2**63 - 1
+_I64_MIN = -2**63
+
+_ARITH_KERNELS = {
+    _op.add: 'add_checked',
+    _op.sub: 'subtract_checked',
+    _op.mul: 'multiply_checked',
+}
 
 _CMP_KERNELS = {
     _op.eq: 'equal',
@@ -91,6 +109,91 @@ def string_array(storage):
         _pa.string(), n,
         [validity, _pa.py_buffer(offsets), _pa.py_buffer(storage._buf)],
         -1 if mask is not None else 0)   # -1: arrow counts nulls lazily
+
+
+def int64_array(storage):
+    """ArrayStorage('q') → pa.Int64Array over the SAME buffers; None to
+    DECLINE (pyarrow absent/off, wrong storage or typecode, empty).
+    array('q') is 8-byte little-endian lanes and BitMask is the validity
+    bitmap — the wrap is two py_buffer views, zero copies."""
+    if not _USE_ARROW or not isinstance(storage, ArrayStorage):
+        return None
+    if storage._data.typecode != 'q':
+        return None
+    n = len(storage)
+    if n == 0:
+        return None
+    mask = storage._mask
+    validity = _pa.py_buffer(mask._buf) if mask is not None else None
+    return _pa.Array.from_buffers(
+        _pa.int64(), n,
+        [validity, _pa.py_buffer(storage._data)],
+        -1 if mask is not None else 0)   # -1: arrow counts nulls lazily
+
+
+def int64_storage(arr):
+    """pa.Int64Array (a kernel result) → ArrayStorage; None to DECLINE
+    (non-zero offset — same rationale as bool_storage). One memcpy for
+    the lanes, one for the validity trim. Lanes under null are whatever
+    the kernel left there: unobservable garbage, the pure path's
+    0-sentinel contract (ops.py)."""
+    if arr.offset != 0:
+        return None
+    n = len(arr)
+    data = _pyarray.array('q')
+    if n:
+        data.frombytes(memoryview(arr.buffers()[1])[:n * 8])
+    return ArrayStorage(data, bitmask(arr))
+
+
+def binop_ints(lhs_storage, rhs, op_func, result_kind):
+    """Checked int64 add/sub/mul on buffers → ArrayStorage, or None to
+    DECLINE.
+
+    The numpy tier must PREDICT overflow: a bounds pass over operand
+    extremes declines whenever some cross-lane combination COULD leave
+    int64 — even if no actual lane pair does (ops.py). Arrow's *_checked
+    kernels DETECT it instead: compute once, raise on the first lane
+    that actually overflows. So this tier declines exactly when the
+    pure path would promote, and rescues the vector-vector cases the
+    bounds pass gives up on. (Scalar rhs bounds are exact — a scalar's
+    min IS its max — so numpy never over-declines those; scalar rescue
+    only matters when numpy is absent.)
+
+    Null lanes never compute in arrow, so a huge value under the other
+    side's null cannot overflow — same as the pure path, and one more
+    over-decline the bounds pass (which sees sentinel zeros and null-
+    lane values alike) cannot avoid. Result validity is arrow's
+    valid_a & valid_b, the pure path's null-propagation exactly.
+
+    floordiv/mod are ABSENT from the kernel map by doctrine, not
+    omission: arrow's integer division truncates toward zero, Python
+    floors — semantics, not transport. The division family is division's
+    commit; this one is pure add/sub/mul.
+    """
+    if result_kind is not int:
+        return None
+    kernel = _ARITH_KERNELS.get(op_func)
+    if kernel is None:
+        return None
+    arr = int64_array(lhs_storage)
+    if arr is None:
+        return None
+    if isinstance(rhs, ArrayStorage):
+        other = int64_array(rhs)
+        if other is None:
+            return None
+    elif type(rhs) is int and _I64_MIN <= rhs <= _I64_MAX:
+        # bool is an int subclass — `type is int` keeps it out, like
+        # ops.py. Out-of-range scalars decline: the pure path promotes.
+        other = _pa.scalar(rhs, type=_pa.int64())
+    else:
+        return None
+    try:
+        out = getattr(_pc, kernel)(arr, other)
+    except _pa.ArrowInvalid:
+        return None   # actual overflow — the pure path promotes past int64
+    return int64_storage(out)
 
 
 def bitmask(arr):

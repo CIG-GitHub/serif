@@ -395,14 +395,20 @@ def _accel_reduce(storage, op, **kwargs):
 
 
 def _accel_binop(storage, rhs, op_func, result_dtype):
-    """Numpy-accelerated elementwise arithmetic; None = decline. The schema
-    is already resolved by _pre_compute_op_schema — the accelerator computes
-    values, never semantics. Returns a Vector or None."""
+    """Accelerated elementwise arithmetic; None = decline. The schema is
+    already resolved by _pre_compute_op_schema — the accelerator computes
+    values, never semantics. numpy computes first; int lanes it declined
+    (its overflow bounds pass must over-predict) get arrow's CHECKED
+    kernels, which decline only on actual overflow (serif/_accel/arrow.py).
+    Returns a Vector or None."""
     from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .._accel.ops import binop_storage
-    fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
+    fast = None
+    if _accel._USE_NUMPY:
+        from .._accel.ops import binop_storage
+        fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
+    if fast is None:
+        from .._accel.arrow import binop_ints
+        fast = binop_ints(storage, rhs, op_func, result_dtype.kind)
     if fast is None:
         return None
     result = Vector._from_storage(fast, result_dtype)

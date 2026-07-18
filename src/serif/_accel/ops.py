@@ -13,6 +13,8 @@ model diverges from Python's numeric tower DECLINES to the pure path:
     (add/sub from the operands' min/max, mul from peak magnitudes) and
     declines when promotion is possible. Sentinel zeros in masked lanes
     only widen the bounds — over-declining is safe, wrapping is not.
+    (Over-declines get a second chance before pure: the arrow backend's
+    CHECKED kernels detect actual overflow — serif/_accel/arrow.py.)
 
   * division by zero — Python raises ZeroDivisionError (floats too);
     numpy yields inf/nan. Any zero divisor in a lane where the division
