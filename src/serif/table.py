@@ -2375,6 +2375,18 @@ class MaskedTable(Table):
         object.__setattr__(self, '_gathered', None)
         object.__setattr__(self, '_mask_vec', None)
 
+    def _snapshot_names_current(self):
+        """Gathered columns are handed out live (cached) — a rename
+        through one (alias(), the wild mechanic) makes the captured map
+        stale, the very condition Table.__getattr__ repairs with a
+        rebuild. Detect it and decline the deferred shortcut: the Table
+        path latches, rebuilds the map, and fires any collision warning,
+        exactly as an eager table would."""
+        gathered = self._gathered
+        if not gathered:
+            return True
+        return not any(col._wild for col in gathered.values())
+
     # ------------------------------------------------------------------
     # Hot paths: single-column access without materializing
     # ------------------------------------------------------------------
@@ -2382,9 +2394,9 @@ class MaskedTable(Table):
     def __getattr__(self, attr):
         # Plain column names (and col{N}_ spellings — the captured map
         # holds those too) gather one column. Everything else — indexed
-        # accessors ('name__5'), method fallbacks — takes Table's path,
-        # which may materialize; correct by default.
-        if self._mat is None:
+        # accessors ('name__5'), method fallbacks, a stale map — takes
+        # Table's path, which may materialize; correct by default.
+        if self._mat is None and self._snapshot_names_current():
             col_idx = self._column_map.get(attr)
             if col_idx is None:
                 col_idx = self._column_map.get(attr.lower())
@@ -2393,7 +2405,7 @@ class MaskedTable(Table):
         return Table.__getattr__(self, attr)
 
     def __getitem__(self, key):
-        if self._mat is None:
+        if self._mat is None and self._snapshot_names_current():
             if isinstance(key, str):
                 return self._gather_column(
                     _resolve_column_key(self._captured, key))
@@ -2432,6 +2444,6 @@ class MaskedTable(Table):
         return Table.shape.fget(self)
 
     def column_names(self):
-        if self._mat is None:
+        if self._mat is None and self._snapshot_names_current():
             return [col._name for col in self._captured]
         return Table.column_names(self)

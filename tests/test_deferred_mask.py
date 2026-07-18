@@ -17,6 +17,8 @@ The contract under test:
   deferred type never escapes as a result type.
 """
 
+import warnings
+
 import pytest
 
 from serif import Table, Vector
@@ -511,6 +513,92 @@ def test_schema_view_matches_eager(tier):
     t = make_table()
     mask = t.a > 3
     assert repr(t[mask]._) == repr(eager(t, mask)._)
+
+
+# ---------------------------------------------------------------------------
+# Warnings policy: name warnings fire once at the source and CARRY.
+# A deferred filter neither re-fires them (the eager path rebuilt the map
+# per filter and re-warned every time — the carry is a deliberate change)
+# nor swallows warnings for new sins committed after the defer.
+# ---------------------------------------------------------------------------
+
+def test_collision_warning_does_not_refire_on_defer_or_latch(tier):
+    with pytest.warns(UserWarning, match="reserved"):
+        t = Table({'sum': [1, 2, 3, 4], 'a': [5, 6, 7, 8]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        q = t[t.a > 6]                    # defer: quiet
+        assert list(q.sum_) == [3, 4]     # single-column gather: quiet
+        assert q._mat is None
+        assert list(q['sum']) == [3, 4]   # bracket escape: quiet
+        repr(q)                           # latch (map reused): quiet
+
+
+def test_postlatch_map_rebuild_does_not_refire_carried_collision(tier):
+    with pytest.warns(UserWarning, match="reserved"):
+        t = Table({'sum': [1, 2, 3, 4], 'a': [5, 6, 7, 8]})
+    q = t[t.a > 6]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        q.a = [10, 20]                    # column swap → map rebuild: quiet
+        assert list(q.a) == [10, 20]
+
+
+def test_new_collision_after_defer_still_warns(tier):
+    t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    q = t[t.a > 1]
+    with pytest.warns(UserWarning, match="reserved"):
+        qr = q.rename({'b': 'sum'})       # fresh table, fresh sin
+    assert list(qr['sum']) == [5, 6]
+
+
+def test_duplicate_warning_fires_at_source_not_on_defer(tier):
+    with pytest.warns(UserWarning, match="Duplicate column name"):
+        t = Table([Vector([1, 2, 3], name='x'), Vector([4, 5, 6], name='x')])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        q = t[Vector([True, False, True])]
+        assert list(q.x) == [1, 3]
+        assert list(q.x__1) == [4, 6]
+        repr(q)
+
+
+def test_compose_existing_name_warning_survives_deferral(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    # Two warnings, same as eager: 'already exists' from >> and the
+    # duplicate-name warning from constructing the widened table.
+    with pytest.warns(UserWarning) as rec:
+        qc = q >> {'a': [7, 8, 9]}
+    msgs = [str(w.message) for w in rec]
+    assert any("already exists" in m for m in msgs)
+    assert any("Duplicate column name" in m for m in msgs)
+    assert type(qc) is Table
+
+
+def test_alias_on_gathered_column_rebuilds_like_eager(tier):
+    # Renaming through a read-out column (the wild mechanic) works on
+    # eager tables via the map rebuild in Table.__getattr__. On a
+    # deferred table the stale-map guard declines the shortcut and the
+    # Table path latches + rebuilds — same observable behavior.
+    t = make_table()
+    q = t[t.a > 3]
+    q.b.alias('height')
+    assert list(q.height) == [4.0, 5.5, 6.75]
+    assert q.column_names() == ['a', 'height', 's', 'n', 'f']
+
+
+def test_alias_collision_on_gathered_column_warns_like_eager(tier):
+    t = make_table()
+    mask = t.a > 3
+    q, e = t[mask], eager(t, mask)
+    q.b.alias('sum')
+    e.b.alias('sum')
+    with pytest.warns(UserWarning, match="reserved"):
+        qv = q.sum_
+    with pytest.warns(UserWarning, match="reserved"):
+        ev = e.sum_
+    assert list(qv) == list(ev)
 
 
 # ---------------------------------------------------------------------------
