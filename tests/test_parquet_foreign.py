@@ -53,6 +53,17 @@ from serif.io.parquet import (
 _EPOCH = datetime(1970, 1, 1)
 
 
+@pytest.fixture(autouse=True)
+def _force_pure_reader(monkeypatch):
+    """This suite tests serif's OWN decoder. With pyarrow installed, the
+    optional accelerator would route supported files around it (legal
+    transport widening — e.g. it reads DataPage V2 fine), silently changing
+    what these tests exercise. Pin the pure path so coverage is
+    deterministic regardless of environment."""
+    import serif.io.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, '_USE_ARROW', False)
+
+
 # ---------------------------------------------------------------------------
 # File assembly helpers
 # ---------------------------------------------------------------------------

@@ -18,6 +18,17 @@ from serif import Table, Vector
 from serif.errors import SerifTypeError
 
 
+@pytest.fixture(autouse=True)
+def _force_pure_reader(monkeypatch):
+    """This suite round-trips serif's OWN zero-dependency reader/writer.
+    With pyarrow installed, the optional accelerator would take over reads
+    of int/float/str files and this suite would silently stop covering the
+    pure reader. Pin the pure path; the arrow path has its own conformance
+    suite (test_parquet_arrow.py)."""
+    import serif.io.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, '_USE_ARROW', False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -283,6 +294,42 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# Decimal columns (decimal128, 16-byte FIXED_LEN_BYTE_ARRAY)
+# ---------------------------------------------------------------------------
+
+class TestDecimalRoundtrip:
+    """Decimals round-trip through serif's own reader/writer as decimal128.
+    Value, scale, and precision are preserved, and None lands back in the
+    right slot. Scale/precision live in DecimalStorage (not the Schema), so
+    those assertions reach into storage."""
+
+    def test_non_nullable(self):
+        from decimal import Decimal
+        vals = [Decimal('123.45'), Decimal('67.89'), Decimal('-0.01')]
+        t2 = roundtrip(Table({'amount': vals}))
+        assert col(t2, 'amount') == vals
+        assert t2['amount'].schema().kind is Decimal
+        assert t2['amount'].schema().nullable is False
+
+    def test_nullable(self):
+        from decimal import Decimal
+        vals = [Decimal('1.50'), None, Decimal('999.99')]
+        t2 = roundtrip(Table({'amount': vals}))
+        assert col(t2, 'amount') == vals
+        assert t2['amount'].schema().kind is Decimal
+        assert t2['amount'].schema().nullable is True
+
+    def test_scale_and_precision_preserved(self):
+        from decimal import Decimal
+        from serif._vector.storage import DecimalStorage
+        t2 = roundtrip(Table({'amount': [Decimal('123.45'), Decimal('67.89')]}))
+        st = t2['amount']._storage
+        assert isinstance(st, DecimalStorage)
+        assert st._scale == 2
+        assert st._precision == 5
+
+
+# ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
 
@@ -296,21 +343,6 @@ class TestErrorCases:
         path = tempfile.mktemp(suffix='.parquet')
         try:
             with pytest.raises(SerifTypeError, match="object"):
-                t.to_parquet(path)
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
-
-    def test_decimal_column_raises(self):
-        # DECIMAL is deliberately unsupported: reject, don't guess. A
-        # Decimal column must fail the write (and the read — see
-        # test_parquet_foreign) until serif takes a position on decimal
-        # handling. Cast to float upstream if float precision suffices.
-        from decimal import Decimal
-        t = Table({'amount': [Decimal('123.45'), Decimal('67.89')]})
-        path = tempfile.mktemp(suffix='.parquet')
-        try:
-            with pytest.raises(SerifTypeError, match="Decimal"):
                 t.to_parquet(path)
         finally:
             if os.path.exists(path):

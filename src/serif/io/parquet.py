@@ -32,10 +32,28 @@ from __future__ import annotations
 import array as _pyarray
 import struct as _struct
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
+from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
 from .._vector import Vector
-from .._vector.storage import ArrayStorage, StringStorage
+from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage
+
+# ---------------------------------------------------------------------------
+# Optional pyarrow acceleration (read side) — EXPERIMENT
+# ---------------------------------------------------------------------------
+# serif stays zero-dependency: pyarrow is never required. When it happens to
+# be installed, _arrow.py may decode a supported file faster and must hand
+# back an IDENTICAL Table (python in → python out; see
+# tests/test_parquet_arrow.py). Accelerators may widen TRANSPORT (codecs,
+# encodings), never SEMANTICS (types serif rejects still reject — the
+# accelerator declines and this module's errors surface).
+# _USE_ARROW is a private switch for tests/benchmarks, not API.
+try:
+    from . import _arrow as _arrow_accel
+except ImportError:            # pyarrow not installed
+    _arrow_accel = None
+
+_USE_ARROW = _arrow_accel is not None
 
 # ---------------------------------------------------------------------------
 # File-level constants
@@ -48,12 +66,13 @@ _MAGIC = b'PAR1'
 # ---------------------------------------------------------------------------
 
 # Type (physical)
-_T_BOOLEAN    = 0
-_T_INT32      = 1
-_T_INT64      = 2
-_T_FLOAT      = 4
-_T_DOUBLE     = 5
-_T_BYTE_ARRAY = 6
+_T_BOOLEAN              = 0
+_T_INT32                = 1
+_T_INT64                = 2
+_T_FLOAT                = 4
+_T_DOUBLE               = 5
+_T_BYTE_ARRAY           = 6
+_T_FIXED_LEN_BYTE_ARRAY = 7
 
 # FieldRepetitionType
 _REP_REQUIRED = 0
@@ -62,6 +81,7 @@ _REP_OPTIONAL = 1
 # ConvertedType
 _CT_UTF8             = 0
 _CT_DATE             = 6
+_CT_DECIMAL          = 5
 _CT_TIMESTAMP_MILLIS = 9
 _CT_TIMESTAMP_MICROS = 10
 
@@ -354,6 +374,31 @@ def _enc_schema_element(name: str, phys_type, conv_type, rep_type,
     return w.stop()
 
 
+def _enc_decimal_schema_element(name: str, rep_type: int,
+                                 scale: int, precision: int) -> bytes:
+    """
+    SchemaElement for DECIMAL columns (FIXED_LEN_BYTE_ARRAY + DECIMAL annotation).
+
+    Fields written (must be in ascending id order for Thrift compact):
+      1: type          = FIXED_LEN_BYTE_ARRAY
+      2: type_length   = 16  (decimal128)
+      3: repetition_type
+      4: name
+      6: converted_type = DECIMAL
+      7: scale
+      8: precision
+    """
+    w = _ThriftWriter()
+    w.i32(1, _T_FIXED_LEN_BYTE_ARRAY)
+    w.i32(2, 16)
+    w.i32(3, rep_type)
+    w.string(4, name)
+    w.i32(6, _CT_DECIMAL)
+    w.i32(7, scale)
+    w.i32(8, precision)
+    return w.stop()
+
+
 def _enc_data_page_header(num_values: int) -> bytes:
     """
     DataPageHeader fields:
@@ -540,7 +585,8 @@ _EPOCH_ORD  = _date(1970, 1, 1).toordinal()
 _EPOCH_DT   = _datetime(1970, 1, 1)
 
 
-def _encode_plain(values: list, kind: type, col_name: str) -> bytes:
+def _encode_plain(values: list, kind: type, col_name: str,
+                   decimal_scale: int = None) -> bytes:
     """Encode a list of non-null values as PLAIN bytes."""
     if not values:
         return b''
@@ -588,6 +634,18 @@ def _encode_plain(values: list, kind: type, col_name: str) -> bytes:
 
         us = _array.array('q', [_micros(v) for v in values])
         return us.tobytes()
+
+    if kind is _Decimal:
+        # Each value encodes as a 16-byte big-endian two's complement integer
+        # (Parquet FIXED_LEN_BYTE_ARRAY DECIMAL, type_length=16).
+        multiplier = _Decimal(10) ** decimal_scale
+        buf = bytearray()
+        for val in values:
+            unscaled = int(
+                (val * multiplier).to_integral_value(rounding=_ROUND_HALF_EVEN)
+            )
+            buf.extend(unscaled.to_bytes(16, 'big', signed=True))
+        return bytes(buf)
 
     raise SerifTypeError(
         f"Column '{col_name}': unsupported type '{kind.__name__}' for Parquet PLAIN encoding"
@@ -673,7 +731,9 @@ def _decode_plain(data, pos: int, kind: type, phys_type: int,
 
 def _col_parquet_type(col, col_name: str):
     """
-    Inspect a Vector column and return (phys_type, conv_type_or_None, rep_type).
+    Inspect a Vector column and return
+    (phys_type, conv_type_or_None, rep_type, decimal_scale_or_None, decimal_precision_or_None).
+
     Raises SerifTypeError for unsupported or ambiguous types.
     """
     schema = col.schema()
@@ -687,7 +747,7 @@ def _col_parquet_type(col, col_name: str):
     rep  = _REP_OPTIONAL if schema.nullable else _REP_REQUIRED
 
     if kind is bool:
-        return _T_BOOLEAN, None, rep
+        return _T_BOOLEAN, None, rep, None, None
 
     if kind is int:
         st = col._storage
@@ -698,19 +758,43 @@ def _col_parquet_type(col, col_name: str):
                 "TupleStorage int values may exceed INT64 range. "
                 "Create the column via arithmetic or an explicit typed Vector."
             )
-        return _T_INT64, None, rep
+        return _T_INT64, None, rep, None, None
 
     if kind is float:
-        return _T_DOUBLE, None, rep
+        return _T_DOUBLE, None, rep, None, None
 
     if kind is str:
-        return _T_BYTE_ARRAY, _CT_UTF8, rep
+        return _T_BYTE_ARRAY, _CT_UTF8, rep, None, None
 
     if kind is _date:
-        return _T_INT32, _CT_DATE, rep
+        return _T_INT32, _CT_DATE, rep, None, None
 
     if kind is _datetime:
-        return _T_INT64, _CT_TIMESTAMP_MICROS, rep
+        return _T_INT64, _CT_TIMESTAMP_MICROS, rep, None, None
+
+    if kind is _Decimal:
+        st = col._storage
+        if isinstance(st, DecimalStorage):
+            scale     = st._scale
+            precision = st._precision
+        else:
+            # TupleStorage: infer scale from the max decimal places across values
+            non_nulls = [v for v in st if v is not None]
+            if not non_nulls:
+                raise SerifTypeError(
+                    f"Column '{col_name}': empty Decimal column has no values "
+                    "to determine scale and precision from."
+                )
+            scale     = max(-v.as_tuple().exponent for v in non_nulls
+                           if v.as_tuple().exponent < 0) if any(
+                               v.as_tuple().exponent < 0 for v in non_nulls) else 0
+            # Digits needed: significant digits + any extra scale padding
+            precision = max(
+                len(v.as_tuple().digits) + max(0, scale + v.as_tuple().exponent)
+                for v in non_nulls
+            )
+            precision = max(precision, 1)
+        return _T_FIXED_LEN_BYTE_ARRAY, _CT_DECIMAL, rep, scale, precision
 
     if kind is object:
         raise SerifTypeError(
@@ -720,7 +804,7 @@ def _col_parquet_type(col, col_name: str):
 
     raise SerifTypeError(
         f"Column '{col_name}': unsupported type '{kind.__name__}' for Parquet. "
-        "Supported: bool, int (ArrayStorage 'q'), float, str, date, datetime."
+        "Supported: bool, int (ArrayStorage 'q'), float, str, date, datetime, Decimal."
     )
 
 
@@ -760,15 +844,17 @@ def write_parquet(table, path: str) -> None:
     col_infos = []
     for idx, col in enumerate(table._storage):
         name = col._name if col._name is not None else f'col_{idx}'
-        phys, conv, rep = _col_parquet_type(col, name)
+        phys, conv, rep, dec_scale, dec_prec = _col_parquet_type(col, name)
         col_infos.append({
-            'col':       col,
-            'name':      name,
-            'phys_type': phys,
-            'conv_type': conv,
-            'rep_type':  rep,
-            'nullable':  rep == _REP_OPTIONAL,
-            'kind':      col.schema().kind,
+            'col':               col,
+            'name':              name,
+            'phys_type':         phys,
+            'conv_type':         conv,
+            'rep_type':          rep,
+            'nullable':          rep == _REP_OPTIONAL,
+            'kind':              col.schema().kind,
+            'decimal_scale':     dec_scale,
+            'decimal_precision': dec_prec,
         })
 
     # ------------------------------------------------------------------
@@ -797,7 +883,8 @@ def write_parquet(table, path: str) -> None:
             non_null   = list(data_tuple)
 
         # Encode PLAIN values (non-null only)
-        value_bytes = _encode_plain(non_null, kind, info['name'])
+        value_bytes = _encode_plain(non_null, kind, info['name'],
+                                    info.get('decimal_scale'))
 
         # Build page body: [def_levels?][value_bytes]
         if nullable:
@@ -832,9 +919,15 @@ def write_parquet(table, path: str) -> None:
         _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=ncols)
     ]
     for r in page_records:
-        schema_elems.append(
-            _enc_schema_element(r['name'], r['phys_type'], r['conv_type'], r['rep_type'])
-        )
+        if r['kind'] is _Decimal:
+            schema_elems.append(
+                _enc_decimal_schema_element(r['name'], r['rep_type'],
+                                             r['decimal_scale'], r['decimal_precision'])
+            )
+        else:
+            schema_elems.append(
+                _enc_schema_element(r['name'], r['phys_type'], r['conv_type'], r['rep_type'])
+            )
 
     # ------------------------------------------------------------------
     # 4. Build column chunks and row group
@@ -998,8 +1091,9 @@ def _parse_logical_type(data, pos: int):
 # -- SchemaElement --
 
 def _parse_schema_element(data, pos: int):
-    r = {'type': None, 'repetition_type': None, 'name': None,
-         'num_children': None, 'converted_type': None, 'logical_type': None}
+    r = {'type': None, 'type_length': None, 'repetition_type': None, 'name': None,
+         'num_children': None, 'converted_type': None, 'scale': None, 'precision': None,
+         'logical_type': None}
     last = 0
     while True:
         b = data[pos]; pos += 1
@@ -1011,12 +1105,15 @@ def _parse_schema_element(data, pos: int):
         if fid is None:
             fid, pos = _dec_i32(data, pos)
         last = fid
-        if   fid == 1 and tc == _TC_I32:    r['type'],            pos = _dec_i32(data, pos)
-        elif fid == 3 and tc == _TC_I32:    r['repetition_type'], pos = _dec_i32(data, pos)
-        elif fid == 4 and tc == _TC_BINARY: r['name'],            pos = _dec_str(data, pos)
-        elif fid == 5 and tc == _TC_I32:    r['num_children'],    pos = _dec_i32(data, pos)
-        elif fid == 6 and tc == _TC_I32:    r['converted_type'],  pos = _dec_i32(data, pos)
-        elif fid == 10 and tc == _TC_STRUCT: r['logical_type'],   pos = _parse_logical_type(data, pos)
+        if   fid == 1  and tc == _TC_I32:    r['type'],            pos = _dec_i32(data, pos)
+        elif fid == 2  and tc == _TC_I32:    r['type_length'],     pos = _dec_i32(data, pos)
+        elif fid == 3  and tc == _TC_I32:    r['repetition_type'], pos = _dec_i32(data, pos)
+        elif fid == 4  and tc == _TC_BINARY: r['name'],            pos = _dec_str(data, pos)
+        elif fid == 5  and tc == _TC_I32:    r['num_children'],    pos = _dec_i32(data, pos)
+        elif fid == 6  and tc == _TC_I32:    r['converted_type'],  pos = _dec_i32(data, pos)
+        elif fid == 7  and tc == _TC_I32:    r['scale'],           pos = _dec_i32(data, pos)
+        elif fid == 8  and tc == _TC_I32:    r['precision'],       pos = _dec_i32(data, pos)
+        elif fid == 10 and tc == _TC_STRUCT: r['logical_type'],    pos = _parse_logical_type(data, pos)
         else: pos = _skip_field(data, pos, tc)
     return r, pos
 
@@ -1200,7 +1297,7 @@ _CONV_TO_KIND = {
 # physical values yields plausible-looking WRONG numbers (a DECIMAL's
 # unscaled int, a UINT_64's sign-flipped negatives). Names for the error.
 _CT_UNSUPPORTED = {
-    1: 'MAP', 2: 'MAP_KEY_VALUE', 3: 'LIST', 4: 'ENUM', 5: 'DECIMAL',
+    1: 'MAP', 2: 'MAP_KEY_VALUE', 3: 'LIST', 4: 'ENUM',
     7: 'TIME_MILLIS', 8: 'TIME_MICROS', 13: 'UINT_32', 14: 'UINT_64',
     19: 'JSON', 20: 'BSON', 21: 'INTERVAL',
 }
@@ -1227,6 +1324,17 @@ def _elem_to_kind(elem: dict):
         )
 
     if conv is not None:
+        if conv == _CT_DECIMAL:
+            # DECIMAL: phys must be FIXED_LEN_BYTE_ARRAY (16 bytes = decimal128).
+            # scale and precision live in the SchemaElement fields 7 and 8.
+            if elem.get('type') != _T_FIXED_LEN_BYTE_ARRAY or elem.get('type_length') != 16:
+                raise SerifTypeError(
+                    f"Column '{name}': DECIMAL with physical type other than "
+                    "FIXED_LEN_BYTE_ARRAY(16) is not supported (received "
+                    f"type={elem.get('type')}, type_length={elem.get('type_length')}). "
+                    "Only decimal128 (precision ≤ 38) columns can be read."
+                )
+            return _Decimal, _T_FIXED_LEN_BYTE_ARRAY, _CT_DECIMAL
         kind = _CONV_TO_KIND.get(conv)
         if kind is None:
             label = _CT_UNSUPPORTED.get(conv, f'code {conv}')
@@ -1351,6 +1459,57 @@ def _decode_str_raw(page_body: bytes, body_pos: int,
     return StringStorage.from_raw(raw_buf, _pyarray.array('I', full_offs), mask)
 
 
+def _decode_decimal_raw(page_body: bytes, body_pos: int,
+                         null_flags, non_null_count: int,
+                         scale: int, precision: int) -> DecimalStorage:
+    """
+    Build a DecimalStorage from PLAIN FIXED_LEN_BYTE_ARRAY page data.
+
+    Each non-null value is exactly 16 bytes, big-endian two's complement —
+    Parquet DECIMAL native format matches DecimalStorage._buf directly.
+    """
+    from .._vector.nullable import BitMask
+
+    non_null_bytes = bytes(page_body[body_pos:body_pos + non_null_count * 16])
+
+    if null_flags is None:
+        return DecimalStorage.from_raw_be(non_null_bytes, scale, precision, None)
+
+    # Expand: insert 16 zero bytes at each null position so _buf[i*16:(i+1)*16]
+    # is always a valid (if sentinel) address regardless of nullability.
+    buf       = bytearray()
+    null_list: list[bool] = []
+    has_nulls = False
+    raw_idx   = 0
+
+    for is_null in null_flags:
+        if is_null:
+            has_nulls = True
+            null_list.append(True)
+            buf.extend(b'\x00' * 16)
+        else:
+            buf.extend(non_null_bytes[raw_idx * 16:(raw_idx + 1) * 16])
+            null_list.append(False)
+            raw_idx += 1
+
+    mask = BitMask.from_iterable(null_list) if has_nulls else None
+    return DecimalStorage(buf, scale, precision, mask)
+
+
+def _concat_decimal_storages(a: DecimalStorage, b: DecimalStorage) -> DecimalStorage:
+    """Concatenate two DecimalStorages (multiple row groups)."""
+    from .._vector.nullable import BitMask
+    new_buf = a._buf + b._buf
+    if a._mask is None and b._mask is None:
+        new_mask = None
+    else:
+        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(len(a))]
+        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(len(b))]
+        all_flags = a_flags + b_flags
+        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
+    return DecimalStorage(new_buf, a._scale, a._precision, new_mask)
+
+
 def _concat_string_storages(a: StringStorage, b: StringStorage) -> StringStorage:
     """Concatenate two StringStorages (multiple row groups)."""
     shift    = len(a._buf)
@@ -1377,7 +1536,9 @@ def _concat_string_storages(a: StringStorage, b: StringStorage) -> StringStorage
 
 
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
-                        conv_type, is_optional: bool, col_name: str) -> list:
+                        conv_type, is_optional: bool, col_name: str,
+                        decimal_scale: int = None,
+                        decimal_precision: int = None) -> list:
     """
     Read all data pages for one column chunk.
     Returns a flat list (None at null positions for optional columns).
@@ -1462,6 +1623,19 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             else:
                 values = list(values) if not isinstance(values, list) else values
                 values.extend(page_storage)
+        elif kind is _Decimal:
+            # Decimal fast path: build DecimalStorage directly from raw bytes.
+            # Each value is exactly 16 bytes big-endian — no boxing, no loop.
+            page_storage = _decode_decimal_raw(
+                page_body, body_pos, null_flags, non_null_count,
+                decimal_scale, decimal_precision)
+            if values is None:
+                values = page_storage
+            elif isinstance(values, DecimalStorage):
+                values = _concat_decimal_storages(values, page_storage)
+            else:
+                values = list(values) if not isinstance(values, list) else values
+                values.extend(page_storage)
         else:
             page_values, _ = _decode_plain(
                 page_body, body_pos, kind, phys_type, non_null_count, conv_type
@@ -1512,6 +1686,13 @@ def read_parquet(path: str):
     from ..table import Table
     from .._vector.dtype import Schema as _Schema
 
+    if _USE_ARROW and _arrow_accel is not None:
+        result = _arrow_accel.try_read(path)
+        if result is not None:
+            return result
+        # Declined (unsupported column type, parse error, …): fall through
+        # to the pure reader, whose errors are the ones users should see.
+
     with open(path, 'rb') as f:
         raw = f.read()
 
@@ -1556,11 +1737,13 @@ def read_parquet(path: str):
     for s in leaf_schemas:
         kind, phys_type, conv_type = _elem_to_kind(s)
         col_meta.append({
-            'name':        s['name'],
-            'kind':        kind,
-            'phys_type':   phys_type,
-            'conv_type':   conv_type,
-            'is_optional': s.get('repetition_type') == _REP_OPTIONAL,
+            'name':              s['name'],
+            'kind':              kind,
+            'phys_type':         phys_type,
+            'conv_type':         conv_type,
+            'is_optional':       s.get('repetition_type') == _REP_OPTIONAL,
+            'decimal_scale':     s.get('scale'),
+            'decimal_precision': s.get('precision'),
         })
 
     # Accumulate values per schema-leaf POSITION (not name): duplicate
@@ -1597,11 +1780,13 @@ def read_parquet(path: str):
                 chunk_values = _read_column_chunk(
                     data,
                     cm,
-                    kind       = meta_entry['kind'],
-                    phys_type  = meta_entry['phys_type'],
-                    conv_type  = meta_entry['conv_type'],
-                    is_optional= meta_entry['is_optional'],
-                    col_name   = col_name,
+                    kind              = meta_entry['kind'],
+                    phys_type         = meta_entry['phys_type'],
+                    conv_type         = meta_entry['conv_type'],
+                    is_optional       = meta_entry['is_optional'],
+                    col_name          = col_name,
+                    decimal_scale     = meta_entry.get('decimal_scale'),
+                    decimal_precision = meta_entry.get('decimal_precision'),
                 )
             except (IndexError, _struct.error) as e:
                 raise SerifValueError(
@@ -1612,6 +1797,8 @@ def read_parquet(path: str):
                 col_values[col_idx] = chunk_values
             elif isinstance(existing, StringStorage) and isinstance(chunk_values, StringStorage):
                 col_values[col_idx] = _concat_string_storages(existing, chunk_values)
+            elif isinstance(existing, DecimalStorage) and isinstance(chunk_values, DecimalStorage):
+                col_values[col_idx] = _concat_decimal_storages(existing, chunk_values)
             elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
                 col_values[col_idx] = existing + chunk_values
             else:
@@ -1627,6 +1814,9 @@ def read_parquet(path: str):
         if isinstance(raw, StringStorage):
             # Str fast path: StringStorage already built with raw bytes,
             # no .decode() has occurred yet.
+            col = Vector._from_storage(raw, dtype, name=m['name'])
+        elif isinstance(raw, DecimalStorage):
+            # Decimal fast path: DecimalStorage built directly from raw bytes.
             col = Vector._from_storage(raw, dtype, name=m['name'])
         elif isinstance(raw, _pyarray.array):
             # Non-nullable float or int: storage is already a packed C array.
