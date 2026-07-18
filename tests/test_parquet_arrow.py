@@ -182,17 +182,18 @@ def test_conformance_decimal():
 
 def test_conformance_without_numpy(monkeypatch):
     # numpy is OPTIONAL: pyarrow >= 25 no longer requires it, so the
-    # accelerator must run with pyarrow alone. The only numpy-accelerated
-    # step is the decimal byte-swap (validity bitmaps memcpy straight into
-    # BitMask, numpy or not) — force the pure-Python fallback even where
-    # numpy IS installed so CI covers it. The other columns confirm the
-    # rest of the reader never needs numpy at all. Same
-    # identical-to-pure-reader guarantee.
+    # accelerator must run with pyarrow alone. The numpy-accelerated steps
+    # are the decimal byte-swap and the bool bit-unpack (validity bitmaps
+    # memcpy straight into BitMask, numpy or not) — force the pure-Python
+    # fallbacks even where numpy IS installed so CI covers them. The other
+    # columns confirm the rest of the reader never needs numpy at all.
+    # Same identical-to-pure-reader guarantee.
     monkeypatch.setattr(_arrow, '_np', None)
     _conform(Table({
         'n':   [10, None, 30, None],
         'f':   [None, 2.5, None, -0.0],
         's':   [None, 'bob', '', 'δ 🎉'],
+        'b':   [True, None, False, True],
         'amt': [Decimal('123.45'), Decimal('-0.01'), None, Decimal('999999.99')],
     }))
 
