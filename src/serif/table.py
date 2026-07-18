@@ -1370,7 +1370,10 @@ class Table(Vector):
                 left_keys_seen.add(key)
 
             matches = right_index_get(key)
-            if matches:
+            # `is not None`, not truthiness: accelerated buckets are numpy
+            # arrays, which refuse bool() beyond one element. Buckets are
+            # never empty on either path.
+            if matches is not None:
                 for right_idx in matches:
                     if matched_right_rows is not None:
                         matched_right_rows.add(right_idx)

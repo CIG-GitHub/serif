@@ -6,12 +6,13 @@ bucket row indices by key with one dict operation per row — plus a tuple
 allocation per row for the key itself. Here the same dict is built from
 buffer math: np.unique on the zero-copy int64 view yields the distinct
 keys, their first occurrences, and a per-row code; a stable argsort of
-the codes groups the row indices in C. Only the final wrap — one small
-list and one dict entry per DISTINCT key — runs in Python.
+the codes groups the row indices in C. Only the final wrap — one dict
+entry per DISTINCT key — runs in Python; the buckets themselves stay
+numpy arrays all the way into the downstream gathers.
 
-group_indices returns the same dict the pure loops build, or None to
-DECLINE — the caller falls back to the pure loop, whose behavior is the
-specification.
+group_indices returns a dict with the same keys, order, and bucket
+contents as the pure loops build, or None to DECLINE — the caller falls
+back to the pure loop, whose behavior is the specification.
 """
 
 from __future__ import annotations
@@ -22,10 +23,13 @@ from .._vector.storage import ArrayStorage
 
 def group_indices(storage):
     """
-    Bucket row indices by key value: {(key,): [row, ...]} with keys in
+    Bucket row indices by key value: {(key,): row_indices} with keys in
     FIRST-APPEARANCE order and row indices ascending within each bucket —
-    exactly the dict the pure loops build. Keys are 1-tuples of Python
-    ints (the callers' multi-key shape, single-key case).
+    the same buckets the pure loops build, but held as numpy intp arrays:
+    the downstream gathers (take/take_pad) run np.asarray on whatever they
+    get, so arrays flow through with zero conversion where lists would pay
+    a tolist here and a re-parse there. Keys are 1-tuples of Python ints
+    (the callers' multi-key shape, single-key case).
 
     int64 ArrayStorage with no nulls only; anything else returns None to
     DECLINE. Floats stay pure by design, not just for now: the pure dict
@@ -52,4 +56,4 @@ def group_indices(storage):
     # dict insertion order = first appearance, matching the pure loop
     # (np.unique sorts by value; first_idx restores scan order).
     appearance = _np.argsort(first_idx, kind='stable')
-    return {(keys[c],): groups[c].tolist() for c in appearance.tolist()}
+    return {(keys[c],): groups[c] for c in appearance.tolist()}

@@ -91,7 +91,10 @@ def test_group_indices_matches_pure_dict(vals):
     fast = group_indices(Vector(vals)._storage)
     pure = _pure_partition(vals)
     assert fast is not None
-    assert fast == pure                              # keys and buckets
+    # Buckets are numpy intp arrays (transport — pinned so it doesn't
+    # silently regress to lists); contents must match the pure dict.
+    assert all(isinstance(b, np.ndarray) for b in fast.values())
+    assert {k: list(b) for k, b in fast.items()} == pure
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
 
 
