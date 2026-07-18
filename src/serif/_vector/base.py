@@ -294,6 +294,17 @@ def _accel_filter(storage, mask):
     return filter_storage(storage, mask)
 
 
+def _accel_popcount(mask_storage):
+    """Numpy-accelerated True count of a boolean mask (nulls count False);
+    None = decline to the pure count, whose behavior is the specification.
+    OPTIONAL numpy — transport, never semantics; see serif/_accel/__init__.py."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import popcount_storage
+    return popcount_storage(mask_storage)
+
+
 def _accel_take(storage, indices):
     """Numpy-accelerated positional gather; None = decline to the pure
     storage.take(), whose behavior is the specification. OPTIONAL numpy —

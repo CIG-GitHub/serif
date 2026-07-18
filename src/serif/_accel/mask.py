@@ -133,6 +133,20 @@ def _gather(storage, indexer, src_n: int, pad=None):
     return None
 
 
+def popcount_storage(mask):
+    """
+    True count of a BoolStorage mask — the survivor count of a filter,
+    under the same rule as filter_storage (null entries select False).
+    Returns an int, or None to decline; the pure count is the
+    specification.
+    """
+    if _np is None:
+        return None
+    if isinstance(mask, BoolStorage):
+        return int(_selection(mask, len(mask)).sum())
+    return None
+
+
 def filter_storage(storage, mask):
     """
     Filter `storage` by a boolean mask.

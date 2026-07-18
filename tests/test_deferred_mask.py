@@ -1,0 +1,357 @@
+"""
+Deferred boolean-mask selection: `t[mask]` outside a batch() scope
+returns a MaskedTable that gathers a column only when someone asks
+for it.
+
+The contract under test:
+
+- Results are IDENTICAL to the old eager gather — which ran the very
+  same per-column program, col[mask] — in values, nulls, names,
+  schemas, and storage types, on both the accel and pure tiers.
+- Laziness is real: single-column access gathers exactly that column;
+  len / shape / column_names gather nothing.
+- The capture is a frozen snapshot: writes to the source after deferral
+  (owner-addressed or batch()) never show through, in any order.
+- Everything unanticipated falls through materialization (the latch)
+  and behaves as a plain Table; derived results are plain Tables — the
+  deferred type never escapes as a result type.
+"""
+
+import pytest
+
+from serif import Table, Vector
+from serif.table import MaskedTable
+from serif.errors import SerifKeyError, SerifTypeError, SerifValueError
+import serif._accel as accel
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def eager(t, mask):
+    """The old eager path, verbatim: gather every column through the
+    same per-column program the deferred table runs on demand."""
+    return Table(tuple(c[mask] for c in t.cols()))
+
+
+def assert_same_table(result, expected):
+    assert len(result) == len(expected)
+    assert result.shape == expected.shape
+    assert result.column_names() == expected.column_names()
+    for rc, ec in zip(result.cols(), expected.cols()):
+        assert rc.vector_name == ec.vector_name
+        assert type(rc) is type(ec)
+        assert type(rc._storage) is type(ec._storage)
+        if ec.schema() is None:
+            assert rc.schema() is None
+        else:
+            assert rc.schema().kind is ec.schema().kind
+            assert rc.schema().nullable is ec.schema().nullable
+        assert list(rc) == list(ec)
+
+
+def make_table():
+    return Table({
+        'a': [1, 2, 3, 4, 5, 6],
+        'b': [1.5, -2.0, 3.25, 4.0, 5.5, 6.75],
+        's': ['x', 'y', 'z', 'x', 'y', 'z'],
+        'n': [10, None, 30, None, 50, 60],
+        'f': [True, False, True, None, False, True],
+    })
+
+
+MASKS = [
+    ("predicate", lambda t: t.a > 3),
+    ("literal_list", lambda t: [True, False, True, False, True, False]),
+    ("nullable", lambda t: Vector([True, None, True, False, None, True])),
+    ("all_true", lambda t: Vector([True] * 6)),
+    ("all_false", lambda t: Vector([False] * 6)),
+]
+
+
+@pytest.fixture(params=['ambient', 'pure'])
+def tier(request):
+    """Run each test on the ambient tier (numpy when installed) AND with
+    the accelerator forced off — deferral is independent of the tier."""
+    if request.param == 'pure':
+        saved = accel._USE_NUMPY
+        accel._USE_NUMPY = False
+        try:
+            yield 'pure'
+        finally:
+            accel._USE_NUMPY = saved
+    else:
+        yield 'ambient'
+
+
+# ---------------------------------------------------------------------------
+# Equivalence with the eager path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mask_name,make_mask", MASKS, ids=[m[0] for m in MASKS])
+def test_equivalence_with_eager(tier, mask_name, make_mask):
+    t = make_table()
+    assert_same_table(t[make_mask(t)], eager(t, make_mask(t)))
+
+
+def test_masking_returns_deferred_subtype(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert type(q) is MaskedTable
+    assert isinstance(q, Table)
+    # list masks defer too
+    assert type(t[[True] * 6]) is MaskedTable
+
+
+def test_categorical_column_round_trip(tier):
+    c = Vector(['lo', 'hi', 'lo', 'mid', 'hi', 'lo'], name='c')
+    t = Table([Vector([1, 2, 3, 4, 5, 6], name='a'),
+               c.categorize(['lo', 'mid', 'hi'])])
+    mask = t.a > 2
+    q = t[mask]
+    assert type(q.c) is type(t.c)  # stays categorical through the gather
+    assert_same_table(q, eager(t, mask))
+
+
+def test_empty_source_table(tier):
+    t = Table({'a': [], 'b': []})
+    mask = t.a > 1
+    q = t[mask]
+    assert len(q) == 0
+    assert q.shape == (0, 2)
+    assert_same_table(q, eager(t, mask))
+
+
+def test_iteration_and_fingerprint_match_eager(tier):
+    t = make_table()
+    mask = t.a > 2
+    q, e = t[mask], eager(t, mask)
+    assert [tuple(row) for row in q] == [tuple(row) for row in e]
+    assert q.fingerprint() == e.fingerprint()
+
+
+def test_repr_matches_eager(tier):
+    t = make_table()
+    mask = t.a > 2
+    assert repr(t[mask]) == repr(eager(t, mask))
+
+
+# ---------------------------------------------------------------------------
+# Laziness: what gathers, what doesn't
+# ---------------------------------------------------------------------------
+
+def test_len_shape_names_gather_nothing(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert len(q) == 3
+    assert q.shape == (3, 5)
+    assert q.column_names() == ['a', 'b', 's', 'n', 'f']
+    assert q._mat is None
+    assert q._gathered == {}
+
+
+def test_nullable_mask_popcount_excludes_nulls(tier):
+    t = make_table()
+    q = t[Vector([True, None, True, False, None, True])]
+    assert len(q) == 3
+    assert q._mat is None
+
+
+def test_single_column_access_gathers_only_that_column(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert list(q.b) == [4.0, 5.5, 6.75]
+    assert set(q._gathered) == {1}
+    assert list(q['s']) == ['x', 'y', 'z']
+    assert set(q._gathered) == {1, 2}
+    assert q._mat is None
+
+
+def test_gathered_column_is_cached(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert q.b is q.b  # same object, one gather — like eager t.b is t.b
+
+
+def test_multi_column_selection_stays_deferred(tier):
+    t = make_table()
+    mask = t.a > 3
+    q = t[mask]
+    r = q[('a', 'b')]
+    assert type(r) is Table
+    assert_same_table(r, eager(t, mask)[('a', 'b')])
+    assert q._mat is None
+    assert set(q._gathered) == {0, 1}
+
+
+def test_positional_cols_access_gathers_one(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert list(q.cols(1)) == [4.0, 5.5, 6.75]
+    assert list(q.cols(-1)) == [None, False, True]
+    assert set(q._gathered) == {1, 4}
+    assert q._mat is None
+
+
+def test_case_insensitive_and_unnamed_access(tier):
+    t = Table([Vector([1, 2, 3], name='Amount'), Vector([4, 5, 6])])
+    q = t[Vector([True, False, True])]
+    assert list(q['amount']) == [1, 3]
+    assert list(q.col1_) == [4, 6]
+    assert q._mat is None
+
+
+def test_duplicate_names_resolve_through_map(tier):
+    with pytest.warns(UserWarning, match="Duplicate column name"):
+        t = Table([Vector([1, 2, 3], name='x'),
+                   Vector([4, 5, 6], name='x').alias('x')])
+    q = t[Vector([True, False, True])]
+    assert list(q.x__1) == [4, 6]
+    assert q._mat is None
+
+
+def test_missing_key_raises_without_materializing(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    with pytest.raises(SerifKeyError):
+        q['nope']
+    assert q._mat is None
+
+
+def test_mask_length_mismatch_raises_eagerly(tier):
+    t = make_table()
+    with pytest.raises(SerifValueError, match="length mismatch"):
+        t[Vector([True, False])]
+    with pytest.raises(SerifValueError, match="length mismatch"):
+        t[[True, False]]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot semantics: `q = t[mask]` means "t as it was", forever
+# ---------------------------------------------------------------------------
+
+def test_owner_write_after_defer_does_not_leak(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    t[3, 'a'] = 999          # row 3 is a survivor (a=4)
+    t[4, 'b'] = -1.0         # row 4 is a survivor (b=5.5)
+    assert list(q.a) == [4, 5, 6]
+    assert list(q.b) == [4.0, 5.5, 6.75]
+    assert list(t.a) == [1, 2, 3, 999, 5, 6]  # the write itself landed
+
+
+def test_write_between_gathers_does_not_leak(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert list(q.b) == [4.0, 5.5, 6.75]   # gathered BEFORE the write
+    t[3, 'a'] = 999
+    t[3, 'b'] = -1.0
+    assert list(q.a) == [4, 5, 6]          # gathered AFTER — same snapshot
+    assert list(q.b) == [4.0, 5.5, 6.75]
+
+
+def test_batch_write_after_defer_does_not_leak(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    with t.batch() as m:
+        m[3, 'a'] = 999
+        m[5, 'n'] = 0
+    assert list(q.a) == [4, 5, 6]
+    assert list(q.n) == [None, 50, 60]
+
+
+def test_column_replacement_after_defer_does_not_leak(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    t.a = [0, 0, 0, 0, 0, 0]
+    assert list(q.a) == [4, 5, 6]
+
+
+def test_source_alias_after_defer_keeps_capture_names(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    t.a.alias('z')  # renames the SOURCE column in place, marks it wild
+    assert q.column_names() == ['a', 'b', 's', 'n', 'f']
+    assert list(q.a) == [4, 5, 6]
+    assert q._mat is None
+
+
+def test_gathered_columns_are_frozen_like_eager(tier):
+    t = make_table()
+    mask = t.a > 3
+    q, e = t[mask], eager(t, mask)
+    with pytest.raises(SerifTypeError, match="owned by a Table"):
+        e.a[0] = 0
+    with pytest.raises(SerifTypeError, match="owned by a Table"):
+        q.a[0] = 0
+
+
+# ---------------------------------------------------------------------------
+# batch() scopes: deferral keys off t._unlocked
+# ---------------------------------------------------------------------------
+
+def test_mask_inside_batch_scope_is_eager(tier):
+    t = make_table()
+    with t.batch() as m:
+        m[0, 'a'] = 100
+        r = m[m.a > 3]
+        assert type(r) is Table          # not deferred: buffers are live
+        assert list(r.a) == [100, 4, 5, 6]
+
+
+# ---------------------------------------------------------------------------
+# Materialization: the latch
+# ---------------------------------------------------------------------------
+
+def test_latch_releases_snapshot_and_behaves_plain(tier):
+    t = make_table()
+    mask = t.a > 3
+    q = t[mask]
+    repr(q)                              # any full access latches
+    assert q._mat is not None
+    assert q._captured is None           # snapshot released
+    assert q._gathered is None
+    assert_same_table(q, eager(t, mask))
+    assert list(q.a) == [4, 5, 6]        # post-latch access still works
+
+
+def test_chained_masks_materialize_the_first(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    m2 = q1.a > 3
+    q2 = q1[m2]
+    assert type(q2) is MaskedTable
+    assert q1._mat is not None           # v1: the second mask latches q1
+    assert_same_table(q2, eager(eager(t, t.a > 1), m2))
+
+
+def test_derived_results_are_plain_tables(tier):
+    t = make_table()
+    q = t[t.a > 3]
+    assert type(q.copy()) is Table
+    assert type(q[0:2]) is Table
+    assert type(q[('a', 'b')]) is Table
+
+
+def test_row_access_materializes_correctly(tier):
+    t = make_table()
+    mask = t.a > 3
+    q = t[mask]
+    assert tuple(q[0]) == tuple(eager(t, mask)[0])
+
+
+# ---------------------------------------------------------------------------
+# Popcount conformance (accel vs pure)
+# ---------------------------------------------------------------------------
+
+def test_popcount_conformance():
+    pytest.importorskip("numpy")
+    from serif._vector.base import _accel_popcount
+    for values in ([True, False, True], [True, None, False, True],
+                   [None, None], [], [False, False]):
+        mask = Vector(values, dtype=None) if values else Vector([True])[0:0]
+        fast = _accel_popcount(mask._storage)
+        pure = sum(1 for v in mask._storage if v)
+        if fast is not None:
+            assert fast == pure
