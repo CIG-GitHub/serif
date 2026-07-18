@@ -294,6 +294,24 @@ def _accel_filter(storage, mask):
     return filter_storage(storage, mask)
 
 
+def _accel_take(storage, indices):
+    """Numpy-accelerated positional gather; None = decline to the pure
+    storage.take(), whose behavior is the specification. OPTIONAL numpy —
+    transport, never semantics; see serif/_accel/__init__.py."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import take_storage
+    return take_storage(storage, indices)
+
+
+def _take(storage, indices):
+    """storage.take() behind the accelerator: numpy gather when the backend
+    is supported, the protocol's pure take() otherwise."""
+    fast = _accel_take(storage, indices)
+    return fast if fast is not None else storage.take(indices)
+
+
 def _accel_reduce(storage, op, **kwargs):
     """Try a numpy-accelerated reduction. Returns (True, value) when the
     fast path produced the answer, (False, None) on decline — the caller
@@ -791,7 +809,7 @@ class Vector():
         storage = self._storage
         new_dtype = Schema(self._dtype.kind, False) if self._dtype is not None else None
         kept = [i for i in range(len(storage)) if not storage.is_null(i)]
-        return self._clone(storage.take(kept), dtype=new_dtype)
+        return self._clone(_take(storage, kept), dtype=new_dtype)
 
     def isna(self):
         """
@@ -1736,7 +1754,7 @@ class Vector():
 
         # Permute through the storage protocol — no Vector() constructor,
         # no type inference, works for every backend.
-        return self._clone(storage.take(order))
+        return self._clone(_take(storage, order))
 
 
     def _check_duplicate(self, other):

@@ -5,6 +5,8 @@ from collections.abc import Iterable
 from ._vector import Vector
 from ._vector import Schema
 from ._vector.base import _null_sort_flag
+from ._vector.base import _accel_take
+from ._vector.base import _take
 
 from .naming import _sanitize_user_name
 from .naming import _disambiguate
@@ -1547,18 +1549,35 @@ class Table(Vector):
         return groupby, partition_index, row_keys
 
     @staticmethod
-    def _group_slice(data, row_indices, source_col, name):
+    def _make_group_slicer(source_col):
         """
-        Build the per-group slice of a column with the source column's known
-        schema -- one walk, no per-element re-inference. object/untyped
-        sources fall back to full inference.
+        Return slicer(row_indices, name) -> the per-group slice of source_col.
+
+        Typed columns gather straight off the storage buffer through the
+        take accelerator; on decline (categorical, date/object backends)
+        the column is materialized ONCE — lazily, so the accelerated path
+        never pays for it — and each group rebuilds with the source's known
+        schema, no per-element re-inference. object/untyped sources fall
+        back to full inference, exactly as before.
         """
-        values = [data[i] for i in row_indices]
         schema = source_col.schema()
-        if schema is None or schema.kind is object:
-            return Vector(values, name=name)
-        return Vector._from_iterable_known_dtype(
-            values, Schema(schema.kind, schema.nullable), name=name)
+        typed = schema is not None and schema.kind is not object
+        state = {}
+
+        def slicer(row_indices, name):
+            if typed:
+                fast = _accel_take(source_col._storage, row_indices)
+                if fast is not None:
+                    return source_col._clone(fast, name=name)
+            if 'data' not in state:
+                state['data'] = source_col._storage.to_tuple()
+            values = [state['data'][i] for i in row_indices]
+            if not typed:
+                return Vector(values, name=name)
+            return Vector._from_iterable_known_dtype(
+                values, Schema(schema.kind, schema.nullable), name=name)
+
+        return slicer
 
     @staticmethod
     def _reject_nonscalar(agg_name, value, detail, fn_name):
@@ -1614,12 +1633,11 @@ class Table(Vector):
                     sub_names = source.column_names()
                     sub_cols = source.cols()
                     width = len(sub_names)
-                    col_data = [c._storage.to_tuple() for c in sub_cols]
+                    slicers = [Table._make_group_slicer(c) for c in sub_cols]
                     fanned = [[] for _ in range(width)]
                     for key, row_indices in group_items:
                         for j in range(width):
-                            col_slice = Table._group_slice(
-                                col_data[j], row_indices, sub_cols[j], name=sub_names[j])
+                            col_slice = slicers[j](row_indices, sub_names[j])
                             try:
                                 v = getattr(col_slice, method_name)()
                             except SerifEmptyReductionError as e:
@@ -1635,10 +1653,10 @@ class Table(Vector):
                         base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
                         yield (f"{agg_name}{base}", fanned[j])
                 else:
-                    data = source._storage.to_tuple()
+                    slicer = Table._make_group_slicer(source)
                     out = []
                     for key, row_indices in group_items:
-                        group_vec = Table._group_slice(data, row_indices, source, name=None)
+                        group_vec = slicer(row_indices, None)
                         try:
                             val = getattr(group_vec, method_name)()
                         except SerifEmptyReductionError as e:
@@ -1648,14 +1666,15 @@ class Table(Vector):
                         out.append(val)
                     yield (agg_name, out)
             elif callable(func):
-                # Callable receives the group as a Table. Materialize each
-                # column once (not once per group).
-                col_data = [(col, col._storage.to_tuple()) for col in self._storage]
+                # Callable receives the group as a Table, one slicer per
+                # column (each materializes its column at most once).
+                slicers = [(col, Table._make_group_slicer(col))
+                           for col in self._storage]
                 out = []
                 for key, row_indices in group_items:
                     group_cols = [
-                        Table._group_slice(data, row_indices, col, name=col._name)
-                        for col, data in col_data
+                        slicer(row_indices, col._name)
+                        for col, slicer in slicers
                     ]
                     try:
                         val = func(Table(group_cols))
@@ -1922,7 +1941,7 @@ class Table(Vector):
         # backend AND subclass (a _Category stays categorical, an int column
         # keeps ArrayStorage) with zero re-inference. The columns are freshly
         # built, so the nocopy assembly is safe.
-        new_cols = [col._clone(col._storage.take(indices)) for col in self._storage]
+        new_cols = [col._clone(_take(col._storage, indices)) for col in self._storage]
         return Table._from_columns_nocopy(new_cols)
 
     def to_parquet(self, path: str) -> None:
