@@ -286,6 +286,36 @@ def _accel_reduce(storage, op, **kwargs):
     return True, result
 
 
+def _accel_binop(storage, rhs, op_func, result_dtype):
+    """Numpy-accelerated elementwise arithmetic; None = decline. The schema
+    is already resolved by _pre_compute_op_schema — the accelerator computes
+    values, never semantics. Returns a Vector or None."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import binop_storage
+    fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, result_dtype)
+    result._wild = True   # match the pure constructors' name-tracking flag
+    return result
+
+
+def _accel_compare(storage, rhs, op_func, nullable):
+    """Numpy-accelerated elementwise comparison; None = decline."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import compare_storage
+    fast = compare_storage(storage, rhs, op_func)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, Schema(bool, nullable))
+    result._wild = True
+    return result
+
+
 def _pick_target_class(dtype):
     """Return the Vector subclass appropriate for the given DataType."""
     if dtype is None:
@@ -1105,6 +1135,9 @@ class Vector():
                 (self._dtype.nullable if self._dtype is not None else True)
                 or (other_schema.nullable if other_schema is not None else True)
             )
+            fast = _accel_compare(self._storage, other._storage, op, nullable)
+            if fast is not None:
+                return fast
             return Vector._from_iterable_known_dtype(
                 (None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
                 Schema(bool, nullable),
@@ -1123,6 +1156,9 @@ class Vector():
                 stacklevel=2
             )
         nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None
+        fast = _accel_compare(self._storage, other, op, nullable)
+        if fast is not None:
+            return fast
         return Vector._from_iterable_known_dtype(
             (None if (x is None or other is None) else bool(op(x, other)) for x in self),
             Schema(bool, nullable),
@@ -1257,6 +1293,10 @@ class Vector():
             if len(self) != len(other):
                 raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
             result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
+            if result_dtype is not None:
+                fast = _accel_binop(self._storage, other._storage, op_func, result_dtype)
+                if fast is not None:
+                    return fast
             try:
                 result_values = tuple(
                     None if (x is None or y is None) else op_func(x, y)
@@ -1293,6 +1333,10 @@ class Vector():
 
         # Scalar path
         result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
+        if result_dtype is not None:
+            fast = _accel_binop(self._storage, other, op_func, result_dtype)
+            if fast is not None:
+                return fast
         try:
             result_values = tuple(
                 None if x is None else op_func(x, other)
