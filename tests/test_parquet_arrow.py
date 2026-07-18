@@ -182,11 +182,12 @@ def test_conformance_decimal():
 
 def test_conformance_without_numpy(monkeypatch):
     # numpy is OPTIONAL: pyarrow >= 25 no longer requires it, so the
-    # accelerator must run with pyarrow alone. Force the numpy-free
-    # fallbacks even where numpy IS installed, so CI covers the pure-Python
-    # bitmap-unpack (_byte_mask) and decimal byte-swap paths. Nullable
-    # int/float/str exercise the mask fallback; the decimal column exercises
-    # the byte-swap fallback. Same identical-to-pure-reader guarantee.
+    # accelerator must run with pyarrow alone. The only numpy-accelerated
+    # step is the decimal byte-swap (validity bitmaps memcpy straight into
+    # BitMask, numpy or not) — force the pure-Python fallback even where
+    # numpy IS installed so CI covers it. The other columns confirm the
+    # rest of the reader never needs numpy at all. Same
+    # identical-to-pure-reader guarantee.
     monkeypatch.setattr(_arrow, '_np', None)
     _conform(Table({
         'n':   [10, None, 30, None],
@@ -194,6 +195,132 @@ def test_conformance_without_numpy(monkeypatch):
         's':   [None, 'bob', '', 'δ 🎉'],
         'amt': [Decimal('123.45'), Decimal('-0.01'), None, Decimal('999999.99')],
     }))
+
+
+# ---------------------------------------------------------------------------
+# Exact widenings: foreign types the pure reader ALSO accepts take the fast
+# path via a C-level cast — int8/16/32, uint8/16 → int64; float32 → float64;
+# large_string → string; date64 → date32. Same values out of both readers.
+# ---------------------------------------------------------------------------
+
+def _write_foreign(arrow_table, **write_kwargs):
+    """Write with pyarrow such that the PURE reader can also read the file
+    (PLAIN encoding, no compression), so conformance can compare both paths."""
+    path = tempfile.mktemp(suffix='.parquet')
+    pq.write_table(arrow_table, path, use_dictionary=False,
+                   compression='NONE', **write_kwargs)
+    return path
+
+
+def _conform_foreign(arrow_table):
+    path = _write_foreign(arrow_table)
+    try:
+        _assert_identical(_read_pure(path), _arrow.try_read(path))
+    finally:
+        os.unlink(path)
+
+
+def test_conformance_widened_int_and_float_types():
+    _conform_foreign(pa.table({
+        'i8':  pa.array([-5, None, 127], type=pa.int8()),
+        'i16': pa.array([-300, 300, None], type=pa.int16()),
+        'i32': pa.array([None, -70_000, 70_000], type=pa.int32()),
+        'u8':  pa.array([0, 255, None], type=pa.uint8()),
+        'u16': pa.array([0, None, 65_535], type=pa.uint16()),
+        'f32': pa.array([1.5, None, -2.25], type=pa.float32()),
+    }))
+
+
+def test_conformance_large_string():
+    _conform_foreign(pa.table({
+        's': pa.array(['alice', None, '日本語 🎉', ''], type=pa.large_string()),
+    }))
+
+
+def test_conformance_date64():
+    _conform_foreign(pa.table({
+        'd': pa.array([date(2024, 1, 1), None, date(1969, 12, 31)],
+                      type=pa.date64()),
+    }))
+
+
+def test_conformance_tz_aware_timestamp():
+    # Both readers surface the same NAIVE datetimes: the pure reader decodes
+    # raw UTC micros, the arrow path casts the zone away keeping the same
+    # stored instant.
+    _conform_foreign(pa.table({
+        'ts': pa.array([datetime(2024, 1, 1, 12, 30), None],
+                       type=pa.timestamp('us', tz='America/New_York')),
+    }))
+
+
+def test_dictionary_string_column_reads_as_plain_str():
+    # Parquet dictionary encoding is compression, not a categorical claim:
+    # the column comes back as a plain str Vector with the decoded values.
+    # (The pure reader cannot read dictionary pages at all, so this is pure
+    # transport widening — no conformance pair exists to compare against.)
+    path = tempfile.mktemp(suffix='.parquet')
+    pq.write_table(pa.table({'c': pa.array(['x', 'y', None, 'x']).dictionary_encode()}),
+                   path)
+    try:
+        t = parquet_mod.read_parquet(path)
+        assert list(t['c']) == ['x', 'y', None, 'x']
+        assert t['c'].schema().kind is str
+        assert all(type(v) is str for v in t['c'] if v is not None)
+    finally:
+        os.unlink(path)
+
+
+def test_int32_with_default_pyarrow_writer_options():
+    # Regression: an int32 column in a default-written file (snappy +
+    # dictionary) used to decline the WHOLE file to the pure reader, which
+    # then failed on the encoding — making the file unreadable outright.
+    path = tempfile.mktemp(suffix='.parquet')
+    pq.write_table(pa.table({
+        'a': pa.array([1, None, 3], type=pa.int32()),
+        'b': pa.array([1.5, 2.5, None]),
+    }), path)
+    try:
+        t = parquet_mod.read_parquet(path)
+        assert list(t['a']) == [1, None, 3]
+        assert list(t['b']) == [1.5, 2.5, None]
+        assert t['a'].schema().kind is int
+    finally:
+        os.unlink(path)
+
+
+def test_uint32_still_declines():
+    # The pure reader rejects UINT_32 (decoding it as its INT32 physical
+    # sign-flips large values). pyarrow could read it faithfully; semantics
+    # stay serif's, so the arrow path must decline and surface that refusal.
+    path = _write_foreign(pa.table({'u': pa.array([1, 2], type=pa.uint32())}))
+    try:
+        assert _arrow.try_read(path) is None
+        with pytest.raises(SerifTypeError, match='UINT_32'):
+            parquet_mod.read_parquet(path)
+    finally:
+        os.unlink(path)
+
+
+def test_arrow_conversion_failure_declines_but_serif_bugs_stay_loud(monkeypatch):
+    # Arrow-layer errors during conversion (cast overflow, concat past 2 GB)
+    # decline to the pure reader like any parse failure; non-arrow exceptions
+    # are serif bugs and must propagate.
+    t = Table({'n': [1, 2, 3]})
+    path = _write(t)
+    try:
+        def _arrow_boom(arr, name, nullable):
+            raise pa.lib.ArrowInvalid('synthetic conversion failure')
+        monkeypatch.setattr(_arrow, '_to_vector', _arrow_boom)
+        assert _arrow.try_read(path) is None
+
+        def _serif_boom(arr, name, nullable):
+            raise IndexError('synthetic serif bug')
+        monkeypatch.setattr(_arrow, '_to_vector', _serif_boom)
+        with pytest.raises(IndexError):
+            _arrow.try_read(path)
+    finally:
+        os.unlink(path)
 
 
 # ---------------------------------------------------------------------------
