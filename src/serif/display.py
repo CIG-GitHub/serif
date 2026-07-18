@@ -167,46 +167,67 @@ def _dtype_str(col) -> str:
     return dtype_str
 
 
-def _group_dtypes(dtypes: List[str]) -> str:
-    """Summarize per-column dtypes for the table footer.
+def _family_summary(cols) -> str:
+    """Summarize columns as conceptual type FAMILIES for the table footer.
 
-    Distinct dtypes are listed most-common-first as 'type:count' pairs, so the
-    footer reads as an at-a-glance dominance summary. A count of one is dropped
-    (the ':1' is noise), and a homogeneous table drops the count entirely — the
-    total already lives in the R×C prefix. Ties keep column (first-appearance)
-    order. With six or more distinct dtypes, the first four are shown and the
-    rest fold into ' ...+N', where the '...' signals there is more not shown
-    and N (always ≥ 2) counts the hidden dtype groups.
+    The footer is NOT a schema dump — it orients: what am I looking at,
+    what kinds of data are present, is anything surprising? Exact
+    per-column schema already lives in the header tags and t._, so the
+    footer is deliberately lossy: one entry per family, most-common first
+    (ties keep column order), no counts (the R×C prefix carries scale),
+    and no folding — the family vocabulary is closed (int, float, str,
+    bool, date, datetime, Decimal, category, object), so the line is
+    intrinsically bounded.
+
+    Per-family marker — bare, '?', or '*':
+        int     every column of the family has the same schema, no nulls
+        int?    same schema, nullable
+        int*    heterogeneous: ANY within-family mix — nullability,
+                decimal scale/precision, future parameterized types.
+                One symbol, one meaning: "not all the same flavor,
+                see t._".
 
         <int>
-        <str, int, date>
-        <str:6, int:2, date>
-        <str:18, int:12, float:6, date:4>
-        <str:50, int:20, float:10, date:5 ...+2>
+        <str, int?, date>
+        <float, int*, str, date>
     """
-    counts = {}
-    for dt in dtypes:
-        counts[dt] = counts.get(dt, 0) + 1
+    from serif._vector.categorical import _Category
+    from serif._vector.storage import DecimalStorage
 
-    # Homogeneous: the count already lives in the R×C prefix.
-    if len(counts) == 1:
-        return next(iter(counts))
+    order   = []   # family names in first-appearance (column) order
+    flavors = {}   # family -> set of (nullable, params) variants seen
+    counts  = {}
 
-    # Most common first; sorted() is stable, so ties keep first-appearance
-    # (column) order.
-    groups = sorted(counts, key=lambda dt: -counts[dt])
+    for col in cols:
+        if isinstance(col, _Category):
+            family = 'category'
+        elif col._dtype:
+            family = col._dtype.kind.__name__
+        else:
+            family = 'object'
+        nullable = bool(col._dtype and col._dtype.nullable)
+        st = col._storage
+        params = ((st._scale, st._precision)
+                  if isinstance(st, DecimalStorage) else None)
+        if family not in flavors:
+            order.append(family)
+            flavors[family] = set()
+            counts[family] = 0
+        flavors[family].add((nullable, params))
+        counts[family] += 1
 
-    if len(groups) >= 6:
-        hidden = len(groups) - 4
-        groups = groups[:4]
-    else:
-        hidden = 0
+    # Most common first; sorted() is stable, so ties keep column order.
+    ranked = sorted(order, key=lambda f: -counts[f])
 
-    parts = [f"{dt}:{counts[dt]}" if counts[dt] > 1 else dt for dt in groups]
-    summary = ", ".join(parts)
-    if hidden:
-        summary += f" ...+{hidden}"
-    return summary
+    parts = []
+    for family in ranked:
+        variants = flavors[family]
+        if len(variants) > 1:
+            parts.append(family + '*')
+        else:
+            nullable, _ = next(iter(variants))
+            parts.append(family + '?' if nullable else family)
+    return ", ".join(parts)
 
 
 class _SchemaView:
@@ -364,7 +385,7 @@ def _footer(pv, dtype_text=None) -> str:
     """Generate footer line based on shape and dtypes.
 
     dtype_text, when given, overrides the computed dtype string for the
-    2-D case (the grouped per-column summary from _group_dtypes)."""
+    2-D case (the type-family summary from _family_summary)."""
     shape = pv.shape
     if not shape:
         return "# empty"
@@ -456,9 +477,6 @@ def _repr_table(tbl) -> str:
     # Headers + dtypes
     disp, san, dtypes_displayed = _compute_headers(cols, col_indices)
 
-    # Get all dtypes for footer
-    dtypes_all = [_dtype_str(col) for col in cols]
-
     # Format columns
     formatted_cols = [_format_column(cols[i], max_preview=max_preview) for i in col_indices]
 
@@ -489,8 +507,8 @@ def _repr_table(tbl) -> str:
 
     lines.append("")
 
-    # Footer: grouped dtype summary, e.g. <str:6, int:2, date>
-    lines.append(_footer(tbl, dtype_text=_group_dtypes(dtypes_all)))
+    # Footer: type-family summary, e.g. <str, int?, date>
+    lines.append(_footer(tbl, dtype_text=_family_summary(cols)))
 
     return "\n".join(lines)
 
