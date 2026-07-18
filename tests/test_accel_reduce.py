@@ -15,8 +15,10 @@ Two tiers of guarantee (agreed doctrine):
     and often exactly rounded — the fast path trades those last ULPs
     (numpy pairwise, O(log n)·ULP) for speed.
 
-Never silently wrong: integer reductions that could overflow int64
-DECLINE to the pure path (which promotes to bigint); NaN-poisoned
+Never silently wrong: integer sums recover the exact bigint total from
+numpy's wrapping (modular) sum whenever the values' spread is narrower
+than 2**64/n — totals far beyond int64 stay exact AND accelerated — and
+DECLINE to the pure path in the ambiguous band past that. NaN-poisoned
 min/max decline (Python's min/max are order-dependent under nan — the
 pure path is the spec, so the accelerator steps aside).
 
@@ -109,17 +111,108 @@ def test_empty_and_all_null_cases():
 # Never silently wrong
 # ---------------------------------------------------------------------------
 
-def test_int_sum_overflow_declines_to_bigint():
+def test_int_sum_past_int64_stays_exact_and_accelerated():
+    # 3 · 2**62 wraps in a naive np.sum reading — but the spread is ZERO,
+    # so the residue pins the exact bigint total and the fast path now
+    # ANSWERS this instead of declining (it used to fall to pure).
+    from serif._accel import reduce as reduce_mod, DECLINED
     v = Vector([2**62, 2**62, 2**62])
-    expected = 3 * 2**62                       # > int64 max: numpy would wrap
+    expected = 3 * 2**62                       # > int64 max
+    assert reduce_mod.sum_(v._storage) is not DECLINED   # engaged, not pure
     assert v.sum() == expected == _pure(lambda: v.sum())
     assert type(v.sum()) is int
     assert math.isclose(v.mean(), expected / 3)
 
 
-def test_int64_min_boundary_declines():
-    v = Vector([-2**63, 5])                    # abs(min) alone exceeds the guard
+def test_full_range_spread_declines():
+    # Spread 2**63 + 5 over two lanes: n·span ≥ 2**64, the residue is
+    # ambiguous, and pure is the spec.
+    from serif._accel import reduce as reduce_mod, DECLINED
+    v = Vector([-2**63, 5])
+    assert reduce_mod.sum_(v._storage) is DECLINED
     assert v.sum() == -2**63 + 5 == _pure(lambda: v.sum())
+
+
+# ---------------------------------------------------------------------------
+# The residue engine: exact bigint totals from a wrapping sum
+# ---------------------------------------------------------------------------
+
+def _engaged_sum(v):
+    """The fast path's answer, asserting it actually engaged."""
+    from serif._accel import reduce as reduce_mod, DECLINED
+    result = reduce_mod.sum_(v._storage)
+    assert result is not DECLINED
+    return result
+
+
+def test_timestamp_shape_sums_exactly():
+    # The motivating shape: nanosecond epochs. Every value ~2**60.5, so
+    # the OLD n·max|v| guard declined any column longer than ~5 rows and
+    # serif fell to pure summation. The spread is a day — microscopic
+    # next to 2**64/n — so the residue engine answers exactly.
+    import random
+    rng = random.Random(7)
+    base = 1_700_000_000_000_000_000
+    vals = [base + rng.randrange(86_400_000_000_000) for _ in range(5_000)]
+    v = Vector(vals)
+    expected = sum(vals)                       # ≈ 8.5e21, way past int64
+    assert _engaged_sum(v) == expected
+    assert v.sum() == expected == _pure(lambda: v.sum())
+    assert v.mean() == _pure(lambda: v.mean())   # bigint ÷ n: bit-identical
+    # Nulls ride the usual compress; the residue math never sees them.
+    v2 = Vector(vals[:100] + [None] * 5 + vals[100:200])
+    assert v2.sum() == sum(vals[:200]) == _pure(lambda: v2.sum())
+
+
+def test_outlier_spread_still_declines():
+    # One huge value stretches the spread window itself past 2**64/n —
+    # the residue stays ambiguous, and pure is the spec. (This shape
+    # needs an ESTIMATE-based window — e.g. a float64 sum with a proven
+    # error bound — a separate game with separate epistemics.)
+    from serif._accel import reduce as reduce_mod, DECLINED
+    vals = [2**62] + list(range(-500, 500))
+    v = Vector(vals)
+    assert reduce_mod.sum_(v._storage) is DECLINED
+    assert v.sum() == sum(vals) == _pure(lambda: v.sum())
+
+
+def test_negative_clustered_sums_exactly():
+    vals = [-2**62 - k for k in range(1_000)]
+    v = Vector(vals)
+    assert _engaged_sum(v) == sum(vals)        # ≈ -4.6e21, exact
+    assert v.sum() == sum(vals) == _pure(lambda: v.sum())
+
+
+def test_boundary_total_past_int64_zero_spread():
+    v = Vector([2**63 - 1, 2**63 - 1])
+    assert _engaged_sum(v) == 2**64 - 2
+    assert v.sum() == 2**64 - 2 == _pure(lambda: v.sum())
+
+
+def test_randomized_wide_spread_cross_check():
+    # Spread ~2**41 over 10k lanes: n·span ≈ 2**54.3, comfortably inside
+    # the window; intermediates wrap freely and must not matter.
+    import random
+    rng = random.Random(23)
+    for base in (0, 2**62, -2**62):
+        vals = [base + rng.randrange(-2**40, 2**40) for _ in range(10_000)]
+        v = Vector(vals)
+        assert _engaged_sum(v) == sum(vals)
+        assert v.sum() == sum(vals) == _pure(lambda: v.sum())
+
+
+def test_stdev_now_engages_on_big_values():
+    # Previously the big-int decline dragged stdev to pure with it; the
+    # residue total lets the float pipeline run. Same float64 lane math
+    # both paths (fsum-anchored tier), so they agree tightly.
+    import random
+    rng = random.Random(3)
+    vals = [2**60 + rng.randrange(10**6) for _ in range(2_000)]
+    v = Vector(vals)
+    fast = v.stdev()
+    pure = _pure(lambda: v.stdev())
+    assert math.isclose(fast, pure, rel_tol=1e-12)
+    assert type(fast) is float
 
 
 def test_nan_minmax_matches_pure_exactly():

@@ -10,8 +10,17 @@ BoolStorage and object storages decline (the pure path handles them).
 The three correctness rules this module exists to uphold:
 
   * Never silently wrong — int64 sums WRAP in numpy while pure Python
-    promotes to bigint, so integer sum/mean/stdev run a cheap bounds pass
-    first (n · max|v| < 2**63) and DECLINE when overflow is possible.
+    promotes to bigint. But numpy's integer arithmetic is documented
+    MODULAR, and modular addition is order-blind: one wrapping np.sum
+    IS the true sum mod 2**64, whatever the intermediate partial sums
+    did. The max/min the guard must compute anyway confine the true sum
+    to a window of width n·(max−min); when that window is narrower than
+    2**64 the residue pins the exact bigint total — including totals
+    far OUTSIDE int64 (clustered data like timestamp columns, provided
+    n·spread stays under 2**64: ~200k rows of day-wide nanoseconds; a
+    wider spread or longer column still declines — an ESTIMATE-centered
+    window could shrink that band further, a game not yet played).
+    Integer sum/mean/stdev DECLINE only when the residue is ambiguous.
 
   * NaN-poisoned min/max decline — np.min/max return nan when any lane
     is nan, but Python's min/max are ORDER-DEPENDENT under nan (nan
@@ -35,7 +44,7 @@ from __future__ import annotations
 from . import _np, DECLINED, valid_values
 from .._vector.storage import ArrayStorage
 
-_I64_MAX = 2**63 - 1
+_U64 = 2**64
 
 
 def _prepared(storage):
@@ -46,18 +55,29 @@ def _prepared(storage):
 
 
 def _int_sum_or_declined(vals):
-    """Exact integer sum, or DECLINED when int64 accumulation could wrap.
+    """Exact integer sum, or DECLINED when the residue is ambiguous.
 
-    |any partial sum| <= n · max|v|, so the guard bounds every intermediate
-    numpy accumulates, not just the result. abs() happens on Python ints —
-    abs(np.int64.min) overflows back to itself in numpy.
+        true_sum = n·min + S,   S = Σ(v − min) ∈ [0, n·(max − min)]
+
+    np.sum wraps, but modular addition is associative, so the wrapped
+    result is the true sum mod 2**64 regardless of intermediate wraps
+    or reduction order. When the window n·(max − min) is narrower than
+    2**64, S is recovered from that residue and the exact bigint total
+    follows — one sum pass on top of the max/min the guard needs
+    anyway, no extra allocation, and no int64 ceiling on the TOTAL,
+    only on the SPREAD. int() conversions happen before any Python
+    arithmetic — np.int64 would wrap the very bigints this exists for.
     """
-    if vals.size == 0:
+    n = int(vals.size)
+    if n == 0:
         return 0
-    peak = max(abs(int(vals.max())), abs(int(vals.min())))
-    if peak and vals.size > _I64_MAX // peak:
-        return DECLINED
-    return int(vals.sum())
+    mn = int(vals.min())
+    mx = int(vals.max())
+    if n * (mx - mn) >= _U64:
+        return DECLINED            # spread past 2**64/n — pure is the spec
+    wrapped = int(vals.sum())      # ≡ true sum (mod 2**64), signed carrier
+    s = (wrapped - n * mn) % _U64  # exact: S is confined to the window
+    return n * mn + s
 
 
 def sum_(storage):
