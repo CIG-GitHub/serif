@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased – Mutation Doctrine
+
+### Changed
+Breaking, pre-1.0: **read through the column, write through the table**
+(docs/mutation.md).
+- Table-owned columns are frozen: `t.v[0] = 5`, `t['v'][0] = 5`, and
+  mutating a column read out earlier all raise `SerifTypeError` (the
+  message contains the fix). This closes the alias-mutation path for
+  good — a vector read out of a table can never change the table, and
+  vice versa.
+- Write through the table instead: `t[t.v == 'old', 'v'] = 'new'`,
+  `t[3, 'v'] = 5`, `t[0:100, 'v'] = 0`. Owner writes swap in a freshly
+  rebuilt column (swap-on-write), so copies, slices, filtered results,
+  and previously read-out columns are all stable snapshots by
+  construction.
+- Standalone (wild) vectors and `.copy()` results remain mutable.
+
+### Added
+- `Table.batch()` — bulk-edit scope for read-modify-write loops:
+  `with t.batch() as m:` copies each column's buffers once on entry
+  (un-sharing), then point writes land raw and O(1) (~4,200× faster
+  than per-statement rebuilds on a 10k-write loop); exit refreezes
+  everything, including column refs that escaped the scope. Observable
+  semantics identical to table-addressed writes.
+- `ArrayStorage`/`BoolStorage` gain `private_copy()` and
+  `write_inplace()`; other backends decline and keep rebuilding.
+  `BitMask` gains in-place `set_null`/`set_valid` for privately-owned
+  masks.
+
 ## 0.1.8 – Readable Footer dtype Summary
 
 ### Changed

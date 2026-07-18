@@ -425,11 +425,12 @@ class Vector():
     _name = None
     _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
-    # Mutation guardrail: a table-owned column is FROZEN (__setitem__ raises;
-    # mutate through the table's mutable() scope). _inplace_ok is set only
-    # inside a mutable() scope, after copy-on-enter privatized the buffers —
-    # it licenses raw in-place writes that would corrupt shared storage
-    # anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
+    # Mutation doctrine: read through the column, write through the table.
+    # A table-owned column is FROZEN (__setitem__ raises; write via
+    # t[key, 'col'] = value, which swaps in a fresh column). _inplace_ok is
+    # set only inside a batch() scope, after copy-on-enter privatized the
+    # buffers — it licenses raw in-place writes that would corrupt shared
+    # storage anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
     _frozen = False
     _inplace_ok = False
     
@@ -992,20 +993,30 @@ class Vector():
     def _require_mutable(self):
         """Raise if this vector is a frozen table-owned column.
 
-        Owned vectors are immutable: a vector read out of a table cannot
-        mutate the table. Mutation happens inside the table's mutable()
-        scope, or on an independent .copy().
+        The doctrine: read through the column, write through the table.
+        A vector read out of a table is a value — it cannot mutate the
+        table (and the table cannot mutate it back: owner writes swap in
+        a fresh column object). Mutation is owner-addressed.
         """
         if self._frozen:
+            col = self._name if self._name is not None else 'col'
             raise SerifTypeError(
-                "This vector is a table-owned column and is frozen. "
-                "Mutate it through the owning table's mutable() scope:\n"
-                "    with t.mutable() as m:\n"
-                "        m.col[key] = value\n"
-                "or take an independent mutable vector with .copy()."
+                "Read-out columns are values: this vector is owned by a "
+                "Table and is frozen. Write through the owning table "
+                "instead:\n"
+                f"    t[key, {col!r}] = value\n"
+                "For an independent mutable vector use .copy(); for bulk "
+                "point-write loops use `with t.batch() as m:`."
             )
 
     def __setitem__(self, key, value):
+        """Public assignment: frozen table-owned columns raise (write
+        through the table — see _require_mutable); everything else
+        delegates to _setitem_impl."""
+        self._require_mutable()
+        self._setitem_impl(key, value)
+
+    def _setitem_impl(self, key, value):
         """
         Optimized in-place assignment for Vector with:
         - boolean masks
@@ -1021,7 +1032,6 @@ class Vector():
         """
 
         # === Fast precomputed checks ===
-        self._require_mutable()
         key = self._check_duplicate(key)
         value = self._check_duplicate(value)
 
@@ -1194,9 +1204,9 @@ class Vector():
                 if saw_none and not self._dtype.nullable:
                     self._dtype = Schema(self._dtype.kind, True)
         # =====================================================================
-        # MUTATE — in-place fast path (mutable() scope only), else rebuild
+        # MUTATE — in-place fast path (batch() scope only), else rebuild
         # =====================================================================
-        # Raw writes are legal only inside a mutable() scope: copy-on-enter
+        # Raw writes are legal only inside a batch() scope: copy-on-enter
         # privatized the buffers, so nothing else can observe them. The
         # storage declines (False) anything it can't hold — including after
         # an in-place kind promotion, which swapped in a TupleStorage with

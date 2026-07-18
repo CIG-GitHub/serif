@@ -223,18 +223,22 @@ class Row(Vector):
         return len(self._raw_cols)
 
 
-class _MutableScope:
+class _BatchScope:
     """
-    Context manager behind Table.mutable() — the explicit "unsafe block"
-    for in-place table mutation.
+    Context manager behind Table.batch() — the bulk-edit fast path.
+
+    Everyday mutation doesn't need this: table-addressed writes
+    (t[mask, 'v'] = ...) rebuild the column at O(n) per statement. A
+    read-modify-write LOOP at O(n) per write is quadratic; batch() makes
+    each write O(1).
 
     Enter: un-share — every column whose storage supports it gets
     privately-copied buffers (the same principle as Table.__init__ copying
     its vectors: un-share whenever write-ownership changes hands), columns
-    thaw, fingerprints invalidate. `m` IS the table with the lock off:
-    observers holding the table see writes as they land.
+    thaw, fingerprints invalidate. `m` IS the table.
 
-    Inside: point writes go raw into the private buffers (fast); anything
+    Inside: point writes go raw into the private buffers (fast), and
+    thawed columns accept vector-addressed writes (m.v[i] = x); anything
     the buffer can't hold, and any storage without in-place support,
     rebuilds exactly as before — correctness never depends on the fast
     path.
@@ -242,6 +246,8 @@ class _MutableScope:
     Exit (including via exception — partial mutation persists, no
     rollback): every column refreezes, in-place licenses revoke (so
     escaped column refs re-freeze too), fingerprints invalidate again.
+    Observable semantics are identical to table-addressed writes; only
+    the speed differs.
     """
 
     __slots__ = ('_table',)
@@ -253,7 +259,7 @@ class _MutableScope:
         t = self._table
         if t._unlocked:
             raise SerifValueError(
-                "Table is already inside a mutable() scope; nesting is not supported."
+                "Table is already inside a batch() scope; nesting is not supported."
             )
         t._unlocked = True
         t._invalidate_fp()
@@ -282,7 +288,7 @@ class Table(Vector):
     _length = None
     _repr_rows = None  # Optional table-specific repr row count override
     _ndims = 2
-    _unlocked = False  # True only inside a mutable() scope
+    _unlocked = False  # True only inside a batch() scope
     
     def __new__(cls, initial=(), dtype=None, name=None):
         return super(Vector, cls).__new__(cls)
@@ -432,7 +438,7 @@ class Table(Vector):
             column_map[sanitized] = idx
             col._mark_tame()
             # Ownership freezes: a vector read out of a table cannot mutate
-            # the table. (Skipped mid-mutable()-scope, where a map rebuild —
+            # the table. (Skipped mid-batch()-scope, where a map rebuild —
             # e.g. after an alias() — must not re-freeze thawed columns.)
             if not self._unlocked:
                 col._frozen = True
@@ -879,16 +885,13 @@ class Table(Vector):
         2. t[row_idx, :] = [values]  (Row assignment)
         3. t[row_slice, col_slice] = other_table (Region assignment)
 
-        Frozen outside a mutable() scope: cell/region assignment mutates
-        the table in place, and owned data is immutable by default.
+        Owner-addressed mutation: read through the column, write through
+        the table. Outside a batch() scope each write REPLACES the target
+        column with a freshly rebuilt one, so everything already read out
+        — copies, slices, filtered results, and the column objects
+        themselves — keeps its value. Inside a batch() scope, writes land
+        in place on the scope's private buffers.
         """
-        if not self._unlocked:
-            raise SerifTypeError(
-                "Table assignment mutates the table in place, which is "
-                "frozen outside a mutable() scope. Use:\n"
-                "    with t.mutable() as m:\n"
-                "        m[key] = value"
-            )
         row_spec, col_spec = None, None
 
         # --- 1. Normalize Key ---
@@ -943,7 +946,7 @@ class Table(Vector):
         # t[0:5, 'A'] = 10
         if not isinstance(value, Iterable) or isinstance(value, (str, bytes, bytearray)):
             for col_idx in target_indices:
-                self._storage[col_idx][row_spec] = value
+                self._write_column(col_idx, row_spec, value)
             return
 
         # CASE B: Single Row Assignment
@@ -958,7 +961,7 @@ class Table(Vector):
                 )
             
             for i, col_idx in enumerate(target_indices):
-                self._storage[col_idx][row_spec] = val_seq[i]
+                self._write_column(col_idx, row_spec, val_seq[i])
             return
 
         # CASE C: Rectangular/Table Assignment
@@ -972,7 +975,7 @@ class Table(Vector):
             
             # We delegate row-length validation to the vector.__setitem__ calls below
             for i, col_idx in enumerate(target_indices):
-                self._storage[col_idx][row_spec] = value.cols()[i]
+                self._write_column(col_idx, row_spec, value.cols()[i])
             return
 
         # CASE D: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
@@ -987,7 +990,7 @@ class Table(Vector):
                 # Check if it's a flat list (not nested)
                 if not value or not isinstance(value[0], (list, tuple, Vector)):
                     # Flat list -> assign to the single column
-                    self._storage[target_indices[0]][row_spec] = value
+                    self._write_column(target_indices[0], row_spec, value)
                     return
             
             if len(value) != len(target_indices):
@@ -995,31 +998,66 @@ class Table(Vector):
             
             # Assume value[i] corresponds to target_indices[i]
             for i, col_idx in enumerate(target_indices):
-                self._storage[col_idx][row_spec] = value[i]
+                self._write_column(col_idx, row_spec, value[i])
             return
 
         raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
 
-    def mutable(self):
+    def _write_column(self, col_idx, row_spec, value):
         """
-        Explicit mutation scope — the one way to change this table in place.
+        Land one column write, owner-addressed.
 
-        Owned columns are frozen: `t.v[0] = 5` and `t[0, 'v'] = 5` raise.
-        Inside the scope they work, and observers holding `t` see the
-        writes (that is the point — you have stepped off the safe path):
+        Inside a batch() scope: write on the thawed column directly —
+        _setitem_impl takes the raw in-place path on the scope's private
+        buffers.
 
-            with t.mutable() as m:
-                m.v[0] = 99          # raw write into private buffers
-                m[0, 'w'] = 'hi'
-
-        Entering copies each column's buffers once (un-sharing), so
-        snapshots taken BEFORE the scope — `t.copy()`, filtered results,
-        other tables sharing storage — are untouched by construction.
-        Exiting refreezes everything, including column refs that escaped
-        the scope. Nesting raises; an exception mid-scope leaves the
-        table partially mutated (no rollback).
+        Outside: SWAP-ON-WRITE. The write is applied to a storage-sharing
+        clone which then replaces the column in the table, so the original
+        column OBJECT is never touched — a previously read-out `v = t.v`
+        is a stable snapshot, not a live view of later table writes (the
+        same guarantee column replacement via __setattr__ already gives).
         """
-        return _MutableScope(self)
+        col = self._storage[col_idx]
+        if self._unlocked:
+            col._setitem_impl(row_spec, value)
+            return
+        new_col = col._clone(col._storage)      # O(1) storage share
+        new_col._setitem_impl(row_spec, value)  # rebuild-on-write rebinds
+        new_col._wild = False
+        new_col._frozen = True
+        cols = list(self._storage)
+        cols[col_idx] = new_col
+        self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
+        self._invalidate_fp()
+
+    def batch(self):
+        """
+        Bulk-edit scope — the fast path for imperative point-write loops.
+
+        Everyday mutation doesn't need this. Write through the table:
+
+            t[t.v == 'old', 'v'] = 'new'     # conditional update
+            t[3, 'v'] = 5                    # one cell
+            t.v = t.v.fillna(0)              # column replacement
+
+        Each such statement rebuilds the column once (O(n)) — fine for
+        any number of rows, quadratic only if you WRITE IN A LOOP. That
+        loop is what batch() is for: entering copies each column's
+        buffers once (un-sharing), then every write inside lands raw and
+        O(1), and thawed columns accept vector-addressed writes:
+
+            with t.batch() as m:
+                for i in hot_indices:
+                    m.v[i] = fix(m.v[i])     # read-modify-write, O(1) each
+
+        Observable semantics are identical to table-addressed writes —
+        snapshots taken before the scope (copies, slices, filtered
+        results, read-out columns) are untouched by construction; only
+        the speed differs. Exiting refreezes everything, including column
+        refs that escaped the scope. Nesting raises; an exception
+        mid-scope leaves the table partially mutated (no rollback).
+        """
+        return _BatchScope(self)
 
     def __iter__(self):
         """

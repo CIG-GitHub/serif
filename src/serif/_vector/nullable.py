@@ -151,7 +151,7 @@ class BitMask:
     # ------------------------------------------------------------------
     # These write into the buffer directly, so they are legal only on a
     # mask nobody else shares — i.e. one produced by a storage's
-    # private_copy() inside a mutable() scope. Everywhere else, use the
+    # private_copy() inside a batch() scope. Everywhere else, use the
     # copy-on-write mark_null/mark_valid above.
 
     def set_null(self, idx: int) -> None:

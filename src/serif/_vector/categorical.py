@@ -221,16 +221,19 @@ class _Category(Vector):
         return Vector(list(new_storage), dtype=use_dtype, name=use_name)
 
     def __setitem__(self, key, value):
+        self._require_mutable()
+        self._setitem_impl(key, value)
+
+    def _setitem_impl(self, key, value):
         """
         In-place assignment with category enforcement.
 
-        Base __setitem__ would swap _storage to a TupleStorage while
+        Base _setitem_impl would swap _storage to a TupleStorage while
         _code_storage kept the old values — comparisons would silently use
         stale data. Instead: assign on the decoded values with base key
         semantics (int / slice / mask / index list), then re-encode against
         the SAME category list. Values outside the list raise SerifValueError.
         """
-        self._require_mutable()
         tmp = Vector(list(self._storage), dtype=Schema(str, True))
         tmp[key] = value
         new = _Category.from_values(list(tmp), self._categories, name=self._name)

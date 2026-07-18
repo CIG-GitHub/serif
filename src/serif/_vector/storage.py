@@ -15,7 +15,7 @@ A storage backend must provide:
 
 The protocol is read-only: mutation happens by REBUILDING storage
 (Vector.__setitem__ materializes, edits, and re-wraps), never in place.
-The ONE exception is a mutable() scope: entering it calls private_copy()
+The ONE exception is a batch() scope: entering it calls private_copy()
 (buffers duplicated, so nothing else shares them), after which
 write_inplace() may land point writes directly. Backends without those
 two methods simply keep rebuilding — write_inplace returning False (or
@@ -106,7 +106,7 @@ class ArrayStorage:
 
     def private_copy(self) -> ArrayStorage:
         """Same values, freshly-owned buffers — the un-sharing step of
-        mutable(): raw writes may then land here without being visible to
+        batch(): raw writes may then land here without being visible to
         any other holder of the original storage."""
         mask = (BitMask(bytearray(self._mask._buf), len(self._mask))
                 if self._mask is not None else None)
