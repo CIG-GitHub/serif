@@ -260,6 +260,17 @@ def _storage_for_dtype(dtype, data, nullable):
     return TupleStorage.from_iterable(data, nullable=nullable)
 
 
+def _accel_filter(storage, mask):
+    """Numpy-accelerated boolean-mask filter; None = decline to the pure
+    path, whose behavior is the specification. OPTIONAL numpy — transport,
+    never semantics; see serif/_accel/__init__.py for the doctrine."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import filter_storage
+    return filter_storage(storage, mask)
+
+
 def _pick_target_class(dtype):
     """Return the Vector subclass appropriate for the given DataType."""
     if dtype is None:
@@ -807,10 +818,16 @@ class Vector():
             # (SQL WHERE semantics — None is falsy in the filter below).
             if len(self) != len(key):
                 raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+            fast = _accel_filter(self._storage, key._storage)
+            if fast is not None:
+                return self._clone(fast)
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, list) and {type(e) for e in key} == {bool}:
             if len(self) != len(key):
                 raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
+            fast = _accel_filter(self._storage, key)
+            if fast is not None:
+                return self._clone(fast)
             return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
         if isinstance(key, slice):
             return self._clone(self._storage.slice(key))
