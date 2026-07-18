@@ -15,6 +15,12 @@ A storage backend must provide:
 
 The protocol is read-only: mutation happens by REBUILDING storage
 (Vector.__setitem__ materializes, edits, and re-wraps), never in place.
+The ONE exception is a mutable() scope: entering it calls private_copy()
+(buffers duplicated, so nothing else shares them), after which
+write_inplace() may land point writes directly. Backends without those
+two methods simply keep rebuilding — write_inplace returning False (or
+being absent) DECLINES to the rebuild path, whose behavior is the
+specification.
 
 Base-class code (Vector and friends) must go through this protocol.
 Reaching into a backend's internals (_data, _mask, _buf, _offsets) is
@@ -97,6 +103,52 @@ class ArrayStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
+
+    def private_copy(self) -> ArrayStorage:
+        """Same values, freshly-owned buffers — the un-sharing step of
+        mutable(): raw writes may then land here without being visible to
+        any other holder of the original storage."""
+        mask = (BitMask(bytearray(self._mask._buf), len(self._mask))
+                if self._mask is not None else None)
+        return ArrayStorage(array(self._data.typecode, self._data), mask)
+
+    def write_inplace(self, updates) -> bool:
+        """Apply [(idx, value)] point writes directly into the buffer.
+
+        Legal only on a privately-owned storage (see private_copy). Values
+        are already schema-validated by Vector.__setitem__; this checks
+        only what the BUFFER can hold, and returns False to DECLINE
+        anything else (unsupported typecode, int outside int64) — the
+        rebuild path then applies the same updates, including its
+        OverflowError degradation to TupleStorage. All-or-nothing: the
+        pre-check runs before the first write.
+        """
+        tc = self._data.typecode
+        if tc == 'q':
+            def fits(v):
+                return isinstance(v, int) and -2**63 <= v < 2**63
+        elif tc == 'd':
+            def fits(v):
+                return isinstance(v, (int, float))
+        else:
+            return False
+        if any(v is not None and not fits(v) for _, v in updates):
+            return False
+
+        mask = self._mask
+        if mask is None and any(v is None for _, v in updates):
+            mask = BitMask.from_size(len(self._data))
+            self._mask = mask
+        data = self._data
+        for idx, v in updates:
+            if v is None:
+                data[idx] = 0          # sentinel — position is masked
+                mask.set_null(idx)
+            else:
+                data[idx] = v
+                if mask is not None:
+                    mask.set_valid(idx)
+        return True
 
 
 class TupleStorage:
@@ -233,6 +285,31 @@ class BoolStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
+
+    def private_copy(self) -> BoolStorage:
+        """Same values, freshly-owned buffers (see ArrayStorage.private_copy)."""
+        mask = (BitMask(bytearray(self._mask._buf), len(self._mask))
+                if self._mask is not None else None)
+        return BoolStorage(bytearray(self._data), mask)
+
+    def write_inplace(self, updates) -> bool:
+        """Point writes into the 0/1 byte buffer (see ArrayStorage.write_inplace)."""
+        if any(v is not None and not isinstance(v, bool) for _, v in updates):
+            return False
+        mask = self._mask
+        if mask is None and any(v is None for _, v in updates):
+            mask = BitMask.from_size(len(self._data))
+            self._mask = mask
+        data = self._data
+        for idx, v in updates:
+            if v is None:
+                data[idx] = 0          # sentinel — position is masked
+                mask.set_null(idx)
+            else:
+                data[idx] = 1 if v else 0
+                if mask is not None:
+                    mask.set_valid(idx)
+        return True
 
 
 # ---------------------------------------------------------------------------

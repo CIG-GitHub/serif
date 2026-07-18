@@ -230,6 +230,7 @@ class _Category(Vector):
         semantics (int / slice / mask / index list), then re-encode against
         the SAME category list. Values outside the list raise SerifValueError.
         """
+        self._require_mutable()
         tmp = Vector(list(self._storage), dtype=Schema(str, True))
         tmp[key] = value
         new = _Category.from_values(list(tmp), self._categories, name=self._name)

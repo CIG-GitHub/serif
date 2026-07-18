@@ -223,11 +223,66 @@ class Row(Vector):
         return len(self._raw_cols)
 
 
+class _MutableScope:
+    """
+    Context manager behind Table.mutable() — the explicit "unsafe block"
+    for in-place table mutation.
+
+    Enter: un-share — every column whose storage supports it gets
+    privately-copied buffers (the same principle as Table.__init__ copying
+    its vectors: un-share whenever write-ownership changes hands), columns
+    thaw, fingerprints invalidate. `m` IS the table with the lock off:
+    observers holding the table see writes as they land.
+
+    Inside: point writes go raw into the private buffers (fast); anything
+    the buffer can't hold, and any storage without in-place support,
+    rebuilds exactly as before — correctness never depends on the fast
+    path.
+
+    Exit (including via exception — partial mutation persists, no
+    rollback): every column refreezes, in-place licenses revoke (so
+    escaped column refs re-freeze too), fingerprints invalidate again.
+    """
+
+    __slots__ = ('_table',)
+
+    def __init__(self, table):
+        self._table = table
+
+    def __enter__(self):
+        t = self._table
+        if t._unlocked:
+            raise SerifValueError(
+                "Table is already inside a mutable() scope; nesting is not supported."
+            )
+        t._unlocked = True
+        t._invalidate_fp()
+        for col in t._storage:
+            private = getattr(col._storage, 'private_copy', None)
+            if private is not None:
+                col._storage = private()
+                col._inplace_ok = True
+            col._frozen = False
+            col._invalidate_fp()
+        return t
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        t = self._table
+        for col in t._storage:
+            col._frozen = True
+            col._inplace_ok = False
+            col._invalidate_fp()
+        t._invalidate_fp()
+        t._unlocked = False
+        return False
+
+
 class Table(Vector):
     """ Multiple columns of the same length """
     _length = None
     _repr_rows = None  # Optional table-specific repr row count override
     _ndims = 2
+    _unlocked = False  # True only inside a mutable() scope
     
     def __new__(cls, initial=(), dtype=None, name=None):
         return super(Vector, cls).__new__(cls)
@@ -376,6 +431,11 @@ class Table(Vector):
 
             column_map[sanitized] = idx
             col._mark_tame()
+            # Ownership freezes: a vector read out of a table cannot mutate
+            # the table. (Skipped mid-mutable()-scope, where a map rebuild —
+            # e.g. after an alias() — must not re-freeze thawed columns.)
+            if not self._unlocked:
+                col._frozen = True
         return column_map
     
     def __dir__(self):
@@ -525,7 +585,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions', '_unlocked'):
             object.__setattr__(self, attr, value)
             return
 
@@ -818,7 +878,17 @@ class Table(Vector):
         1. t[row, col] = scalar
         2. t[row_idx, :] = [values]  (Row assignment)
         3. t[row_slice, col_slice] = other_table (Region assignment)
+
+        Frozen outside a mutable() scope: cell/region assignment mutates
+        the table in place, and owned data is immutable by default.
         """
+        if not self._unlocked:
+            raise SerifTypeError(
+                "Table assignment mutates the table in place, which is "
+                "frozen outside a mutable() scope. Use:\n"
+                "    with t.mutable() as m:\n"
+                "        m[key] = value"
+            )
         row_spec, col_spec = None, None
 
         # --- 1. Normalize Key ---
@@ -929,6 +999,27 @@ class Table(Vector):
             return
 
         raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
+
+    def mutable(self):
+        """
+        Explicit mutation scope — the one way to change this table in place.
+
+        Owned columns are frozen: `t.v[0] = 5` and `t[0, 'v'] = 5` raise.
+        Inside the scope they work, and observers holding `t` see the
+        writes (that is the point — you have stepped off the safe path):
+
+            with t.mutable() as m:
+                m.v[0] = 99          # raw write into private buffers
+                m[0, 'w'] = 'hi'
+
+        Entering copies each column's buffers once (un-sharing), so
+        snapshots taken BEFORE the scope — `t.copy()`, filtered results,
+        other tables sharing storage — are untouched by construction.
+        Exiting refreezes everything, including column refs that escaped
+        the scope. Nesting raises; an exception mid-scope leaves the
+        table partially mutated (no rollback).
+        """
+        return _MutableScope(self)
 
     def __iter__(self):
         """

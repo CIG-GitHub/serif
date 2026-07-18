@@ -307,7 +307,8 @@ def test_source_isolated_from_table_column_writes():
     from serif import Table
     v = Vector([1, 2, 3], name="a")
     t = Table([v])
-    t.a[0] = 99
+    with t.mutable() as m:
+        m.a[0] = 99
     assert list(v) == [1, 2, 3]
     assert list(t.a) == [99, 2, 3]
 
@@ -325,7 +326,8 @@ def test_dict_construction_snapshots_vectors():
     assert v.vector_name == "orig"          # source name untouched
     v[0] = 99
     assert list(t.a) == [1, None, 3]
-    t.a[2] = 7
+    with t.mutable() as m:
+        m.a[2] = 7
     assert list(v) == [99, None, 3]
 
 

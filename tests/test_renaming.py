@@ -182,5 +182,7 @@ def test_drop_missing_column_raises():
 def test_drop_does_not_alias_original():
 	t = Table({'a': [1, 2], 'b': [3, 4]})
 	t2 = t.drop('b')
-	t2['a'][0] = 99
+	with t2.mutable() as m:
+		m['a'][0] = 99
+	assert list(t2['a']) == [99, 2]
 	assert list(t['a']) == [1, 2]  # original column must be untouched

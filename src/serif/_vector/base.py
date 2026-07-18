@@ -425,6 +425,13 @@ class Vector():
     _name = None
     _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
+    # Mutation guardrail: a table-owned column is FROZEN (__setitem__ raises;
+    # mutate through the table's mutable() scope). _inplace_ok is set only
+    # inside a mutable() scope, after copy-on-enter privatized the buffers —
+    # it licenses raw in-place writes that would corrupt shared storage
+    # anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
+    _frozen = False
+    _inplace_ok = False
     
     # Fingerprint constants for O(1) change detection
     _FP_P = (1 << 61) - 1  # Mersenne prime (2^61 - 1)
@@ -982,6 +989,22 @@ class Vector():
         raise SerifTypeError(f'Vector indices must be boolean vectors, integer vectors or integers, not {str(type(key))}')
 
 
+    def _require_mutable(self):
+        """Raise if this vector is a frozen table-owned column.
+
+        Owned vectors are immutable: a vector read out of a table cannot
+        mutate the table. Mutation happens inside the table's mutable()
+        scope, or on an independent .copy().
+        """
+        if self._frozen:
+            raise SerifTypeError(
+                "This vector is a table-owned column and is frozen. "
+                "Mutate it through the owning table's mutable() scope:\n"
+                "    with t.mutable() as m:\n"
+                "        m.col[key] = value\n"
+                "or take an independent mutable vector with .copy()."
+            )
+
     def __setitem__(self, key, value):
         """
         Optimized in-place assignment for Vector with:
@@ -998,6 +1021,7 @@ class Vector():
         """
 
         # === Fast precomputed checks ===
+        self._require_mutable()
         key = self._check_duplicate(key)
         value = self._check_duplicate(value)
 
@@ -1170,8 +1194,20 @@ class Vector():
                 if saw_none and not self._dtype.nullable:
                     self._dtype = Schema(self._dtype.kind, True)
         # =====================================================================
-        # MUTATE — copy-on-write + fingerprint invalidation
+        # MUTATE — in-place fast path (mutable() scope only), else rebuild
         # =====================================================================
+        # Raw writes are legal only inside a mutable() scope: copy-on-enter
+        # privatized the buffers, so nothing else can observe them. The
+        # storage declines (False) anything it can't hold — including after
+        # an in-place kind promotion, which swapped in a TupleStorage with
+        # no write_inplace at all — and the rebuild path below remains the
+        # specification.
+        if self._inplace_ok and updates:
+            write = getattr(self._storage, 'write_inplace', None)
+            if write is not None and write(updates):
+                self._invalidate_fp()
+                return
+
         data_list = list(underlying)           # COW materialization
 
         for idx, new_val in updates:
