@@ -397,13 +397,20 @@ def _accel_reduce(storage, op, **kwargs):
 def _accel_binop(storage, rhs, op_func, result_dtype):
     """Accelerated elementwise arithmetic; None = decline. The schema is
     already resolved by _pre_compute_op_schema — the accelerator computes
-    values, never semantics. numpy computes first; int lanes it declined
-    (its overflow bounds pass must over-predict) get arrow's CHECKED
-    kernels, which decline only on actual overflow (serif/_accel/arrow.py).
-    Returns a Vector or None."""
+    values, never semantics. Returns a Vector or None.
+
+    Ordering: TRUE DIVISION tries arrow first — its checked kernel skips
+    null lanes natively, so the numpy tier's neutralize-divisors copy
+    and zero-scan never run (identical results, fewer passes). Everything
+    else runs numpy first; int lanes its overflow bounds pass declined
+    (it must over-predict) get arrow's CHECKED kernels, which decline
+    only on actual overflow (serif/_accel/arrow.py)."""
     from .. import _accel
     fast = None
-    if _accel._USE_NUMPY:
+    if op_func is operator.truediv:
+        from .._accel.arrow import div_floats
+        fast = div_floats(storage, rhs, op_func, result_dtype.kind)
+    if fast is None and _accel._USE_NUMPY:
         from .._accel.ops import binop_storage
         fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
     if fast is None:

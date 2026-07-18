@@ -32,13 +32,17 @@ the reader's bit loop when not. When BoolStorage goes bit-packed (the
 0.1.7 bitpacking work), bool_storage() collapses to the same memcpy
 bitmask() already is; the seam is deliberately that one function.
 
-Second job, same doctrine: CHECKED integer arithmetic (binop_ints).
-Not because numpy can't do int64 math — because it can't do it SAFELY
-without predicting: np.int64 wraps silently, so the numpy tier runs a
-bounds pass and declines whenever overflow is POSSIBLE. Arrow's
-*_checked kernels detect ACTUAL overflow instead, so the decline is
-exact, null lanes never compute, and the bounds pass's over-declines
-get a second chance before falling to pure.
+Second job, same doctrine: CHECKED numeric kernels (binop_ints,
+div_floats). Not because numpy can't do the math — because it can't do
+it SAFELY without preparing: np.int64 wraps silently, so the numpy tier
+predicts overflow with a bounds pass and declines whenever it is
+POSSIBLE; numpy division executes every lane, so null-lane divisors
+must be neutralized to 1 (a copy) and zeros scanned for (a pass) first.
+Arrow's *_checked kernels detect instead: they skip null lanes, compute
+once, and raise on the first lane that actually overflows or divides by
+zero — so int over-declines get a second chance before pure, and
+division skips the preparation passes entirely (which is why truediv
+tries arrow FIRST — see base.py's _accel_binop).
 
 Buffer lifetime and mutation: py_buffer holds a reference to the object
 it wraps, so a returned arrow array keeps serif's buffers alive on its
@@ -71,6 +75,9 @@ _USE_ARROW = _pa is not None
 _I32_MAX = 2**31 - 1
 _I64_MAX = 2**63 - 1
 _I64_MIN = -2**63
+
+_NUMERIC_PA_TYPES = ({'q': _pa.int64(), 'd': _pa.float64()}
+                     if _pa is not None else {})
 
 _ARITH_KERNELS = {
     _op.add: 'add_checked',
@@ -111,14 +118,16 @@ def string_array(storage):
         -1 if mask is not None else 0)   # -1: arrow counts nulls lazily
 
 
-def int64_array(storage):
-    """ArrayStorage('q') → pa.Int64Array over the SAME buffers; None to
-    DECLINE (pyarrow absent/off, wrong storage or typecode, empty).
-    array('q') is 8-byte little-endian lanes and BitMask is the validity
-    bitmap — the wrap is two py_buffer views, zero copies."""
+def numeric_array(storage):
+    """ArrayStorage('q'/'d') → pa Int64Array/DoubleArray over the SAME
+    buffers; None to DECLINE (pyarrow absent/off, wrong storage or
+    typecode, empty). Both typecodes are 8-byte little-endian lanes and
+    BitMask is the validity bitmap — the wrap is two py_buffer views,
+    zero copies."""
     if not _USE_ARROW or not isinstance(storage, ArrayStorage):
         return None
-    if storage._data.typecode != 'q':
+    pa_type = _NUMERIC_PA_TYPES.get(storage._data.typecode)
+    if pa_type is None:
         return None
     n = len(storage)
     if n == 0:
@@ -126,21 +135,36 @@ def int64_array(storage):
     mask = storage._mask
     validity = _pa.py_buffer(mask._buf) if mask is not None else None
     return _pa.Array.from_buffers(
-        _pa.int64(), n,
+        pa_type, n,
         [validity, _pa.py_buffer(storage._data)],
         -1 if mask is not None else 0)   # -1: arrow counts nulls lazily
 
 
-def int64_storage(arr):
-    """pa.Int64Array (a kernel result) → ArrayStorage; None to DECLINE
-    (non-zero offset — same rationale as bool_storage). One memcpy for
-    the lanes, one for the validity trim. Lanes under null are whatever
-    the kernel left there: unobservable garbage, the pure path's
-    0-sentinel contract (ops.py)."""
+def int64_array(storage):
+    """numeric_array narrowed to int lanes — binop_ints' checked kernels
+    are an INT overflow story, so both operands must be 'q'."""
+    if isinstance(storage, ArrayStorage) and storage._data.typecode == 'q':
+        return numeric_array(storage)
+    return None
+
+
+def numeric_storage(arr):
+    """pa Int64Array/DoubleArray (a kernel result) → ArrayStorage; None
+    to DECLINE (non-zero offset — same rationale as bool_storage — or a
+    lane type serif doesn't store). One memcpy for the lanes, one for
+    the validity trim. Lanes under null are whatever the kernel left
+    there: unobservable garbage, the pure path's 0-sentinel contract
+    (ops.py)."""
     if arr.offset != 0:
         return None
+    if _pa.types.is_int64(arr.type):
+        typecode = 'q'
+    elif _pa.types.is_float64(arr.type):
+        typecode = 'd'
+    else:
+        return None
     n = len(arr)
-    data = _pyarray.array('q')
+    data = _pyarray.array(typecode)
     if n:
         data.frombytes(memoryview(arr.buffers()[1])[:n * 8])
     return ArrayStorage(data, bitmask(arr))
@@ -193,7 +217,68 @@ def binop_ints(lhs_storage, rhs, op_func, result_kind):
         out = getattr(_pc, kernel)(arr, other)
     except _pa.ArrowInvalid:
         return None   # actual overflow — the pure path promotes past int64
-    return int64_storage(out)
+    return numeric_storage(out)
+
+
+def div_floats(lhs_storage, rhs, op_func, result_kind):
+    """Checked float-producing division on buffers → ArrayStorage, or
+    None to DECLINE. Tried BEFORE the numpy tier (base.py): both wraps
+    are zero-copy, and this kernel simply does less work — numpy must
+    neutralize null-lane divisors to 1 (a copy) and scan for zeros (a
+    pass) before it dares divide; arrow's divide_checked never executes
+    null lanes and raises on the first REAL zero divisor, which is the
+    exact decline point anyway (the pure path raises ZeroDivisionError).
+    Identical results, fewer passes.
+
+    Bit-identical tier: one IEEE division per lane, int operands
+    converted to float64 exactly as Python converts them lane-wise.
+    Two exclusions, one per operand shape:
+
+      * int / int declines — Python true-divides integers EXACTLY at
+        any magnitude; float64 transport is only exact through 2**53.
+        The numpy tier owns the guarded small-value case; past it, pure
+        is the only exact engine.
+
+      * floordiv/mod are not division kernels here AT ALL (see
+        binop_ints: arrow truncates toward zero, Python floors —
+        semantics, not transport).
+
+    Zero scalars decline immediately; a huge int scalar (outside int64)
+    declines because the pure path promotes.
+    """
+    if op_func is not _op.truediv or result_kind is not float:
+        return None
+    arr = numeric_array(lhs_storage)
+    if arr is None:
+        return None
+    lhs_is_int = lhs_storage._data.typecode == 'q'
+    if isinstance(rhs, ArrayStorage):
+        other = numeric_array(rhs)
+        if other is None:
+            return None
+        rhs_is_int = rhs._data.typecode == 'q'
+    elif type(rhs) is float:
+        if rhs == 0.0:
+            return None            # pure raises ZeroDivisionError
+        other = _pa.scalar(rhs, _pa.float64())
+        rhs_is_int = False
+    elif type(rhs) is int:
+        if rhs == 0 or not (_I64_MIN <= rhs <= _I64_MAX):
+            return None
+        other = _pa.scalar(rhs, _pa.int64())
+        rhs_is_int = True
+    else:
+        return None
+    if lhs_is_int and rhs_is_int:
+        return None
+    try:
+        out = _pc.divide_checked(arr, other)
+    except (_pa.ArrowInvalid, _pa.ArrowNotImplementedError):
+        # ArrowInvalid: a zero divisor actually divided — pure raises.
+        # NotImplemented: this pyarrow lacks the kernel/type combo — the
+        # decline widens transport back to the numpy/pure tiers.
+        return None
+    return numeric_storage(out)
 
 
 def bitmask(arr):
