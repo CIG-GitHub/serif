@@ -143,6 +143,99 @@ class TupleStorage:
 
 
 # ---------------------------------------------------------------------------
+# BoolStorage — byte-packed boolean buffer
+# ---------------------------------------------------------------------------
+
+class BoolStorage:
+    """
+    Byte-packed boolean storage: one 0/1 byte per element in a bytearray,
+    nulls tracked with a separate BitMask (same split as ArrayStorage).
+
+    Why one BYTE per element, not one bit (Arrow) or a tuple of pointers
+    (the previous backend):
+    - vs tuple: ~8 bytes of pointer per element down to 1 — and a plain
+      byte index in pure Python instead of a pointer chase. bytearray is
+      the stdlib's numpy.
+    - vs bit-packed: pure-Python bit twiddling per access is SLOWER than
+      the tuple it would replace; a zero-dependency library must not make
+      its own fallback path worse. numpy views a bytearray zero-copy
+      (frombuffer, dtype=bool); bit-packing would force an unpack copy
+      per operation instead.
+    - I/O: Arrow and Parquet BOOLEAN are bit-packed, so the boundary pays
+      one pack/unpack pass — the same toll the decimal byte-swap already
+      pays, and numpy collapses it to a single C call (packbits/unpackbits).
+
+    __getitem__ surfaces real Python bools (python in → python out).
+    """
+
+    __slots__ = ('_data', '_mask')
+
+    def __init__(self, data: bytearray, mask: BitMask | None = None):
+        self._data = data
+        self._mask = mask
+
+    @classmethod
+    def from_iterable(cls, values: Iterable[Any], nullable: bool = False) -> BoolStorage:
+        data = bytearray()
+        null_flags = []
+        has_nulls = False
+        for val in values:
+            if val is None:
+                has_nulls = True
+                null_flags.append(True)
+                data.append(0)  # sentinel — position is masked
+            else:
+                null_flags.append(False)
+                data.append(1 if val else 0)
+        mask = BitMask.from_iterable(null_flags) if has_nulls else None
+        return cls(data, mask)
+
+    @classmethod
+    def from_raw(cls, data: bytearray, mask: BitMask | None = None) -> BoolStorage:
+        """Wrap a pre-built 0/1 bytearray with zero copying (I/O fast paths)."""
+        return cls(data, mask)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __bool__(self) -> bool:
+        return len(self._data) > 0
+
+    def __getitem__(self, idx: int) -> Any:
+        if self._mask is not None and self._mask.is_null(idx):
+            return None
+        return bool(self._data[idx])
+
+    def __iter__(self) -> Iterator[Any]:
+        if self._mask is not None:
+            for i in range(len(self._data)):
+                yield None if self._mask.is_null(i) else bool(self._data[i])
+        else:
+            for b in self._data:
+                yield bool(b)
+
+    def is_null(self, idx: int) -> bool:
+        return self._mask is not None and self._mask.is_null(idx)
+
+    def slice(self, slc: slice) -> BoolStorage:
+        new_data = self._data[slc]
+        new_mask = self._mask[slc] if self._mask is not None else None
+        return BoolStorage(new_data, new_mask)
+
+    def take(self, indices) -> BoolStorage:
+        new_data = bytearray(self._data[i] for i in indices)
+        if self._mask is not None:
+            null_flags = [self._mask.is_null(i) for i in indices]
+            new_mask = BitMask.from_iterable(null_flags) if any(null_flags) else None
+        else:
+            new_mask = None
+        return BoolStorage(new_data, new_mask)
+
+    def to_tuple(self) -> tuple:
+        return tuple(self)
+
+
+# ---------------------------------------------------------------------------
 # StringStorage — Arrow-style contiguous UTF-8 string buffer
 # ---------------------------------------------------------------------------
 

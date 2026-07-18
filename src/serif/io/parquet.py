@@ -36,7 +36,7 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
 from .._vector import Vector
-from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage
+from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolStorage
 
 # ---------------------------------------------------------------------------
 # Optional pyarrow acceleration (read side) — EXPERIMENT
@@ -1496,6 +1496,53 @@ def _decode_decimal_raw(page_body: bytes, body_pos: int,
     return DecimalStorage(buf, scale, precision, mask)
 
 
+def _decode_bool_raw(page_body: bytes, body_pos: int,
+                     null_flags, non_null_count: int) -> BoolStorage:
+    """
+    Build a BoolStorage directly from PLAIN BOOLEAN page data.
+
+    PLAIN BOOLEAN is bit-packed LSB-first — one unpack pass writes 0/1
+    bytes straight into the storage buffer, no interned-bool boxing.
+    """
+    from .._vector.nullable import BitMask
+
+    bits = page_body[body_pos:body_pos + (non_null_count + 7) // 8]
+
+    if null_flags is None:
+        data = bytearray(non_null_count)
+        for i in range(non_null_count):
+            data[i] = (bits[i >> 3] >> (i & 7)) & 1
+        return BoolStorage(data, None)
+
+    # Nullable: non-null bits unpack in order into their positions; null
+    # positions keep the 0 sentinel and are covered by the mask.
+    data      = bytearray(len(null_flags))
+    raw_idx   = 0
+    has_nulls = False
+    for pos, is_null in enumerate(null_flags):
+        if is_null:
+            has_nulls = True
+        else:
+            data[pos] = (bits[raw_idx >> 3] >> (raw_idx & 7)) & 1
+            raw_idx += 1
+    mask = BitMask.from_iterable(null_flags) if has_nulls else None
+    return BoolStorage(data, mask)
+
+
+def _concat_bool_storages(a: BoolStorage, b: BoolStorage) -> BoolStorage:
+    """Concatenate two BoolStorages (multiple row groups)."""
+    from .._vector.nullable import BitMask
+    new_data = a._data + b._data
+    if a._mask is None and b._mask is None:
+        new_mask = None
+    else:
+        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(len(a))]
+        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(len(b))]
+        all_flags = a_flags + b_flags
+        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
+    return BoolStorage(new_data, new_mask)
+
+
 def _concat_decimal_storages(a: DecimalStorage, b: DecimalStorage) -> DecimalStorage:
     """Concatenate two DecimalStorages (multiple row groups)."""
     from .._vector.nullable import BitMask
@@ -1633,6 +1680,18 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                 values = page_storage
             elif isinstance(values, DecimalStorage):
                 values = _concat_decimal_storages(values, page_storage)
+            else:
+                values = list(values) if not isinstance(values, list) else values
+                values.extend(page_storage)
+        elif kind is bool:
+            # Bool fast path: unpack PLAIN BOOLEAN bits straight into a
+            # BoolStorage bytearray — no interned-bool boxing.
+            page_storage = _decode_bool_raw(page_body, body_pos,
+                                            null_flags, non_null_count)
+            if values is None:
+                values = page_storage
+            elif isinstance(values, BoolStorage):
+                values = _concat_bool_storages(values, page_storage)
             else:
                 values = list(values) if not isinstance(values, list) else values
                 values.extend(page_storage)
@@ -1799,6 +1858,8 @@ def read_parquet(path: str):
                 col_values[col_idx] = _concat_string_storages(existing, chunk_values)
             elif isinstance(existing, DecimalStorage) and isinstance(chunk_values, DecimalStorage):
                 col_values[col_idx] = _concat_decimal_storages(existing, chunk_values)
+            elif isinstance(existing, BoolStorage) and isinstance(chunk_values, BoolStorage):
+                col_values[col_idx] = _concat_bool_storages(existing, chunk_values)
             elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
                 col_values[col_idx] = existing + chunk_values
             else:
@@ -1817,6 +1878,10 @@ def read_parquet(path: str):
             col = Vector._from_storage(raw, dtype, name=m['name'])
         elif isinstance(raw, DecimalStorage):
             # Decimal fast path: DecimalStorage built directly from raw bytes.
+            col = Vector._from_storage(raw, dtype, name=m['name'])
+        elif isinstance(raw, BoolStorage):
+            # Bool fast path: BoolStorage bytes unpacked directly from
+            # PLAIN BOOLEAN bits.
             col = Vector._from_storage(raw, dtype, name=m['name'])
         elif isinstance(raw, _pyarray.array):
             # Non-nullable float or int: storage is already a packed C array.

@@ -367,10 +367,13 @@ class Vector():
         tc = getattr(self, 'typecode', None)
         if tc is not None:
             return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
-        # Route str columns to the compact buffer backend
+        # Route str and bool columns to their compact buffer backends
         if getattr(self, '_dtype', None) is not None and self._dtype.kind is str:
             from .storage import StringStorage
             return StringStorage.from_iterable(data)
+        if getattr(self, '_dtype', None) is not None and self._dtype.kind is bool:
+            from .storage import BoolStorage
+            return BoolStorage.from_iterable(data, nullable=nullable)
         return TupleStorage.from_iterable(data, nullable=nullable)
 
     def _clone(self, new_storage, dtype=..., name=...):
@@ -714,8 +717,8 @@ class Vector():
         Vector([False, True, False])
         """
         storage = self._storage
-        from .storage import StringStorage
-        if isinstance(storage, (ArrayStorage, StringStorage)):
+        from .storage import StringStorage, BoolStorage
+        if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage)):
             # Fast path: iterate the null mask directly — it already knows
             # which slots are null (yields True per null), so we avoid
             # unboxing numerics / decoding UTF-8 just to test None. If there
@@ -723,10 +726,11 @@ class Vector():
             # _clone) so the result is a plain unnamed bool Vector, per the
             # naming invariant for derived vectors.
             if storage._mask is None:
-                mask_tuple = (False,) * len(storage)
+                result = BoolStorage(bytearray(len(storage)))
             else:
-                mask_tuple = tuple(storage._mask)
-            return Vector._from_storage(TupleStorage(mask_tuple), Schema(bool, False))
+                result = BoolStorage(bytearray(
+                    1 if is_null else 0 for is_null in storage._mask))
+            return Vector._from_storage(result, Schema(bool, False))
         return Vector._from_iterable_known_dtype(
             (elem is None for elem in storage),
             Schema(bool, False),

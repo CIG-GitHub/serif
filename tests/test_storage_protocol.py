@@ -3,7 +3,8 @@ Storage-protocol conformance suite.
 
 Every behavior in this file must hold regardless of which storage backend a
 Vector happens to be using (TupleStorage, ArrayStorage, StringStorage,
-_CategoryStorage). Backends are exercised only through the public Vector API —
+BoolStorage, _CategoryStorage). Backends are exercised only through the
+public Vector API —
 if a base-class method reaches into a backend's internals it doesn't own,
 this suite is where it breaks.
 
@@ -17,7 +18,7 @@ import pytest
 
 from serif import Vector
 from serif.errors import SerifValueError
-from serif._vector.storage import ArrayStorage, TupleStorage, StringStorage
+from serif._vector.storage import ArrayStorage, TupleStorage, StringStorage, BoolStorage
 from serif._vector.categorical import _Category, _CategoryStorage
 
 
@@ -30,6 +31,7 @@ CASES = [
     ("str_null",    lambda: Vector(["b", None, "a"]),         ["b", None, "a"]),
     ("str_unicode", lambda: Vector(["héllo", "🐍snake", ""]), ["héllo", "🐍snake", ""]),
     ("bool_dense",  lambda: Vector([True, False, True]),      [True, False, True]),
+    ("bool_null",   lambda: Vector([True, None, False]),      [True, None, False]),
     ("date_dense",
      lambda: Vector([date(2024, 1, 3), date(2024, 1, 1), date(2024, 1, 2)]),
      [date(2024, 1, 3), date(2024, 1, 1), date(2024, 1, 2)]),
@@ -59,7 +61,7 @@ SETITEM_VALUE = {
     "int_dense": 9, "int_null": 9,
     "float_dense": 9.5, "float_null": 9.5,
     "str_dense": "z", "str_null": "z", "str_unicode": "z",
-    "bool_dense": False,
+    "bool_dense": False, "bool_null": False,
     "date_dense": date(2020, 1, 1), "date_null": date(2020, 1, 1),
     "cat": "a", "cat_null": "a",
 }
@@ -78,7 +80,7 @@ EXPECTED_BACKEND = {
     "float_dense": ArrayStorage, "float_null": ArrayStorage,
     "str_dense": StringStorage, "str_null": StringStorage,
     "str_unicode": StringStorage,
-    "bool_dense": TupleStorage,
+    "bool_dense": BoolStorage, "bool_null": BoolStorage,
     "date_dense": TupleStorage, "date_null": TupleStorage,
     "cat": _CategoryStorage, "cat_null": _CategoryStorage,
 }

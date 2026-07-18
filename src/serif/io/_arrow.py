@@ -3,9 +3,10 @@ OPTIONAL pyarrow-accelerated Parquet reading — EXPERIMENT.
 
 serif stays zero-dependency: this module only imports when pyarrow happens
 to be installed, and nothing anywhere requires it. numpy is OPTIONAL — it
-accelerates one step (the decimal byte-swap), but pyarrow >= 25 no longer
-pulls it in, so when it is absent that step falls back to pure Python:
-identical results, just slower. The doctrine being prototyped:
+accelerates two steps (the decimal byte-swap and the bool bit-unpack), but
+pyarrow >= 25 no longer pulls it in, so when it is absent those steps fall
+back to pure Python: identical results, just slower. The doctrine being
+prototyped:
 
   * python in → python out. Whatever backend decodes the file, the Table
     that comes back surfaces concrete Python values (int, float, str,
@@ -35,9 +36,12 @@ Why this is fast: serif's storage layout is deliberately arrow-shaped.
                 layout (one packed bit per element, LSB-first, 1=valid),
                 so arrow's validity buffer IS a BitMask buffer: one memcpy,
                 no bit twiddling, no per-row Python loop, no numpy needed.
-  * objects   — bool/date/datetime columns are TupleStorage of Python
-                objects either way; arrow's C-implemented to_pylist() is
-                the fastest available boxer, with None already in place.
+  * bools     — arrow bit-packed values → BoolStorage's 0/1 bytes: one
+                unpack pass (a single numpy C call when available), no
+                interned-bool boxing.
+  * objects   — date/datetime columns are TupleStorage of Python objects
+                either way; arrow's C-implemented to_pylist() is the
+                fastest available boxer, with None already in place.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ from decimal import Decimal as _Decimal
 from .._vector import Vector
 from .._vector.dtype import Schema as _Schema
 from .._vector.nullable import BitMask
-from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage
+from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolStorage
 
 
 def _target_type(t):
@@ -244,12 +248,30 @@ def _to_vector(arr, name, nullable):
                                              _bit_mask(arr))
         return Vector._from_storage(storage, dtype, name=name)
 
-    # bool / date32 / timestamp → TupleStorage of Python objects, the same
+    if _pa.types.is_boolean(t):
+        # Arrow bools are bit-packed; BoolStorage is byte-packed. One
+        # unpack pass — a single C call with numpy, a bit loop without
+        # (same optional-numpy trade as the decimal byte-swap).
+        dtype = _Schema(bool, nullable)
+        if n == 0:
+            return Vector._from_iterable_known_dtype([], dtype, name=name)
+        bit_buf = arr.buffers()[1]
+        if _np is not None:
+            bits = _np.frombuffer(bit_buf, dtype=_np.uint8)  # zero-copy view
+            data = bytearray(
+                _np.unpackbits(bits, count=n, bitorder='little').tobytes())
+        else:
+            mv   = memoryview(bit_buf)
+            data = bytearray(n)
+            for i in range(n):
+                data[i] = (mv[i >> 3] >> (i & 7)) & 1
+        storage = BoolStorage.from_raw(data, _bit_mask(arr))
+        return Vector._from_storage(storage, dtype, name=name)
+
+    # date32 / timestamp → TupleStorage of Python objects, the same
     # backend the pure reader builds. arrow's to_pylist() boxes in C with
     # None already at the null positions.
-    if _pa.types.is_boolean(t):
-        kind = bool
-    elif _pa.types.is_date32(t):
+    if _pa.types.is_date32(t):
         kind = _date
     else:  # timestamp[us/ms], per _target_type
         kind = _datetime
