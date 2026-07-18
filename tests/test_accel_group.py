@@ -175,7 +175,8 @@ def test_join_conforms(flavor):
 
 
 def test_join_on_string_keys_conforms():
-    # Bucketing declines (str keys) but padded column gather still engages.
+    # group_indices declines str keys (the ARROW backend buckets them when
+    # installed — test_accel_string_group.py); padded gather still engages.
     def run():
         left = Table({'k': ['a', 'b', 'c'], 'x': [1, 2, 3]})
         right = Table({'k': ['b', 'c', 'd'], 'y': [2.5, 3.5, 4.5]})
@@ -289,7 +290,8 @@ def test_group_fast_path_engages(monkeypatch):
     calls.clear()
     t2 = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t2.aggregate(groupby=t2.g, aggregations={'m': t2.x.sum})
-    assert calls == [False]  # str key declines to the pure dict loop
+    assert calls == [False]  # str key declines HERE; arrow's group_strings
+    #                          picks it up when installed (its own suite)
 
 
 def test_join_fast_paths_engage(monkeypatch):
@@ -310,4 +312,5 @@ def test_join_fast_paths_engage(monkeypatch):
     left2 = Table({'k': ['a', 'b'], 'x': [1, 2]})
     right2 = Table({'k': ['b'], 'y': [2.5]})
     left2.left_join(right2, 'k', 'k')
-    assert probe_calls == [False]        # str keys decline to pure matcher
+    assert probe_calls == [False]        # str keys decline HERE; arrow's
+    #                                      probe picks them up when installed
