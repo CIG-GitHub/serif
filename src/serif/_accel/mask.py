@@ -47,36 +47,46 @@ def _selection(mask_storage, n: int):
     return sel
 
 
-def _gathered_mask(mask: BitMask | None, indexer, src_n: int):
-    """Gather the source null mask through the indexer."""
+def _gathered_mask(mask: BitMask | None, indexer, src_n: int, pad=None):
+    """Gather the source null mask through the indexer; pad lanes null."""
     if mask is None:
-        return None
-    valid = _valid_bits(mask, src_n)[indexer]
+        if pad is None:
+            return None
+        valid = ~pad
+    else:
+        valid = _valid_bits(mask, src_n)[indexer]
+        if pad is not None:
+            valid = valid & ~pad
     if valid.all():
         return None  # no nulls survived — mask-None convention
     packed = _np.packbits(valid, bitorder='little')
     return BitMask(bytearray(packed.tobytes()), len(valid))
 
 
-def _gather(storage, indexer, src_n: int):
+def _gather(storage, indexer, src_n: int, pad=None):
     """Gather rows of `storage` by a numpy indexer (bool selection or intp
-    positions). Returns a new storage of the same concrete type, or None
-    to decline."""
+    positions). pad, when given, is a bool array marking output lanes that
+    emit null instead of a gathered value (indexer already clamped there).
+    Returns a new storage of the same concrete type, or None to decline."""
     if isinstance(storage, ArrayStorage):
         np_dtype = NP_DTYPES.get(storage._data.typecode)
         if np_dtype is None:
             return None
         vals = _np.frombuffer(storage._data, dtype=np_dtype)  # zero-copy view
         out  = vals[indexer]
+        if pad is not None:
+            out[pad] = 0  # the pure backends' zero sentinel under the mask
         data = _pyarray.array(storage._data.typecode)
         data.frombytes(out.tobytes())
-        return ArrayStorage(data, _gathered_mask(storage._mask, indexer, src_n))
+        return ArrayStorage(data, _gathered_mask(storage._mask, indexer, src_n, pad))
 
     if isinstance(storage, BoolStorage):
         vals = _np.frombuffer(storage._data, dtype=_np.uint8)  # zero-copy view
         out  = vals[indexer]
+        if pad is not None:
+            out[pad] = 0
         return BoolStorage(bytearray(out.tobytes()),
-                           _gathered_mask(storage._mask, indexer, src_n))
+                           _gathered_mask(storage._mask, indexer, src_n, pad))
 
     if isinstance(storage, StringStorage):
         # No string content is ever touched: the pure path decodes every
@@ -85,6 +95,8 @@ def _gather(storage, indexer, src_n: int):
         offs     = _np.frombuffer(storage._offsets, dtype=_np.uint32)  # zero-copy
         starts   = offs[:-1][indexer]
         ends_src = offs[1:][indexer]
+        if pad is not None:
+            ends_src = _np.where(pad, starts, ends_src)  # zero-length spans
         lengths  = (ends_src - starts).astype(_np.int64)
         k        = len(lengths)
 
@@ -116,7 +128,7 @@ def _gather(storage, indexer, src_n: int):
             idx = _np.arange(total, dtype=_np.int64) + span_shift
             new_buf = _np.frombuffer(storage._buf, dtype=_np.uint8)[idx].tobytes()
         return StringStorage.from_raw(new_buf, new_offs,
-                                      _gathered_mask(storage._mask, indexer, src_n))
+                                      _gathered_mask(storage._mask, indexer, src_n, pad))
 
     return None
 
@@ -153,3 +165,24 @@ def take_storage(storage, indices):
         return None
     idx = _np.asarray(indices, dtype=_np.intp)
     return _gather(storage, idx, len(storage))
+
+
+def take_pad_storage(storage, indices):
+    """
+    take where index -1 emits a null instead of a value — the join pad
+    sentinel for rows the other side didn't match. All other indices obey
+    take_storage's contract. Returns a new storage of the same concrete
+    type, or None to decline.
+    """
+    if _np is None:
+        return None
+    idx = _np.asarray(indices, dtype=_np.intp)
+    pad = idx == -1
+    if not pad.any():
+        return _gather(storage, idx, len(storage))
+    if not len(storage):
+        # All-pad gather from an empty side (e.g. full join against an
+        # empty table): nothing to clamp to. The pure loop emits the
+        # all-None column.
+        return None
+    return _gather(storage, _np.where(pad, 0, idx), len(storage), pad=pad)

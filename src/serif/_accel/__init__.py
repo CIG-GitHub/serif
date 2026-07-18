@@ -23,8 +23,9 @@ is the one proven by the pyarrow reader (serif/io/_arrow.py):
     np.packbits from coming back. The storage layout being arrow-shaped
     keeps paying.
 
-Modules: mask (boolean-mask filtering), with reduce (sum/mean/stdev/
-min/max) and ops (elementwise) to follow.
+Modules: mask (row gathering — filter, take, padded take), reduce
+(sum/mean/stdev/min/max), ops (elementwise), group (single-key
+bucketing for joins and partitions).
 
 _USE_NUMPY is a private switch for tests/benchmarks, not API.
 """

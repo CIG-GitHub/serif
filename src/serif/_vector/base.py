@@ -312,6 +312,28 @@ def _take(storage, indices):
     return fast if fast is not None else storage.take(indices)
 
 
+def _accel_take_pad(storage, indices):
+    """Numpy-accelerated gather where index -1 emits null (join pad rows);
+    None = decline to the caller's pure emission, whose behavior is the
+    specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import take_pad_storage
+    return take_pad_storage(storage, indices)
+
+
+def _accel_group(storage):
+    """Numpy-accelerated single-key bucketing ({(key,): [rows]} in first-
+    appearance order); None = decline to the pure dict loop, whose behavior
+    is the specification."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.group import group_indices
+    return group_indices(storage)
+
+
 def _accel_reduce(storage, op, **kwargs):
     """Try a numpy-accelerated reduction. Returns (True, value) when the
     fast path produced the answer, (False, None) on decline — the caller

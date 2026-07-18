@@ -6,6 +6,8 @@ from ._vector import Vector
 from ._vector import Schema
 from ._vector.base import _null_sort_flag
 from ._vector.base import _accel_take
+from ._vector.base import _accel_take_pad
+from ._vector.base import _accel_group
 from ._vector.base import _take
 
 from .naming import _sanitize_user_name
@@ -1278,8 +1280,6 @@ class Table(Vector):
         right_nrows = len(other)
         left_cols = self._storage
         right_cols = other._storage
-        n_left_cols = len(left_cols)
-        n_right_cols = len(right_cols)
 
         # Drop a right column only when it IS one of the join key columns
         # (identity, not name) whose left key shares its name. Matching by
@@ -1291,34 +1291,46 @@ class Table(Vector):
         }
 
         # Materialize key columns once -- per-row storage access would pay
-        # unboxing/decoding costs inside the hot loops below.
+        # unboxing/decoding costs inside the hot loops below. (The right
+        # side is walked only when the bucket accelerator declines.)
         left_key_data = [k._storage.to_tuple() for k in left_keys]
-        right_key_data = [k._storage.to_tuple() for k in right_keys]
 
         # ------------------------------------------------------------------
         # 2. Build hash index on the right side (+ cardinality check)
         # ------------------------------------------------------------------
-        right_index = {}
-        right_index_get = right_index.get
         first_duplicate_key = None
-
-        for row_idx in range(right_nrows):
-            key = tuple(kd[row_idx] for kd in right_key_data)
-            if validate_hashable:
-                Table._validate_key_tuple_hashable(key, right_keys, row_idx)
-            bucket = right_index_get(key)
-            if bucket is None:
-                right_index[key] = [row_idx]
-            else:
-                bucket.append(row_idx)
-                if expect_right_unique and first_duplicate_key is None:
-                    first_duplicate_key = key
+        right_index = (_accel_group(right_keys[0]._storage)
+                       if len(right_keys) == 1 else None)
+        if right_index is not None:
+            if expect_right_unique:
+                # First duplicate DETECTED in scan order = the bucket whose
+                # SECOND row index is smallest — what the pure loop records.
+                dups = [(bucket[1], key) for key, bucket in right_index.items()
+                        if len(bucket) > 1]
+                if dups:
+                    first_duplicate_key = min(dups)[1]
+        else:
+            right_index = {}
+            right_index_build_get = right_index.get
+            right_key_data = [k._storage.to_tuple() for k in right_keys]
+            for row_idx in range(right_nrows):
+                key = tuple(kd[row_idx] for kd in right_key_data)
+                if validate_hashable:
+                    Table._validate_key_tuple_hashable(key, right_keys, row_idx)
+                bucket = right_index_build_get(key)
+                if bucket is None:
+                    right_index[key] = [row_idx]
+                else:
+                    bucket.append(row_idx)
+                    if expect_right_unique and first_duplicate_key is None:
+                        first_duplicate_key = key
 
         if expect_right_unique and first_duplicate_key is not None:
             raise SerifValueError(
                 f"expect_right_unique=True violated: right side has duplicate key {first_duplicate_key} "
                 f"(appears {len(right_index[first_duplicate_key])} times)."
             )
+        right_index_get = right_index.get
 
         # ------------------------------------------------------------------
         # 3. Cardinality/match tracking state
@@ -1327,11 +1339,13 @@ class Table(Vector):
         matched_right_rows = set() if keep_unmatched_right else None
 
         # ------------------------------------------------------------------
-        # 4. Emit result rows in column-major order
+        # 4. Probe in left-row order, building gather index lists — the
+        #    rows are only ints here; column emission is deferred to one
+        #    take per column in step 6.
         # ------------------------------------------------------------------
-        result_data = [[] for _ in range(n_left_cols + n_right_cols)]
-        append_cols = [col.append for col in result_data]
-        n_out = 0
+        left_take = []
+        right_take = []
+        PAD = -1  # gather sentinel: emit None (see _gather_join_column)
 
         for left_idx in range(left_nrows):
             key = tuple(kd[left_idx] for kd in left_key_data)
@@ -1350,20 +1364,12 @@ class Table(Vector):
                 for right_idx in matches:
                     if matched_right_rows is not None:
                         matched_right_rows.add(right_idx)
-                    for c_idx, col in enumerate(left_cols):
-                        append_cols[c_idx](col[left_idx])
-                    base = n_left_cols
-                    for offset, col in enumerate(right_cols):
-                        append_cols[base + offset](col[right_idx])
-                    n_out += 1
+                    left_take.append(left_idx)
+                    right_take.append(right_idx)
             elif keep_unmatched_left:
                 # Unmatched left row: left values + None-padded right side
-                for c_idx, col in enumerate(left_cols):
-                    append_cols[c_idx](col[left_idx])
-                base = n_left_cols
-                for offset in range(n_right_cols):
-                    append_cols[base + offset](None)
-                n_out += 1
+                left_take.append(left_idx)
+                right_take.append(PAD)
 
         # ------------------------------------------------------------------
         # 5. Unmatched right rows (full join only)
@@ -1371,17 +1377,13 @@ class Table(Vector):
         if keep_unmatched_right:
             for right_idx in range(right_nrows):
                 if right_idx not in matched_right_rows:
-                    for c_idx in range(n_left_cols):
-                        append_cols[c_idx](None)
-                    base = n_left_cols
-                    for offset, col in enumerate(right_cols):
-                        append_cols[base + offset](col[right_idx])
-                    n_out += 1
+                    left_take.append(PAD)
+                    right_take.append(right_idx)
 
         # ------------------------------------------------------------------
-        # 6. Wrap into name-preserving Vectors
+        # 6. Materialize name-preserving output columns: one gather each
         # ------------------------------------------------------------------
-        if n_out == 0:
+        if not left_take:
             return Table(())
 
         # A side only gains injected None rows when the OTHER side keeps its
@@ -1390,16 +1392,37 @@ class Table(Vector):
         right_nullable_pad = keep_unmatched_left
 
         result_cols = []
-        for col_idx, orig_col in enumerate(left_cols):
-            result_cols.append(Table._wrap_join_column(
-                result_data[col_idx], orig_col, left_nullable_pad))
-        base = n_left_cols
+        for orig_col in left_cols:
+            result_cols.append(Table._gather_join_column(
+                orig_col, left_take, left_nullable_pad))
         for offset, orig_col in enumerate(right_cols):
             if offset not in drop_right_idx:
-                result_cols.append(Table._wrap_join_column(
-                    result_data[base + offset], orig_col, right_nullable_pad))
+                result_cols.append(Table._gather_join_column(
+                    orig_col, right_take, right_nullable_pad))
 
         return Table(result_cols)
+
+    @staticmethod
+    def _gather_join_column(orig_col, indices, nullable_pad):
+        """
+        Materialize one join output column: gather orig_col's rows at
+        `indices`, emitting None where the index is -1 (the pad sentinel
+        for rows the other side left unmatched). Typed columns gather on
+        the storage buffer through the take accelerator; the fallback
+        feeds _wrap_join_column, whose behavior is the specification.
+        """
+        schema = orig_col.schema()
+        if schema is not None and schema.kind is not object:
+            fast = _accel_take_pad(orig_col._storage, indices)
+            if fast is not None:
+                return orig_col._clone(
+                    fast,
+                    dtype=Schema(schema.kind, schema.nullable or nullable_pad))
+        # Per-index access, not to_tuple(): a selective join must not pay a
+        # full walk of the source column just to emit a few rows.
+        storage = orig_col._storage
+        values = [None if i < 0 else storage[i] for i in indices]
+        return Table._wrap_join_column(values, orig_col, nullable_pad)
 
     @staticmethod
     def _wrap_join_column(values, orig_col, nullable_pad):
@@ -1530,6 +1553,14 @@ class Table(Vector):
                     f"{key_label} at index {i} has length {len(col)}, "
                     f"but table has {nrows} rows."
                 )
+
+        # Single-key fast path: bucket in C when the key column supports it
+        # (int64, no nulls). track_row_keys declines — window()'s per-row
+        # key list would rebuild the Python tuples anyway.
+        if len(groupby) == 1 and not track_row_keys:
+            fast = _accel_group(groupby[0]._storage)
+            if fast is not None:
+                return groupby, fast, None
 
         partition_index = {}
         pk_len = len(groupby)
