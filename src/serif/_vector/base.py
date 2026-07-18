@@ -80,6 +80,11 @@ def _kleene_xor(x, y):
     return bool(x) != bool(y)
 
 
+# Accelerator dispatch: only THESE functions have a vectorized twin —
+# anything else passed to _logical_elementwise declines to the pure zip.
+_KLEENE_OP_NAMES = {_kleene_and: 'and', _kleene_or: 'or', _kleene_xor: 'xor'}
+
+
 def _check_on_empty(method_name, on_empty):
     # Identity checks, not truthiness: on_empty=1 is a bug, not a True.
     if on_empty is None or on_empty is True or on_empty is False:
@@ -294,6 +299,17 @@ def _accel_filter(storage, mask):
     return filter_storage(storage, mask)
 
 
+def _accel_popcount(mask_storage):
+    """Numpy-accelerated True count of a boolean mask (nulls count False);
+    None = decline to the pure count, whose behavior is the specification.
+    OPTIONAL numpy — transport, never semantics; see serif/_accel/__init__.py."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.mask import popcount_storage
+    return popcount_storage(mask_storage)
+
+
 def _accel_take(storage, indices):
     """Numpy-accelerated positional gather; None = decline to the pure
     storage.take(), whose behavior is the specification. OPTIONAL numpy —
@@ -387,6 +403,39 @@ def _accel_compare(storage, rhs, op_func, nullable):
         return None
     from .._accel.ops import compare_storage
     fast = compare_storage(storage, rhs, op_func)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, Schema(bool, nullable))
+    result._wild = True
+    return result
+
+
+def _accel_logical(storage, rhs, op_name):
+    """Numpy-accelerated Kleene &/|/^; None = decline to the pure zip,
+    whose behavior is the specification. Nullability is post-hoc like the
+    pure path's `any(v is None)` — the mask-None convention makes the two
+    agree exactly."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import logical_storage
+    fast = logical_storage(storage, rhs, op_name)
+    if fast is None:
+        return None
+    result = Vector._from_storage(fast, Schema(bool, fast._mask is not None))
+    result._wild = True
+    return result
+
+
+def _accel_invert(storage, nullable):
+    """Numpy-accelerated Kleene NOT; None = decline. nullable is the
+    schema-carried flag — __invert__ preserves the input schema rather
+    than recomputing it post-hoc."""
+    from .. import _accel
+    if not _accel._USE_NUMPY:
+        return None
+    from .._accel.ops import invert_storage
+    fast = invert_storage(storage)
     if fast is None:
         return None
     result = Vector._from_storage(fast, Schema(bool, nullable))
@@ -1330,11 +1379,20 @@ class Vector():
             return other.copy(tuple(
                 self._logical_elementwise(col, kleene_func) for col in other.cols()
             ))
+        op_name = _KLEENE_OP_NAMES.get(kleene_func)
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             if len(self) != len(other):
                 raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
+            if op_name is not None and isinstance(other, Vector):
+                fast = _accel_logical(self._storage, other._storage, op_name)
+                if fast is not None:
+                    return fast
             vals = [kleene_func(x, y) for x, y in zip(self, other, strict=True)]
         else:
+            if op_name is not None and (other is None or type(other) is bool):
+                fast = _accel_logical(self._storage, other, op_name)
+                if fast is not None:
+                    return fast
             vals = [kleene_func(x, other) for x in self]
         return Vector._from_iterable_known_dtype(
             vals, Schema(bool, any(v is None for v in vals)))
@@ -1526,6 +1584,9 @@ class Vector():
         # NOT unknown is unknown (docs/null-semantics.md) — the old
         # `not None` mapped nulls to True.
         if self._dtype and self._dtype.kind is bool:
+            fast = _accel_invert(self._storage, self._dtype.nullable)
+            if fast is not None:
+                return fast
             return Vector._from_iterable_known_dtype(
                 (None if x is None else (not x) for x in self),
                 Schema(bool, self._dtype.nullable),

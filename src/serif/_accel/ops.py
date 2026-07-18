@@ -1,5 +1,6 @@
 """
-Elementwise binary ops over storage buffers: arithmetic and comparisons.
+Elementwise binary ops over storage buffers: arithmetic, comparisons,
+and Kleene logical ops (&, |, ^, ~ on BoolStorage).
 
 This is the BIT-IDENTICAL tier (unlike reduce.py's fsum-anchored tier):
 each lane computes the same single IEEE operation the pure path computes,
@@ -205,6 +206,116 @@ def binop_storage(lhs_storage, rhs, op_func, result_kind):
     data = _pyarray.array(typecode)
     data.frombytes(out.tobytes())
     return ArrayStorage(data, mask)
+
+
+def _bool_view(storage):
+    """BoolStorage → (np bool view, known-lanes array | None) or None to
+    decline. The values view is zero-copy; known is the unpacked null mask
+    (True = valid), or None when the storage has no mask."""
+    if not isinstance(storage, BoolStorage):
+        return None
+    vals = _np.frombuffer(storage._data, dtype=_np.bool_)
+    known = (None if storage._mask is None
+             else valid_bits(storage._mask, len(vals)))
+    return vals, known
+
+
+def logical_storage(lhs_storage, rhs, op_name):
+    """
+    Kleene three-valued &, |, ^ on buffers → BoolStorage, or None to
+    decline (the pure zip in _logical_elementwise is the specification).
+
+    rhs: a BoolStorage of the same length (caller has already length-
+    checked), or a Python bool/None scalar. Anything else declines —
+    notably non-bool vectors, whose truthiness semantics belong to the
+    pure path.
+
+    Null semantics are Kleene's: a known operand may settle the result
+    (False settles &, True settles |; ^ never settles), otherwise unknown
+    propagates. Value lanes are computed on null-NEUTRALIZED operands
+    (a & known): a BoolStorage's bytes under null lanes are unobservable
+    garbage — accelerated comparisons write the comparison of sentinel
+    values there — so they must never leak into a valid result lane.
+    Nullability is post-hoc, like the pure path's `any(v is None)`: an
+    all-valid result carries no mask (the mask-None convention).
+    """
+    if _np is None:
+        return None
+    left = _bool_view(lhs_storage)
+    if left is None:
+        return None
+    a, ka = left
+    n = len(a)
+
+    if isinstance(rhs, BoolStorage):
+        b, kb = _bool_view(rhs)
+    elif rhs is None:
+        b = _np.zeros(n, dtype=_np.bool_)
+        kb = _np.zeros(n, dtype=_np.bool_)
+    elif type(rhs) is bool:
+        b = _np.full(n, rhs, dtype=_np.bool_)
+        kb = None
+    else:
+        return None
+
+    if op_name not in ('and', 'or', 'xor'):
+        return None
+
+    # Hot case — two dense masks (every comparison of non-nullable
+    # columns lands here): plain boolean algebra, no mask.
+    if ka is None and kb is None:
+        if op_name == 'and':
+            value = a & b
+        elif op_name == 'or':
+            value = a | b
+        else:
+            value = a ^ b
+        return BoolStorage(bytearray(value.tobytes()), None)
+
+    ka_ = _np.ones(n, dtype=_np.bool_) if ka is None else ka
+    kb_ = _np.ones(n, dtype=_np.bool_) if kb is None else kb
+    a_eff = a & ka_   # null lanes read as False; settling logic consults
+    b_eff = b & kb_   # only known lanes, so this is purely de-garbling
+
+    if op_name == 'and':
+        valid = (ka_ & kb_) | (ka_ & ~a_eff) | (kb_ & ~b_eff)
+        value = a_eff & b_eff
+    elif op_name == 'or':
+        valid = (ka_ & kb_) | a_eff | b_eff
+        value = a_eff | b_eff
+    else:  # xor — no settling operand
+        valid = ka_ & kb_
+        value = (a ^ b) & valid
+
+    value = value & valid   # 0-sentinel hygiene under result nulls
+    if valid.all():
+        return BoolStorage(bytearray(value.tobytes()), None)
+    packed = _np.packbits(valid, bitorder='little')
+    return BoolStorage(bytearray(value.tobytes()),
+                       BitMask(bytearray(packed.tobytes()), n))
+
+
+def invert_storage(storage):
+    """
+    Kleene NOT on buffers → BoolStorage, or None to decline.
+
+    NOT unknown is unknown: the null pattern carries through unchanged.
+    Values are computed on null-neutralized lanes (see logical_storage);
+    an all-valid mask normalizes to None like the pure rebuild would.
+    """
+    if _np is None:
+        return None
+    left = _bool_view(storage)
+    if left is None:
+        return None
+    a, known = left
+    if known is None or known.all():
+        value = ~a if known is None else (~a) & known
+        return BoolStorage(bytearray(value.tobytes()), None)
+    value = (~a) & known
+    packed = _np.packbits(known, bitorder='little')
+    return BoolStorage(bytearray(value.tobytes()),
+                       BitMask(bytearray(packed.tobytes()), len(a)))
 
 
 def compare_storage(lhs_storage, rhs, op_func):
