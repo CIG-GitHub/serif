@@ -215,11 +215,18 @@ def _collect_and_infer(iterable, dtype_hint):
     all_vectors = True
     dtype = dtype_hint
     saw_none = False
+    saw_vector = False
 
     for val in iterable:
         data.append(val)
-        if not isinstance(val, Vector):
-            all_vectors = False
+        if isinstance(val, Vector):
+            # Columns don't inform a SCALAR dtype: running promote_dtype on
+            # them fires the object-degrade warning for every mixed-kind
+            # table composed via >> (the "column" it degrades is a phantom
+            # — the 1-D reading abandoned once is_table comes back True).
+            saw_vector = True
+            continue
+        all_vectors = False
         if dtype is None:
             # Order-independent inference: a leading None only sets nullable;
             # the kind comes from the first non-None value.
@@ -229,6 +236,22 @@ def _collect_and_infer(iterable, dtype_hint):
             dtype = Schema(infer_kind(val), saw_none)
         else:
             dtype = promote_dtype(dtype, val)
+
+    if saw_vector and not all_vectors:
+        # Degenerate mix of columns and scalars in one collection — not a
+        # table, so the Vectors ARE elements after all. Re-infer over
+        # everything so promotion (and its degrade warning) fires here,
+        # where it's real. Rare path; the second walk costs nothing.
+        dtype = dtype_hint
+        saw_none = False
+        for val in data:
+            if dtype is None:
+                if val is None:
+                    saw_none = True
+                    continue
+                dtype = Schema(infer_kind(val), saw_none)
+            else:
+                dtype = promote_dtype(dtype, val)
 
     if dtype is None and saw_none:
         # All values were None: no kind to infer.
