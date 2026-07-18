@@ -259,10 +259,11 @@ class Table(Vector):
 
         self._length = len(initial[0]) if initial else 0
         
-        # Deep copy columns to enforce value semantics
-        # Tables receive snapshots of vectors, preventing aliasing.
-        # copy() preserves names on every Vector flavor, so no separate
-        # name save/restore is needed.
+        # Snapshot columns to enforce value semantics. copy() shares the
+        # frozen storage (rebuild-on-write makes a share a true snapshot),
+        # so this is O(1) per column — no aliasing: a write to either side
+        # rebinds that side a new storage. copy() preserves names on every
+        # Vector flavor, so no separate name save/restore is needed.
         if initial:
             initial = tuple(vec.copy() for vec in initial)
         else:

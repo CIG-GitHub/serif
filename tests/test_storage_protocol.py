@@ -234,6 +234,84 @@ def test_copy_is_independent(case_id, factory, values):
     assert list(v) == values
 
 
+# ---------------------------------------------------------------------------
+# Copy-on-write tripwires
+#
+# copy() SHARES the frozen storage object (O(1) snapshot); independence is
+# guaranteed by the rebuild-on-write doctrine (storage.py) — every public
+# mutation path rebinds a NEW storage — not by physical duplication. These
+# tests trip the moment either half of that contract regresses: the identity
+# pin catches copy() sliding back to a walk, the isolation tests catch any
+# future in-place buffer mutation corrupting an alias.
+# ---------------------------------------------------------------------------
+
+# Categoricals excluded from the identity pin only: their copy() shallow-
+# copies the _CategoryStorage wrapper (codes/categories still shared).
+NON_CAT = [c for c in CASES if not c[0].startswith("cat")]
+NON_CAT_IDS = [c[0] for c in NON_CAT]
+
+
+@_params(NON_CAT, NON_CAT_IDS)
+def test_copy_shares_storage(factory, values):
+    v = factory()
+    assert v.copy()._storage is v._storage
+
+
+@pytest.mark.parametrize("case_id,factory,values", CASES, ids=IDS)
+def test_mutating_source_leaves_copy_untouched(case_id, factory, values):
+    # Mirror of test_copy_is_independent: writes must not cross in EITHER
+    # direction through the shared storage.
+    v = factory()
+    c = v.copy()
+    v[0] = SETITEM_VALUE[case_id]
+    assert list(c) == values
+
+
+@pytest.mark.parametrize("case_id,factory,values", CASES, ids=IDS)
+def test_mask_setitem_on_copy_leaves_source_untouched(case_id, factory, values):
+    v = factory()
+    c = v.copy()
+    c[[True] + [False] * (len(values) - 1)] = SETITEM_VALUE[case_id]
+    assert list(v) == values
+
+
+def test_promotion_on_copy_leaves_source_dtype():
+    # Kind promotion rebinds storage AND dtype on the mutated side only.
+    v = Vector([1, 2, 3])
+    c = v.copy()
+    c[0] = 1.5
+    assert c.schema().kind is float
+    assert v.schema().kind is int
+    assert list(v) == [1, 2, 3]
+
+
+def test_copy_carries_fingerprint_then_detaches():
+    v = Vector([1, 2, 3])
+    fp = v.fingerprint()
+    c = v.copy()
+    assert c.fingerprint() == fp
+    c[0] = 9
+    assert c.fingerprint() != fp
+    assert v.fingerprint() == fp
+
+
+def test_table_snapshot_isolated_from_source_writes():
+    from serif import Table
+    v = Vector([1, 2, 3], name="a")
+    t = Table([v])
+    v[0] = 99
+    assert list(t.a) == [1, 2, 3]
+
+
+def test_source_isolated_from_table_column_writes():
+    from serif import Table
+    v = Vector([1, 2, 3], name="a")
+    t = Table([v])
+    t.a[0] = 99
+    assert list(v) == [1, 2, 3]
+    assert list(t.a) == [99, 2, 3]
+
+
 @_params(CASES, IDS)
 def test_to_object(factory, values):
     obj = factory().to_object()

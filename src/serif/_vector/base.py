@@ -471,7 +471,9 @@ class Vector():
                                          dispatch; the only path that may
                                          return a Table.
         copy()                         — same subclass & schema, name kept
-                                         by default; storage rebuilt.
+                                         by default; storage SHARED (rebuild-
+                                         on-write keeps copies independent),
+                                         rebuilt only when new_values given.
         _clone(storage)                — SAME subclass, dtype/name kept:
                                          permutations of existing data only.
                                          Never changes the element kind.
@@ -615,11 +617,22 @@ class Vector():
 
 
     def copy(self, new_values=None, name=...):
+        """
+        Snapshot of this vector. With no new_values this is O(1): the frozen
+        storage object is SHARED, not duplicated — the storage protocol is
+        rebuild-only (storage.py), so mutating either vector rebinds it a NEW
+        storage and the other never sees the write. Pass new_values to build
+        a same-schema vector from different data (storage rebuilt).
+        """
         use_name = self._name if name is ... else name
         if self._dtype is not None:
-            # Typed 1D vector: build storage directly, no inference needed.
-            source = new_values if new_values is not None else self._storage
-            return self._clone(self._build_storage(source, self._dtype.nullable), name=use_name)
+            if new_values is None:
+                result = self._clone(self._storage, name=use_name)
+                result._fp = self._fp  # same frozen data, same fingerprint
+                return result
+            # Typed 1D vector with replacement values: build storage
+            # directly, no inference needed.
+            return self._clone(self._build_storage(new_values, self._dtype.nullable), name=use_name)
         # dtype unknown (Table or untyped vector): full constructor for class
         # dispatch. Explicit None check — an empty new_values means "empty
         # copy", not "copy the original".
