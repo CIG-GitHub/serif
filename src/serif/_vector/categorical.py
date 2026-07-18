@@ -185,13 +185,16 @@ class _Category(Vector):
         # Fallback: decode → base Vector handles it
         return Vector(list(self._storage)).__getitem__(key)
 
-    def copy(self, new_storage=None, **kwargs):
+    def copy(self, new_storage=None, name=..., **kwargs):
         if new_storage is None:
             import copy
             return _Category(
                 copy.copy(self._code_storage),
                 self._categories,
-                name=self._name,
+                # Honor the base copy() contract: name defaults to self's,
+                # an explicit name overrides (the Table dict path relies
+                # on copy(name=key) naming the snapshot).
+                name=self._name if name is ... else name,
                 nullable=self._dtype.nullable,
             )
         # When called with a storage override (e.g. from _clone), decode back

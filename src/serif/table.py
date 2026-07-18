@@ -234,8 +234,18 @@ class Table(Vector):
     def __init__(self, initial=(), dtype=None, name=None):
         # Handle dict initialization {name: values, ...}
         if isinstance(initial, dict):
-            # Create Vectors with names from dict keys
-            initial = [Vector(values, name=col_name) for col_name, values in initial.items()]
+            # An existing 1-D vector snapshots via copy() — O(1) storage
+            # share with the dict key as its name, schema and backend
+            # preserved (a _Category stays categorical), matching how the
+            # list path treats vectors. Re-wrapping through Vector(...)
+            # would re-walk and re-infer the whole column. Everything else
+            # builds through the constructor as before.
+            initial = [
+                values.copy(name=col_name)
+                if isinstance(values, Vector) and values.ndims() == 1
+                else Vector(values, name=col_name)
+                for col_name, values in initial.items()
+            ]
 
         # Handle list-of-lists (or list-of-iterables that aren't Vectors/Tables)
         elif (

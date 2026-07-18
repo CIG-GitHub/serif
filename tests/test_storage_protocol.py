@@ -312,6 +312,42 @@ def test_source_isolated_from_table_column_writes():
     assert list(t.a) == [99, 2, 3]
 
 
+def test_dict_construction_snapshots_vectors():
+    # The dict path snapshots an existing vector via copy() (storage
+    # share), not a re-inferring rebuild: schema is preserved and writes
+    # stay isolated in both directions, same as the list path.
+    from serif import Table
+    v = Vector([1, None, 3], name="orig")
+    t = Table({"a": v})
+    assert t.a.schema().kind is int
+    assert t.a.schema().nullable is True
+    assert t.column_names() == ["a"]        # dict key wins over 'orig'
+    assert v.vector_name == "orig"          # source name untouched
+    v[0] = 99
+    assert list(t.a) == [1, None, 3]
+    t.a[2] = 7
+    assert list(v) == [99, None, 3]
+
+
+def test_dict_construction_preserves_declared_nullable():
+    # A column declared nullable stays nullable even with no nulls present
+    # — the dict path must not silently re-infer the schema (the list path
+    # never did).
+    from serif import Table
+    from serif._vector.dtype import Schema
+    v = Vector([1, 2, 3], dtype=Schema(int, True))
+    assert Table({"a": v}).a.schema().nullable is True
+
+
+def test_dict_construction_keeps_categorical():
+    from serif import Table
+    from serif._vector.categorical import _Category
+    cat = Vector(["b", "a", "b"]).categorize(["a", "b"])
+    t = Table({"c": cat})
+    assert isinstance(t.c, _Category)
+    assert list(t.c) == ["b", "a", "b"]
+
+
 @_params(CASES, IDS)
 def test_to_object(factory, values):
     obj = factory().to_object()
