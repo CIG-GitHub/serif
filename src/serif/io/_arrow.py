@@ -53,12 +53,10 @@ try:
 except ImportError:            # pyarrow >= 25 no longer pulls numpy in
     _np = None
 import pyarrow as _pa
-import pyarrow.compute as _pc
 import pyarrow.parquet as _pq
 
 from datetime import date as _date, datetime as _datetime
 from decimal import Decimal as _Decimal
-from itertools import chain as _chain, islice as _islice
 
 from .._vector import Vector
 from .._vector.dtype import Schema as _Schema
@@ -170,10 +168,14 @@ def try_read(path):
         return None
 
 
-def try_read_column(path, column_index, row_groups, mask_segments):
-    """Decode one projected Parquet column in bounded Arrow batches.
+def try_read_column(path, column_index, row_groups, batched=False):
+    """Decode one projected Parquet column.
 
-    Returns Serif Vector pieces, or None to decline to the pure reader.
+    With ``batched=False``, Arrow reads and converts the projection once.
+    With ``batched=True``, the result is grouped by row group and split into
+    bounded batches so the caller can apply Serif's byte masks without
+    retaining a whole unfiltered payload column. Returns nested Vector
+    pieces, or None to decline to the pure reader.
     """
     try:
         pf = _pq.ParquetFile(path)
@@ -191,31 +193,36 @@ def try_read_column(path, column_index, row_groups, mask_segments):
     if schema.names.count(field.name) != 1:
         return None
 
-    mask_iter = None
-    if mask_segments and mask_segments[0] is not None:
-        mask_iter = iter(_chain.from_iterable(mask_segments))
-
     try:
-        vectors = []
-        for batch in pf.iter_batches(
-                row_groups=row_groups, columns=[field.name]):
-            arr = batch.column(0)
-            target = targets[column_index]
-            if arr.type != target:
-                arr = arr.cast(target)
-            if mask_iter is not None:
-                selected = list(_islice(mask_iter, len(arr)))
-                if len(selected) != len(arr):
-                    return None
-                arr = _pc.filter(
-                    arr,
-                    _pa.array(selected, type=_pa.bool_()),
-                    null_selection_behavior='drop',
-                )
+        target = targets[column_index]
+        if not batched:
+            chunked = pf.read_row_groups(
+                row_groups, columns=[field.name]).column(0)
+            if chunked.type != target:
+                chunked = chunked.cast(target)
+            if chunked.num_chunks == 1:
+                arr = chunked.chunk(0)
+            elif chunked.num_chunks == 0:
+                arr = _pa.array([], type=target)
+            else:
+                arr = _pa.concat_arrays(chunked.chunks)
             if arr.offset != 0:
-                arr = arr.slice(0)
-            vectors.append(_to_vector(arr, field.name, field.nullable))
-        return vectors
+                return None
+            return [[_to_vector(arr, field.name, field.nullable)]]
+
+        groups = []
+        for row_group in row_groups:
+            vectors = []
+            for batch in pf.iter_batches(
+                    row_groups=[row_group], columns=[field.name]):
+                arr = batch.column(0)
+                if arr.type != target:
+                    arr = arr.cast(target)
+                if arr.offset != 0:
+                    return None
+                vectors.append(_to_vector(arr, field.name, field.nullable))
+            groups.append(vectors)
+        return groups
     except _pa.ArrowException:
         return None
 

@@ -132,6 +132,22 @@ def test_boolean_mask_reaches_remaining_parquet_columns(tmp_path, monkeypatch):
     assert set(selected._gathered) == {1}
 
 
+def test_pure_mask_filter_does_not_require_numpy(tmp_path, monkeypatch):
+    path = tmp_path / 'table.parquet'
+    Table({
+        'a': [1, 2, 3, 4],
+        'b': [None, 20, None, 40],
+    }).to_parquet(str(path))
+    monkeypatch.setattr(parquet, '_accel_filter', lambda storage, mask: None)
+
+    source = read_parquet(path)
+    selected = source[source.a > 1]
+
+    assert list(selected.b) == [20, None, 40]
+    assert source._mat is None
+    assert selected._mat is None
+
+
 def test_all_false_row_group_is_not_decoded_for_payload(tmp_path, monkeypatch):
     path = tmp_path / 'groups.parquet'
     _write_two_row_groups(path)

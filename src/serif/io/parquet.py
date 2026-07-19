@@ -38,7 +38,7 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
 from .._vector import Vector
-from .._vector.base import _take
+from .._vector.base import _accel_filter
 from .._vector.nullable import BitMask
 from .._vector.storage import (
     ArrayStorage,
@@ -1767,9 +1767,36 @@ def _column_from_raw(meta, raw):
     return Vector._from_iterable_known_dtype(raw, dtype, name=meta['name'])
 
 
+class _TrueIndices:
+    """Re-iterable positions selected by a Serif byte mask."""
+
+    __slots__ = ('_storage',)
+
+    def __init__(self, storage):
+        self._storage = storage
+
+    def __iter__(self):
+        return (i for i, keep in enumerate(self._storage) if keep)
+
+
 def _filter_column(col, mask):
-    kept = [i for i, keep in enumerate(mask._storage) if keep]
-    return col._clone(_take(col._storage, kept), name=col._name)
+    fast = _accel_filter(col._storage, mask._storage)
+    if fast is not None:
+        return col._clone(fast, name=col._name)
+    return col._clone(
+        col._storage.take(_TrueIndices(mask._storage)), name=col._name)
+
+
+def _mask_has_true(mask, start, stop):
+    """Search a BoolStorage byte range without slicing or bit-packing it."""
+    storage = mask._storage
+    pos = storage._data.find(b'\x01', start, stop)
+    nulls = storage._mask
+    while pos != -1:
+        if nulls is None or not nulls.is_null(pos):
+            return True
+        pos = storage._data.find(b'\x01', pos + 1, stop)
+    return False
 
 
 def _combined_mask(storages):
@@ -1899,8 +1926,12 @@ class _ParquetSource:
                 segment = None
                 keep = True
             else:
-                segment = mask[cursor:cursor + count]
-                keep = any(value for value in segment._storage)
+                stop = cursor + count
+                keep = _mask_has_true(mask, cursor, stop)
+                segment = None
+                if keep:
+                    segment = (mask if cursor == 0 and stop == len(mask)
+                               else mask[cursor:stop])
             cursor += count
             if keep:
                 groups.append(idx)
@@ -1918,10 +1949,30 @@ class _ParquetSource:
             # identity immediately before handing it over.
             with self._open_checked():
                 pass
-            arrow_columns = _arrow_accel.try_read_column(
-                self.path, idx, groups, segments)
-            if arrow_columns is not None:
-                return _combine_columns(arrow_columns, meta)
+            masked = segments[0] is not None
+            arrow_groups = _arrow_accel.try_read_column(
+                self.path, idx, groups, batched=masked)
+            if arrow_groups is not None:
+                if not masked:
+                    return _combine_columns(
+                        [piece for group in arrow_groups for piece in group],
+                        meta,
+                    )
+
+                pieces = []
+                for arrow_pieces, segment in zip(
+                        arrow_groups, segments, strict=True):
+                    cursor = 0
+                    for piece in arrow_pieces:
+                        stop = cursor + len(piece)
+                        pieces.append(_filter_column(
+                            piece, segment[cursor:stop]))
+                        cursor = stop
+                    if cursor != len(segment):
+                        arrow_groups = None
+                        break
+                if arrow_groups is not None:
+                    return _combine_columns(pieces, meta)
 
         pieces = []
         with self._open_checked() as handle:
