@@ -1,29 +1,6 @@
 # Changelog
 
-## Unreleased — Semantic Consistency Pass
-
-### Changed
-- Table-owned column metadata is frozen with its data; rename through
-  `Table.rename()` or rename an independent `.copy()`.
-- Vector-derived operations on Table now have defined 2-D semantics. Cellwise
-  transforms preserve structure, `dropna()`/`unique()` operate on rows, unary
-  and reverse arithmetic preserve names, and ambiguous `Table.filled()` raises.
-- `Table.to_dict()` raises when duplicate/fallback names would overwrite a
-  column instead of returning a plausible but lossy dictionary.
-- Table assignment validates complete row/column selectors before mutation;
-  malformed or out-of-range selectors cannot partially land.
-- Exact and sanitized column names resolve through one rule in scalar rows,
-  regions, reads, and writes; named column selectors may be supplied first.
-- `fingerprint()` is now the single identity API: a deterministic,
-  schema-aware BLAKE2 digest for persistent DAG/cache keys. The former rolling
-  hash implementation and its cache/invalidation machinery were removed.
-
-### Documentation
-- Re-centered the project rationale on spreadsheet-like analytical feedback
-  and synchronized naming, indexing, aliasing, Table operations, exports, and
-  fingerprint guidance with the 0.2 value doctrine.
-
-## 0.2.0 — Optional Acceleration & Value Semantics
+## 0.2.0 – Optional Acceleration & Value Semantics
 
 ### Changed
 Breaking, pre-1.0: **read through the column, write through the table**

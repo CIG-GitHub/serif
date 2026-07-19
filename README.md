@@ -8,14 +8,6 @@ Serif is typed vectors and tables for Python, built around two promises: touchin
 
 Values stay Python values — `int`, `float`, `str`, `date`, `None` — so there is nothing to convert, unwrap, or remember. And serif does not silently coerce, mutate, or guess. When an operation has no clear meaning, it raises.
 
-Serif exists because Python does not adequately replace the parts of Excel
-that make analysis flow: visible data, composable transformations, dependency
-semantics, and the inability of downstream work to corrupt upstream values.
-It is not another pandas clone or a performance-first DataFrame. It is the
-deterministic value and transformation layer underneath notebook DAGs and
-slide-building systems: spreadsheet-like dependency semantics without forcing
-the work to live in a spreadsheet grid.
-
 Vector provides the foundation. Table is the primary interface for exploration, modeling, and analysis.
 
 ## 30-Second Example
@@ -137,20 +129,6 @@ are touched. Boolean filtering stays ordinary Serif filtering: the concrete
 mask is carried into columns that have not been read yet, so the first fully
 materialized table can be the filtered one. Keep the source file readable and
 unchanged until the table has materialized.
-
-### Identity for dependency graphs
-
-`fingerprint()` returns Serif's deterministic identity for dependency graphs
-and persistent cache keys:
-
-```python
-cache_key = t.fingerprint()
-```
-
-The 64-character BLAKE2 digest is deterministic across processes and includes
-shape, names, dtypes, nullability, categorical/decimal metadata, and values.
-It is recomputed on every call so identity does not depend on cache
-invalidation bookkeeping.
 
 ## Documentation
 
