@@ -1,6 +1,10 @@
 """Fingerprint change detection tests"""
+import os
+import subprocess
+import sys
+
 import pytest
-from serif import Vector
+from serif import Schema, SerifTypeError, Vector
 from serif import Table
 
 
@@ -386,6 +390,77 @@ class TestFingerprintDeterminism:
 		
 		assert v1.fingerprint() == v2.fingerprint()
 		assert v1.fingerprint() != v3.fingerprint()
+
+
+class TestSemanticFingerprint:
+    def test_returns_blake2_hex_digest(self):
+        digest = Vector([1, 2, 3]).semantic_fingerprint()
+        assert len(digest) == 64
+        int(digest, 16)
+
+    def test_is_stable_across_hash_seeds_and_processes(self):
+        code = (
+            "from serif import Vector; "
+            "print(Vector(['analyst', 'flow']).semantic_fingerprint())"
+        )
+        results = []
+        for seed in ('1', '987654'):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            results.append(subprocess.check_output(
+                [sys.executable, '-c', code], text=True, env=env).strip())
+        assert results[0] == results[1]
+
+    def test_includes_dtype_nullability_and_vector_name(self):
+        plain = Vector([1], dtype=Schema(int, False), name='x')
+        nullable = Vector([1], dtype=Schema(int, True), name='x')
+        floating = Vector([1.0], name='x')
+        renamed = Vector([1], name='y')
+
+        fingerprints = {
+            v.semantic_fingerprint()
+            for v in (plain, nullable, floating, renamed)
+        }
+        assert len(fingerprints) == 4
+
+    def test_table_identity_includes_shape_names_and_values(self):
+        a = Table({'a': [1, 2]})
+        b = Table({'b': [1, 2]})
+        c = Table({'a': [1, 3]})
+        named = Table({'a': [1, 2]}, name='model_input')
+
+        assert a.fingerprint() == b.fingerprint()  # legacy value-only detector
+        assert len({
+            a.semantic_fingerprint(),
+            b.semantic_fingerprint(),
+            c.semantic_fingerprint(),
+            named.semantic_fingerprint(),
+        }) == 4
+        assert a.semantic_fingerprint() != Vector([1, 2]).semantic_fingerprint()
+
+    def test_categorical_order_is_semantic(self):
+        left = Vector(['a', 'b']).categorize(['a', 'b'])
+        right = Vector(['a', 'b']).categorize(['b', 'a'])
+
+        assert list(left) == list(right)
+        assert left.semantic_fingerprint() != right.semantic_fingerprint()
+
+    def test_owner_column_replacement_changes_both_fingerprints(self):
+        table = Table({'a': [1, 2]})
+        content_before = table.fingerprint()
+        semantic_before = table.semantic_fingerprint()
+
+        table.a = [3, 4]
+
+        assert table.fingerprint() != content_before
+        assert table.semantic_fingerprint() != semantic_before
+
+    def test_unknown_object_raises_instead_of_hashing_repr(self):
+        class AddressBearingRepr:
+            pass
+
+        vector = Vector([AddressBearingRepr()], dtype=object)
+        with pytest.raises(SerifTypeError, match="does not know how to encode"):
+            vector.semantic_fingerprint()
 
 
 

@@ -792,6 +792,7 @@ class Table(Vector):
                 cols[col_idx_indexed] = value
                 self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
                 object.__setattr__(self, '_column_map', self._build_column_map())
+                self._invalidate_fp()
                 return
             
             # Regular column lookup by name. Explicit None checks — a column
@@ -823,6 +824,7 @@ class Table(Vector):
                 
                 # Rebuild column map to reflect any structural changes
                 object.__setattr__(self, '_column_map', self._build_column_map())
+                self._invalidate_fp()
                 return
         
         # Reject arbitrary attribute setting - only allow column updates
