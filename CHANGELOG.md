@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased – Mutation Doctrine
+## 0.2.0 – Optional Acceleration & Value Semantics
 
 ### Changed
 Breaking, pre-1.0: **read through the column, write through the table**
@@ -18,11 +18,25 @@ Breaking, pre-1.0: **read through the column, write through the table**
 - Standalone (wild) vectors and `.copy()` results remain mutable.
 
 ### Added
+- Optional NumPy acceleration for fixed-width elementwise operations, logical
+  operations, reductions, boolean filtering, positional gathering, grouping,
+  and joins. NumPy views Serif's existing buffers and declines to the pure
+  implementation whenever it cannot preserve exact Python semantics.
+- Optional PyArrow acceleration for variable-width string operations,
+  string grouping and join probes, checked numeric operations, and Parquet
+  decoding. PyArrow works with or without NumPy installed.
+- Four supported dependency modes: pure Python, NumPy only, PyArrow only, and
+  NumPy + PyArrow. Exact operations agree across modes; null behavior, errors,
+  schemas, and concrete Python scalar types remain the same. Floating-point
+  reductions retain their documented bounded-rounding allowance.
+- Complete decimal128 Parquet round-tripping, including nullable columns and
+  preservation of scale and precision, in both the pure and Arrow readers.
 - Footer-backed Parquet reads: `read_parquet()` now returns a Table-compatible
   deferred source whose columns materialize independently. Ordinary boolean
   masks flow into unread columns, skip all-false row groups, and preserve the
   existing `MaskedTable` latch/mutation semantics. The pure reader uses bounded
-  chunk reads; optional Arrow acceleration uses projected record batches.
+  chunk reads; optional Arrow acceleration reads projected columns and uses
+  bounded record batches for masked payloads.
 - `Table.batch()` — bulk-edit scope for read-modify-write loops:
   `with t.batch() as m:` copies each column's buffers once on entry
   (un-sharing), then point writes land raw and O(1) (~4,200× faster

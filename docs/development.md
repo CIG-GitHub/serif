@@ -5,11 +5,18 @@
 ```bash
 git clone https://github.com/CIG-GitHub/serif.git
 cd serif
-pip install -e .[dev]
+pip install -e ".[dev]"
 ```
 
-Requires Python 3.10+. The only dev dependency is pytest; the library
-itself has zero dependencies.
+Requires Python 3.10+. The only dev dependency is pytest; the base library
+has zero dependencies. Install optional accelerators independently or
+together when working on their conformance suites:
+
+```bash
+pip install -e ".[dev,numpy]"
+pip install -e ".[dev,arrow]"
+pip install -e ".[dev,numpy,arrow]"
+```
 
 ## Running Tests
 
@@ -19,8 +26,12 @@ python -m pytest tests/ -v          # verbose (what CI runs)
 python -m pytest tests/test_joins.py -v   # one file
 ```
 
-CI runs the suite on Python 3.10–3.13 for every push and pull request
-(`.github/workflows/tests.yml`).
+CI runs all four supported environments on Python 3.10: pure Python, NumPy
+only, PyArrow only, and NumPy + PyArrow. Python 3.11–3.14 run with both
+accelerators installed; conformance tests exercise their pure fallbacks
+internally (`.github/workflows/tests.yml`). The 3.10 jobs pin the declared
+minimum accelerator versions, and CI also builds and inspects the distribution
+artifacts.
 
 ### Warnings are load-bearing
 
@@ -39,6 +50,7 @@ src/serif/
 ├── display.py         # repr logic, footer dtype grouping, _SchemaView (t._)
 ├── naming.py          # column-name sanitization and disambiguation
 ├── errors.py          # Serif* exception hierarchy
+├── _accel/            # optional NumPy/PyArrow compute accelerators
 ├── _vector/
 │   ├── base.py        # core Vector: operators, masks, aggregations, fingerprints
 │   ├── dtype.py       # dtype inference and validation
@@ -50,7 +62,8 @@ src/serif/
 │   └── nullable.py    # null-mask storage support
 └── io/
     ├── csv.py         # read_csv
-    └── parquet.py     # read_parquet / write_parquet (serif-native, no pyarrow)
+    ├── parquet.py     # serif-native read_parquet / write_parquet
+    └── _arrow.py      # optional projected PyArrow reader
 
 tests/                 # pytest suite
 docs/                  # documentation (start with design-philosophy.md)

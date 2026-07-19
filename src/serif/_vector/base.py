@@ -1765,7 +1765,20 @@ class Vector():
         if ok:
             return fast
         # Exclude None values from sum
-        return sum(v for v in self._storage if v is not None)
+        values = (v for v in self._storage if v is not None)
+        if self.schema().kind is not float:
+            return sum(values)
+
+        first = next(values, None)
+        if first is None:
+            return 0
+        try:
+            return math.fsum(chain((first,), values))
+        except (OverflowError, ValueError):
+            # math.fsum rejects mixtures such as +inf and -inf. Preserve
+            # Python's non-finite behavior while finite sums remain stable
+            # across every supported Python version.
+            return sum(v for v in self._storage if v is not None)
 
     def _no_verdict(self, method_name, on_empty):
         if on_empty is not None:
