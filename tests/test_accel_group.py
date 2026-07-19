@@ -278,7 +278,7 @@ def _spy(monkeypatch, module, fn_name, calls):
     monkeypatch.setattr(module, fn_name, wrapper)
 
 
-def test_group_fast_path_engages(monkeypatch):
+def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     from serif._accel import group as group_mod
     from serif._accel import arrow as arrow_mod
     calls = []

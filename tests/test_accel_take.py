@@ -206,7 +206,7 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     assert calls == [False]
 
 
-def test_group_slicer_engages(monkeypatch):
+def test_group_slicer_fallback_engages_when_fused_sum_declines(monkeypatch):
     from serif._accel import mask as mask_mod
     from serif._accel import arrow as arrow_mod
     calls = []

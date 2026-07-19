@@ -179,7 +179,7 @@ def test_string_key_expect_right_unique_error_matches_pure():
 # The fast path actually engages (guards against silent decline rot)
 # ---------------------------------------------------------------------------
 
-def test_string_group_fast_path_engages(monkeypatch):
+def test_string_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     calls = []
     orig = bridge.group_strings
 
