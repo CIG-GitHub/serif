@@ -280,8 +280,12 @@ def _spy(monkeypatch, module, fn_name, calls):
 
 def test_group_fast_path_engages(monkeypatch):
     from serif._accel import group as group_mod
+    from serif._accel import arrow as arrow_mod
     calls = []
     _spy(monkeypatch, group_mod, 'group_indices', calls)
+    # Exercise the numpy bucket fallback, not the earlier fused Arrow
+    # grouped-sum path (covered by test_accel_arrow_grouped_sum.py).
+    monkeypatch.setattr(arrow_mod, '_USE_ARROW', False)
 
     t = Table({'g': [1, 2, 1], 'x': [1.0, 2.0, 3.0]})
     t.aggregate(groupby=t.g, aggregations={'m': t.x.sum})
