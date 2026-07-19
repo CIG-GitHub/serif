@@ -256,7 +256,7 @@ def test_data_page_v2_raises(tmp_path):
     _single_column_file(p, phys=_T_INT64, num_values=2, page_body=raw,
                         page_header=w.stop())
     with pytest.raises(SerifValueError, match='V2'):
-        read_parquet(str(p))
+        list(read_parquet(str(p))['x'])
 
 
 def test_rle_value_encoding_raises(tmp_path):
@@ -274,7 +274,7 @@ def test_rle_value_encoding_raises(tmp_path):
     _single_column_file(p, phys=_T_BOOLEAN, num_values=8, page_body=body,
                         page_header=ph)
     with pytest.raises(SerifValueError, match='RLE'):
-        read_parquet(str(p))
+        list(read_parquet(str(p))['x'])
 
 
 def test_truncated_footer_raises_serif_error(tmp_path):
@@ -306,7 +306,7 @@ def test_snappy_raises_informative_error(tmp_path):
     _single_column_file(p, phys=_T_DOUBLE, num_values=1,
                         page_body=raw, codec=_CODEC_SNAPPY)
     with pytest.raises(SerifValueError, match='[Ss]nappy'):
-        read_parquet(str(p))
+        list(read_parquet(str(p))['x'])
 
 
 # ---------------------------------------------------------------------------

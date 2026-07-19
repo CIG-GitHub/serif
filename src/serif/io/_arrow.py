@@ -168,6 +168,65 @@ def try_read(path):
         return None
 
 
+def try_read_column(path, column_index, row_groups, batched=False):
+    """Decode one projected Parquet column.
+
+    With ``batched=False``, Arrow reads and converts the projection once.
+    With ``batched=True``, the result is grouped by row group and split into
+    bounded batches so the caller can apply Serif's byte masks without
+    retaining a whole unfiltered payload column. Returns nested Vector
+    pieces, or None to decline to the pure reader.
+    """
+    try:
+        pf = _pq.ParquetFile(path)
+    except Exception:
+        return None
+
+    schema = pf.schema_arrow
+    targets = [_target_type(field.type) for field in schema]
+    if not all(target is not None for target in targets):
+        return None
+
+    field = schema.field(column_index)
+    # ParquetFile projection is name-based; duplicate names are legal in
+    # Serif, so decline rather than risk selecting the wrong occurrence.
+    if schema.names.count(field.name) != 1:
+        return None
+
+    try:
+        target = targets[column_index]
+        if not batched:
+            chunked = pf.read_row_groups(
+                row_groups, columns=[field.name]).column(0)
+            if chunked.type != target:
+                chunked = chunked.cast(target)
+            if chunked.num_chunks == 1:
+                arr = chunked.chunk(0)
+            elif chunked.num_chunks == 0:
+                arr = _pa.array([], type=target)
+            else:
+                arr = _pa.concat_arrays(chunked.chunks)
+            if arr.offset != 0:
+                return None
+            return [[_to_vector(arr, field.name, field.nullable)]]
+
+        groups = []
+        for row_group in row_groups:
+            vectors = []
+            for batch in pf.iter_batches(
+                    row_groups=[row_group], columns=[field.name]):
+                arr = batch.column(0)
+                if arr.type != target:
+                    arr = arr.cast(target)
+                if arr.offset != 0:
+                    return None
+                vectors.append(_to_vector(arr, field.name, field.nullable))
+            groups.append(vectors)
+        return groups
+    except _pa.ArrowException:
+        return None
+
+
 def _bit_mask(arr):
     """
     Arrow validity bitmap → serif BitMask, near-zero-copy.

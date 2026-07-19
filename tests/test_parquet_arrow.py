@@ -144,6 +144,34 @@ def test_dispatch_returns_same_table_either_way():
             os.unlink(path)
 
 
+def test_dispatch_filters_projected_arrow_batches_with_serif_byte_mask(
+        monkeypatch):
+    path = tempfile.mktemp(suffix='.parquet')
+    pq.write_table(pa.table({
+        'a': [1, 2, 3, 4, 5, 6],
+        'payload': ['a', 'b', 'c', 'd', 'e', 'f'],
+    }), path, row_group_size=2)
+    try:
+        masks = []
+        original = parquet_mod._filter_column
+
+        def spy(col, mask):
+            masks.append(mask._storage._data)
+            return original(col, mask)
+
+        monkeypatch.setattr(parquet_mod, '_filter_column', spy)
+        source = parquet_mod.read_parquet(path)
+        selected = source[source.a > 4]
+        assert list(selected.payload) == ['e', 'f']
+        assert masks
+        assert all(isinstance(mask, bytearray) for mask in masks)
+        assert source._mat is None
+        assert selected._mat is None
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 # The full serif-writable type set conforms — every serif-written file
 # takes the fast path

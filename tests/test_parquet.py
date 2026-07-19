@@ -34,11 +34,13 @@ def _force_pure_reader(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def roundtrip(t: Table) -> Table:
-    """Write t to a temp file, read it back, return the result."""
+    """Write t, materialize the deferred read, then remove its source."""
     path = tempfile.mktemp(suffix='.parquet')
     try:
         t.to_parquet(path)
-        return Table.from_parquet(path)
+        result = Table.from_parquet(path)
+        result.cols()
+        return result
     finally:
         if os.path.exists(path):
             os.unlink(path)

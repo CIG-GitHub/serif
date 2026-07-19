@@ -121,7 +121,14 @@ from serif import read_csv, read_parquet
 t = read_csv("sales.csv")        # types inferred, headers sanitized for dot access
 t.to_parquet("sales.parquet")    # ints, dates, and nulls arrive intact
 u = read_parquet("sales.parquet")
+recent = u[u.date >= cutoff]      # remaining columns load through this mask
 ```
+
+`read_parquet` reads the footer first and materializes columns only when they
+are touched. Boolean filtering stays ordinary Serif filtering: the concrete
+mask is carried into columns that have not been read yet, so the first fully
+materialized table can be the filtered one. Keep the source file readable and
+unchanged until the table has materialized.
 
 ## Documentation
 

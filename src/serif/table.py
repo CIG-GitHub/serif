@@ -512,6 +512,10 @@ class Table(Vector):
         """
         return [col._name for col in self._storage]
 
+    def _schema_columns(self):
+        """Internal metadata-only column path used by ``t._``."""
+        return self.cols()
+
     def to_dict(self):
         """Serialize table to a column-oriented dict of plain Python lists.
 
@@ -2335,23 +2339,30 @@ class MaskedTable(Table):
     _captured = None
     _gathered = None
     _mask_vec = None
+    _source_loader = None
 
     def __new__(cls, source, mask):
         # Bypass Table.__new__/__init__ entirely (see Row).
         return object.__new__(cls)
 
     def __init__(self, source, mask):
+        capture = getattr(type(source), '_mask_capture', None)
         # The source's column map may be stale (a column aliased after
         # construction). The eager path rebuilds names from the gathered
         # columns implicitly; refresh here so the shared map matches —
         # the same lazy rebuild Table.__getattr__ performs.
-        if any(col._wild for col in source._storage):
-            source._column_map = source._build_column_map()
+        if capture is None:
+            if any(col._wild for col in source._storage):
+                source._column_map = source._build_column_map()
 
         # Capture at the storage level: private shells sharing each
         # frozen storage O(1) — never the source Table or its column
         # objects, whose names can mutate in place via alias().
-        captured = tuple(col.copy() for col in source._storage)
+        if capture is None:
+            captured = tuple(col.copy() for col in source._storage)
+            source_loader = None
+        else:
+            captured, source_loader = capture(source)
         mask_shell = mask.copy()
 
         # Survivor popcount, eager: len()/shape stay exact and cheap.
@@ -2366,6 +2377,7 @@ class MaskedTable(Table):
         object.__setattr__(self, '_mask_vec', mask_shell)
         object.__setattr__(self, '_gathered', {})
         object.__setattr__(self, '_mat', None)
+        object.__setattr__(self, '_source_loader', source_loader)
 
         # Slot checklist for bypassing Table.__init__ — mirror
         # _from_columns_nocopy. The column map is REUSED from the source
@@ -2399,7 +2411,10 @@ class MaskedTable(Table):
         """
         col = self._gathered.get(idx)
         if col is None:
-            col = self._captured[idx][self._mask_vec]
+            if self._source_loader is None:
+                col = self._captured[idx][self._mask_vec]
+            else:
+                col = self._source_loader(idx, self._mask_vec)
             col._wild = False
             col._frozen = True
             self._gathered[idx] = col
@@ -2435,6 +2450,7 @@ class MaskedTable(Table):
         object.__setattr__(self, '_captured', None)
         object.__setattr__(self, '_gathered', None)
         object.__setattr__(self, '_mask_vec', None)
+        object.__setattr__(self, '_source_loader', None)
 
     def _snapshot_names_current(self):
         """Gathered columns are handed out live (cached) — a rename
@@ -2508,3 +2524,8 @@ class MaskedTable(Table):
         if self._mat is None and self._snapshot_names_current():
             return [col._name for col in self._captured]
         return Table.column_names(self)
+
+    def _schema_columns(self):
+        if self._mat is None and self._snapshot_names_current():
+            return self._captured
+        return Table._schema_columns(self)

@@ -30,13 +30,23 @@ External files with dictionary encoding or nested schemas are not supported.
 from __future__ import annotations
 
 import array as _pyarray
+import os as _os
 import struct as _struct
+from itertools import chain as _chain
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
 from .._vector import Vector
-from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolStorage
+from .._vector.base import _accel_filter
+from .._vector.nullable import BitMask
+from .._vector.storage import (
+    ArrayStorage,
+    BoolStorage,
+    DecimalStorage,
+    StringStorage,
+    TupleStorage,
+)
 
 # ---------------------------------------------------------------------------
 # Optional pyarrow acceleration (read side) — EXPERIMENT
@@ -1723,10 +1733,426 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
 
 
 # ---------------------------------------------------------------------------
+# Deferred Parquet source
+# ---------------------------------------------------------------------------
+
+def _stat_signature(st):
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _dtype_for(meta):
+    from .._vector.dtype import Schema
+    return Schema(meta['kind'], meta['is_optional'])
+
+
+def _empty_column(meta):
+    dtype = _dtype_for(meta)
+    if meta['kind'] is _Decimal:
+        storage = DecimalStorage(
+            bytearray(), meta['decimal_scale'], meta['decimal_precision'], None)
+        col = Vector._from_storage(storage, dtype, name=meta['name'])
+    else:
+        col = Vector._from_iterable_known_dtype([], dtype, name=meta['name'])
+    col._wild = False
+    return col
+
+
+def _column_from_raw(meta, raw):
+    dtype = _dtype_for(meta)
+    if isinstance(raw, (StringStorage, DecimalStorage, BoolStorage)):
+        return Vector._from_storage(raw, dtype, name=meta['name'])
+    if isinstance(raw, _pyarray.array):
+        return Vector._from_storage(
+            ArrayStorage(raw, None), dtype, name=meta['name'])
+    return Vector._from_iterable_known_dtype(raw, dtype, name=meta['name'])
+
+
+class _TrueIndices:
+    """Re-iterable positions selected by a Serif byte mask."""
+
+    __slots__ = ('_storage',)
+
+    def __init__(self, storage):
+        self._storage = storage
+
+    def __iter__(self):
+        return (i for i, keep in enumerate(self._storage) if keep)
+
+
+def _filter_column(col, mask):
+    fast = _accel_filter(col._storage, mask._storage)
+    if fast is not None:
+        return col._clone(fast, name=col._name)
+    return col._clone(
+        col._storage.take(_TrueIndices(mask._storage)), name=col._name)
+
+
+def _mask_has_true(mask, start, stop):
+    """Search a BoolStorage byte range without slicing or bit-packing it."""
+    storage = mask._storage
+    pos = storage._data.find(b'\x01', start, stop)
+    nulls = storage._mask
+    while pos != -1:
+        if nulls is None or not nulls.is_null(pos):
+            return True
+        pos = storage._data.find(b'\x01', pos + 1, stop)
+    return False
+
+
+def _combined_mask(storages):
+    if all(storage._mask is None for storage in storages):
+        return None
+    nulls = []
+    for storage in storages:
+        mask = storage._mask
+        nulls.extend(
+            mask.is_null(i) if mask is not None else False
+            for i in range(len(storage))
+        )
+    return BitMask.from_iterable(nulls) if any(nulls) else None
+
+
+def _combine_columns(columns, meta):
+    if not columns:
+        return _empty_column(meta)
+    if len(columns) == 1:
+        return columns[0]
+
+    storages = [col._storage for col in columns]
+    first = storages[0]
+    if all(isinstance(storage, ArrayStorage) for storage in storages):
+        data = _pyarray.array(first._data.typecode)
+        for storage in storages:
+            data.extend(storage._data)
+        combined = ArrayStorage(data, _combined_mask(storages))
+    elif all(isinstance(storage, BoolStorage) for storage in storages):
+        data = bytearray()
+        for storage in storages:
+            data.extend(storage._data)
+        combined = BoolStorage.from_raw(data, _combined_mask(storages))
+    elif all(isinstance(storage, StringStorage) for storage in storages):
+        raw_parts = []
+        offsets = _pyarray.array('I', [0])
+        total = 0
+        for storage in storages:
+            raw_parts.append(storage._buf)
+            offsets.extend(total + off for off in storage._offsets[1:])
+            total += len(storage._buf)
+        combined = StringStorage.from_raw(
+            b''.join(raw_parts), offsets, _combined_mask(storages))
+    elif all(isinstance(storage, DecimalStorage) for storage in storages):
+        combined = DecimalStorage(
+            bytearray(b''.join(storage._buf for storage in storages)),
+            first._scale,
+            first._precision,
+            _combined_mask(storages),
+        )
+    elif all(isinstance(storage, TupleStorage) for storage in storages):
+        combined = TupleStorage.from_iterable(
+            _chain.from_iterable(storage._data for storage in storages))
+    else:
+        return Vector._from_iterable_known_dtype(
+            _chain.from_iterable(columns),
+            _dtype_for(meta),
+            name=meta['name'],
+        )
+    return Vector._from_storage(combined, _dtype_for(meta), name=meta['name'])
+
+
+class _ParquetSource:
+    """Immutable footer snapshot plus bounded column-chunk loaders."""
+
+    def __init__(self, path, signature, file_meta, columns, use_arrow):
+        self.path = path
+        self.signature = signature
+        self.num_rows = file_meta.get('num_rows', 0)
+        self.row_groups = file_meta.get('row_groups', [])
+        self.columns = columns
+        self.use_arrow = use_arrow
+        row_group_rows = sum(
+            group.get('num_rows', 0) for group in self.row_groups)
+        if row_group_rows != self.num_rows:
+            raise SerifValueError(
+                f"'{path}': Parquet row-group counts total {row_group_rows}, "
+                f"but the footer declares {self.num_rows} rows")
+
+        by_name = {}
+        for idx, meta in enumerate(columns):
+            by_name.setdefault(meta['name'], []).append(idx)
+
+        self.chunks = []
+        for row_group in self.row_groups:
+            aligned = [None] * len(columns)
+            seen = {}
+            for chunk in row_group.get('columns', []):
+                cm = chunk.get('meta_data')
+                if cm is None:
+                    continue
+                path_parts = cm.get('path_in_schema', [])
+                name = path_parts[-1] if path_parts else None
+                candidates = by_name.get(name)
+                if not candidates:
+                    continue
+                nth = seen.get(name, 0)
+                seen[name] = nth + 1
+                if nth < len(candidates):
+                    aligned[candidates[nth]] = cm
+            self.chunks.append(aligned)
+
+    def schema_columns(self):
+        return tuple(_empty_column(meta) for meta in self.columns)
+
+    def _open_checked(self):
+        try:
+            handle = open(self.path, 'rb')
+        except OSError as exc:
+            raise SerifValueError(
+                f"Parquet source '{self.path}' is no longer readable") from exc
+        if _stat_signature(_os.fstat(handle.fileno())) != self.signature:
+            handle.close()
+            raise SerifValueError(
+                f"Parquet source '{self.path}' changed after read_parquet(); "
+                "create a new table from the current file"
+            )
+        return handle
+
+    def _selection(self, mask):
+        groups = []
+        segments = []
+        cursor = 0
+        for idx, row_group in enumerate(self.row_groups):
+            count = row_group.get('num_rows', 0)
+            if mask is None:
+                segment = None
+                keep = True
+            else:
+                stop = cursor + count
+                keep = _mask_has_true(mask, cursor, stop)
+                segment = None
+                if keep:
+                    segment = (mask if cursor == 0 and stop == len(mask)
+                               else mask[cursor:stop])
+            cursor += count
+            if keep:
+                groups.append(idx)
+                segments.append(segment)
+        return groups, segments
+
+    def load_column(self, idx, mask=None):
+        meta = self.columns[idx]
+        groups, segments = self._selection(mask)
+        if not groups:
+            return _empty_column(meta)
+
+        if self.use_arrow and _arrow_accel is not None:
+            # Arrow opens the path itself, so validate the captured file
+            # identity immediately before handing it over.
+            with self._open_checked():
+                pass
+            masked = segments[0] is not None
+            arrow_groups = _arrow_accel.try_read_column(
+                self.path, idx, groups, batched=masked)
+            if arrow_groups is not None:
+                if not masked:
+                    return _combine_columns(
+                        [piece for group in arrow_groups for piece in group],
+                        meta,
+                    )
+
+                pieces = []
+                for arrow_pieces, segment in zip(
+                        arrow_groups, segments, strict=True):
+                    cursor = 0
+                    for piece in arrow_pieces:
+                        stop = cursor + len(piece)
+                        pieces.append(_filter_column(
+                            piece, segment[cursor:stop]))
+                        cursor = stop
+                    if cursor != len(segment):
+                        arrow_groups = None
+                        break
+                if arrow_groups is not None:
+                    return _combine_columns(pieces, meta)
+
+        pieces = []
+        with self._open_checked() as handle:
+            for group_idx, segment in zip(groups, segments):
+                cm = self.chunks[group_idx][idx]
+                if cm is None:
+                    raise SerifValueError(
+                        f"'{self.path}': missing Parquet data for column "
+                        f"'{meta['name']}' in row group {group_idx}")
+                start = cm.get('data_page_offset', 0)
+                size = cm.get('total_compressed_size', 0)
+                handle.seek(start)
+                chunk_bytes = handle.read(size)
+                local_meta = dict(cm)
+                local_meta['data_page_offset'] = 0
+                try:
+                    raw = _read_column_chunk(
+                        memoryview(chunk_bytes),
+                        local_meta,
+                        kind=meta['kind'],
+                        phys_type=meta['phys_type'],
+                        conv_type=meta['conv_type'],
+                        is_optional=meta['is_optional'],
+                        col_name=meta['name'],
+                        decimal_scale=meta.get('decimal_scale'),
+                        decimal_precision=meta.get('decimal_precision'),
+                    )
+                except (IndexError, _struct.error) as exc:
+                    raise SerifValueError(
+                        f"'{self.path}': truncated or corrupt Parquet data "
+                        f"for column '{meta['name']}'") from exc
+                piece = _column_from_raw(meta, raw)
+                if segment is not None:
+                    piece = _filter_column(piece, segment)
+                pieces.append(piece)
+        return _combine_columns(pieces, meta)
+
+
+from ..table import Table as _Table
+from ..table import _resolve_column_key as _resolve_table_column
+
+
+class _ParquetTable(_Table):
+    """Footer-backed Table; individual columns materialize on access."""
+
+    _mat = None
+    _source = None
+    _gathered = None
+    _schema_cols = None
+
+    def __new__(cls, source):
+        return object.__new__(cls)
+
+    def __init__(self, source):
+        schema_cols = source.schema_columns()
+        metadata_table = _Table._from_columns_nocopy(list(schema_cols))
+        object.__setattr__(self, '_source', source)
+        object.__setattr__(self, '_schema_cols', tuple(metadata_table.cols()))
+        object.__setattr__(self, '_gathered', {})
+        object.__setattr__(self, '_mat', None)
+        object.__setattr__(self, '_dtype', None)
+        object.__setattr__(self, '_name', None)
+        object.__setattr__(self, '_wild', False)
+        object.__setattr__(self, '_fp', None)
+        object.__setattr__(self, '_repr_rows', None)
+        object.__setattr__(self, '_length', source.num_rows)
+        object.__setattr__(self, '_column_map', metadata_table._column_map)
+        object.__setattr__(self, '_warned_collisions',
+                           set(metadata_table._warned_collisions))
+
+    def _gather_column(self, idx):
+        col = self._gathered.get(idx)
+        if col is None:
+            col = self._source.load_column(idx)
+            col._wild = False
+            col._frozen = True
+            self._gathered[idx] = col
+        return col
+
+    @property
+    def _storage(self):
+        mat = self._mat
+        if mat is None:
+            cols = tuple(self._gather_column(i)
+                         for i in range(len(self._schema_cols)))
+            mat = TupleStorage.from_iterable(cols, nullable=False)
+            object.__setattr__(self, '_mat', mat)
+            self._release_source()
+        return mat
+
+    @_storage.setter
+    def _storage(self, value):
+        object.__setattr__(self, '_mat', value)
+        if self._source is not None:
+            self._release_source()
+
+    def _release_source(self):
+        object.__setattr__(self, '_source', None)
+        object.__setattr__(self, '_schema_cols', None)
+        object.__setattr__(self, '_gathered', None)
+
+    def _snapshot_names_current(self):
+        return not self._gathered or not any(
+            col._wild for col in self._gathered.values())
+
+    def _mask_capture(self):
+        if self._mat is not None:
+            return tuple(col.copy() for col in self._storage), None
+        if not self._snapshot_names_current():
+            storage = self._storage
+            self._column_map = self._build_column_map()
+            return tuple(col.copy() for col in storage), None
+        captured = tuple(col.copy() for col in self._schema_cols)
+        cached = {idx: col.copy() for idx, col in self._gathered.items()}
+        source = self._source
+
+        def load(idx, mask):
+            col = cached.get(idx)
+            if col is not None:
+                return _filter_column(col, mask)
+            return source.load_column(idx, mask)
+
+        return captured, load
+
+    def __getattr__(self, attr):
+        if self._mat is None and self._snapshot_names_current():
+            idx = self._column_map.get(attr)
+            if idx is None:
+                idx = self._column_map.get(attr.lower())
+            if idx is not None:
+                return self._gather_column(idx)
+        return _Table.__getattr__(self, attr)
+
+    def __getitem__(self, key):
+        if self._mat is None and self._snapshot_names_current():
+            if isinstance(key, str):
+                return self._gather_column(
+                    _resolve_table_column(self._schema_cols, key))
+            if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
+                return _Table([self[name] for name in key])
+        return _Table.__getitem__(self, key)
+
+    def cols(self, key=None):
+        if self._mat is None and isinstance(key, int):
+            idx = key if key >= 0 else key + len(self._schema_cols)
+            if not 0 <= idx < len(self._schema_cols):
+                raise IndexError(
+                    f"Column index {key} out of range (table has "
+                    f"{len(self._schema_cols)} columns)")
+            return self._gather_column(idx)
+        return _Table.cols(self, key)
+
+    def __len__(self):
+        if self._mat is None:
+            return self._length
+        return _Table.__len__(self)
+
+    @property
+    def shape(self):
+        if self._mat is None:
+            count = len(self._schema_cols)
+            return (self._length if count else 0, count)
+        return _Table.shape.fget(self)
+
+    def column_names(self):
+        if self._mat is None and self._snapshot_names_current():
+            return [col._name for col in self._schema_cols]
+        return _Table.column_names(self)
+
+    def _schema_columns(self):
+        if self._mat is None and self._snapshot_names_current():
+            return self._schema_cols
+        return _Table._schema_columns(self)
+
+
+# ---------------------------------------------------------------------------
 # read_parquet
 # ---------------------------------------------------------------------------
 
-def read_parquet(path: str):
+def _read_parquet_eager(path: str):
     """
     Read a Parquet file into a Table.
 
@@ -1894,3 +2320,75 @@ def read_parquet(path: str):
         result_cols.append(col)
 
     return Table._from_columns_nocopy(result_cols)
+
+
+def read_parquet(path: str):
+    """Read a Parquet file as a footer-backed Table.
+
+    Schema, names, shape, and row-group metadata are read immediately.
+    Column values materialize individually when accessed; a subsequent
+    boolean mask is carried into the remaining Parquet column reads.
+    """
+    path = _os.path.abspath(_os.fspath(path))
+    try:
+        with open(path, 'rb') as handle:
+            signature = _stat_signature(_os.fstat(handle.fileno()))
+            n = signature[2]
+            if n < 12:
+                raise SerifValueError(
+                    f"'{path}' is too small to be a valid Parquet file")
+            handle.seek(0)
+            head = handle.read(4)
+            handle.seek(n - 8)
+            trailer = handle.read(8)
+            if head != _MAGIC or trailer[4:] != _MAGIC:
+                raise SerifValueError(
+                    f"'{path}' is not a valid Parquet file (bad magic bytes)")
+            footer_len = _struct.unpack_from('<I', trailer, 0)[0]
+            footer_start = n - 8 - footer_len
+            if footer_start < 4 or footer_len <= 0:
+                raise SerifValueError(
+                    f"'{path}': invalid Parquet footer length {footer_len}")
+            handle.seek(footer_start)
+            footer_bytes = handle.read(footer_len)
+    except OSError as exc:
+        raise SerifValueError(f"Cannot read Parquet file '{path}'") from exc
+
+    try:
+        file_meta, _ = _parse_file_metadata(footer_bytes, 0)
+    except (IndexError, _struct.error) as exc:
+        raise SerifValueError(
+            f"'{path}': truncated or corrupt Parquet footer") from exc
+
+    schema_elems = file_meta.get('schema', [])
+    if not schema_elems:
+        raise SerifValueError(f"'{path}': empty or missing Parquet schema")
+
+    leaf_schemas = [
+        schema for schema in schema_elems[1:]
+        if schema.get('type') is not None
+    ]
+    if not leaf_schemas:
+        return _Table(())
+
+    columns = []
+    for schema in leaf_schemas:
+        kind, phys_type, conv_type = _elem_to_kind(schema)
+        columns.append({
+            'name': schema['name'],
+            'kind': kind,
+            'phys_type': phys_type,
+            'conv_type': conv_type,
+            'is_optional': schema.get('repetition_type') == _REP_OPTIONAL,
+            'decimal_scale': schema.get('scale'),
+            'decimal_precision': schema.get('precision'),
+        })
+
+    source = _ParquetSource(
+        path,
+        signature,
+        file_meta,
+        columns,
+        use_arrow=_USE_ARROW and _arrow_accel is not None,
+    )
+    return _ParquetTable(source)
