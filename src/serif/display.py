@@ -278,7 +278,7 @@ class _SchemaView:
         self._tbl = tbl
 
     def __repr__(self):
-        cols = self._tbl.cols()
+        cols = self._tbl._schema_columns()
         ncols = len(cols)
         if ncols == 0:
             return "# 0×0 table"

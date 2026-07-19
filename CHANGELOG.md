@@ -18,6 +18,11 @@ Breaking, pre-1.0: **read through the column, write through the table**
 - Standalone (wild) vectors and `.copy()` results remain mutable.
 
 ### Added
+- Footer-backed Parquet reads: `read_parquet()` now returns a Table-compatible
+  deferred source whose columns materialize independently. Ordinary boolean
+  masks flow into unread columns, skip all-false row groups, and preserve the
+  existing `MaskedTable` latch/mutation semantics. The pure reader uses bounded
+  chunk reads; optional Arrow acceleration uses projected record batches.
 - `Table.batch()` — bulk-edit scope for read-modify-write loops:
   `with t.batch() as m:` copies each column's buffers once on entry
   (un-sharing), then point writes land raw and O(1) (~4,200× faster

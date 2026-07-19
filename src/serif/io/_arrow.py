@@ -53,10 +53,12 @@ try:
 except ImportError:            # pyarrow >= 25 no longer pulls numpy in
     _np = None
 import pyarrow as _pa
+import pyarrow.compute as _pc
 import pyarrow.parquet as _pq
 
 from datetime import date as _date, datetime as _datetime
 from decimal import Decimal as _Decimal
+from itertools import chain as _chain, islice as _islice
 
 from .._vector import Vector
 from .._vector.dtype import Schema as _Schema
@@ -164,6 +166,56 @@ def try_read(path):
                 return None
             cols.append(_to_vector(arr, field.name, field.nullable))
         return Table._from_columns_nocopy(cols)
+    except _pa.ArrowException:
+        return None
+
+
+def try_read_column(path, column_index, row_groups, mask_segments):
+    """Decode one projected Parquet column in bounded Arrow batches.
+
+    Returns Serif Vector pieces, or None to decline to the pure reader.
+    """
+    try:
+        pf = _pq.ParquetFile(path)
+    except Exception:
+        return None
+
+    schema = pf.schema_arrow
+    targets = [_target_type(field.type) for field in schema]
+    if not all(target is not None for target in targets):
+        return None
+
+    field = schema.field(column_index)
+    # ParquetFile projection is name-based; duplicate names are legal in
+    # Serif, so decline rather than risk selecting the wrong occurrence.
+    if schema.names.count(field.name) != 1:
+        return None
+
+    mask_iter = None
+    if mask_segments and mask_segments[0] is not None:
+        mask_iter = iter(_chain.from_iterable(mask_segments))
+
+    try:
+        vectors = []
+        for batch in pf.iter_batches(
+                row_groups=row_groups, columns=[field.name]):
+            arr = batch.column(0)
+            target = targets[column_index]
+            if arr.type != target:
+                arr = arr.cast(target)
+            if mask_iter is not None:
+                selected = list(_islice(mask_iter, len(arr)))
+                if len(selected) != len(arr):
+                    return None
+                arr = _pc.filter(
+                    arr,
+                    _pa.array(selected, type=_pa.bool_()),
+                    null_selection_behavior='drop',
+                )
+            if arr.offset != 0:
+                arr = arr.slice(0)
+            vectors.append(_to_vector(arr, field.name, field.nullable))
+        return vectors
     except _pa.ArrowException:
         return None
 

@@ -5,6 +5,16 @@
 - **Boolean masks:** O(n) scan + O(m) result construction
 - **Subscript lists** (`v[[1,5,9]]`): O(k) but **not recommended** for large vectors (emits warning)
 
+## Parquet reads
+- `read_parquet()` initially reads only file metadata; `len`, `shape`, column
+  names, and `t._` do not decode column data.
+- Accessing one column reads and caches that column only.
+- `t[mask]` carries the concrete mask into unread columns. Entire row groups
+  with no selected rows are skipped; partially selected groups are decoded
+  one column at a time and only survivors enter the resulting Vector.
+- The source file must remain readable and unchanged until the deferred table
+  latches. If it changes, serif raises instead of mixing snapshots.
+
 ## Joins
 - `inner_join`, `left_join`, `full_join`: O(n + m) hash table construction + lookups
 - Multi-key joins: same complexity, tuple keys
