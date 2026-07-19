@@ -26,10 +26,14 @@ semantics are between *vectors*, not between *names*.
 
 ## 2. Column Behavior Inside Tables
 
-When a vector is inserted into a Table, the table receives
-a deep copy (value snapshot). Subsequent mutations of the original
-vector do not affect the table, and modifying a column in a table
-does not affect any external vector.
+When a vector is inserted into a Table, the table receives an independent
+value snapshot. The new column shell normally shares immutable storage in O(1);
+subsequent mutation rebuilds only the owner being changed. Mutating the
+original vector therefore cannot affect the table, and table writes cannot
+affect an external vector.
+
+The boundary includes metadata: a read-out table column cannot rename its
+owner through `.vector_name` or `.alias()`. Rename through `Table.rename()`.
 
 This ensures table operations are deterministic and isolating.
 

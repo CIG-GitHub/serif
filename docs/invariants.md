@@ -31,14 +31,15 @@ warns — see docs/gotchas.md.)
 ## 4. Math preserves shape
 Elementwise operations require matching lengths.  
 The output length equals the input length.  
-No auto-broadcasting.
+Scalars broadcast deliberately; vectors never broadcast by length, align by
+label, or recycle values.
 
 ## 5. Names do not propagate through math
-Only copies inherit names.  
-Derived vectors start unnamed.
-
-`v.copy()` reproduces values, dtype, and name; every other operation
-produces an unnamed result unless explicitly aliased.
+Value-producing operations such as math, comparisons, `isna()`, `is_type()`,
+string methods, and `unique()` return unnamed vectors. Structural selections
+and same-column operations — copy, slice, mask, sort, cast, `fillna()`, and
+`dropna()` — retain the source name. Use `.alias()` to name a derived value
+explicitly.
 
 ## 6. Column names do not need to be unique
 Tables may contain repeated names.  
@@ -77,4 +78,16 @@ All joins/merges must be explicit.
 ## 11. Vector iteration yields scalars
 `for x in v:` yields plain Python scalars in index order.  
 Null positions yield `None`.
+
+## 12. Table-owned columns are complete values
+Data and metadata read out of a table are frozen. Element assignment,
+`.vector_name = ...`, and `.alias(...)` all raise on table-owned columns.
+Write data through table indexing and rename through `Table.rename()`.
+A `.copy()` is an independent mutable and renameable Vector.
+
+## 13. Persistent identity includes schema
+`fingerprint()` is a process-local, value-only change detector.
+`semantic_fingerprint()` is the deterministic DAG/cache identity: it includes
+shape, names, dtypes, nullability, categorical order, decimal metadata, and
+values. Unknown object values raise instead of using an unstable repr.
 

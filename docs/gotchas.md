@@ -71,3 +71,9 @@ Table, `t << v` appends a column. Integer bit-shifts are available as
 `bit_lshift`/`bit_rshift`. See
 [serif-vs-python.md](serif-vs-python.md) for the full list of
 intentional departures.
+
+## Duplicate columns do not fit in a dict
+
+Tables may contain duplicate column names; Python dictionaries cannot. Rather
+than silently keep the last duplicate, `t.to_dict()` raises when export keys
+collide. Rename the columns first or export ordered `(name, values)` pairs.

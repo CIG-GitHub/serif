@@ -37,6 +37,7 @@
 ## General Operations
 - **Copy-on-write:** Mutations rebuild the vector's storage with O(n) copy cost; other vectors sharing the old storage are unaffected
 - **Fingerprinting:** lazy O(n) on first access, cached (O(1)) until the next mutation invalidates it
+- **Semantic fingerprinting:** O(n) on every call; deterministic schema-aware identity for persistent DAG/cache keys
 
 ## Rule of Thumb
 Vector handles **10K–1M rows** comfortably in pure Python and can extend that

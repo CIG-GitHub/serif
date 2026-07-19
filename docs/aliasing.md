@@ -22,7 +22,12 @@ a            # 1, 2, 3
 b            # 99, 2, 3
 ```
 
-Serif never mutates storage in place: `__setitem__` materializes the data, applies the updates, and rebuilds a fresh storage object. Any other Vector still pointing at the old storage is untouched — copy-on-write by construction, no registry or identity tracking needed.
+Outside a `batch()` ownership scope, Serif never mutates storage in place:
+`__setitem__` materializes the data, applies the updates, and rebuilds a fresh
+storage object. Any other Vector still pointing at the old storage is untouched
+— copy-on-write by construction, with no registry or identity tracking needed.
+`batch()` first privatizes supported buffers, so its temporary in-place writes
+remain unobservable to every prior value.
 
 Plain name-binding is ordinary Python: `b = a` makes two names for one
 object, and a mutation through either name is visible through both,
@@ -32,12 +37,15 @@ each other; it does not (and should not) change what `=` means.
 ### When Copies Happen
 
 - **Mutation:** every mutation rebuilds the mutated Vector's storage; sharers keep the old immutable storage
-- **Table construction:** Table performs deep copy to prevent external aliasing
-- **Explicit operations:** Methods like `.copy()` always create new data
+- **Table construction:** Table creates private column shells that share immutable storage; this is an O(1) value snapshot per column
+- **`.copy()`:** creates an independent Vector shell and normally shares immutable storage; replacement values rebuild storage
+- **`batch()`:** privately copies writable buffers once on entry, then permits in-place writes only inside that ownership scope
 
-## Fingerprints
+## Process-local fingerprints
 
-Fingerprints enable **O(1) change detection** without full data comparisons.
+`fingerprint()` enables **O(1) repeated change checks** without full data
+comparisons. Its first call is O(n); the cached result is process-local and
+hashes values only.
 
 ### Basic Usage
 
@@ -77,20 +85,6 @@ assert fp1 != fp2  # Fingerprint changed
            return self.cache
    ```
 
-3. **Track lineage in computational graphs**
-   ```python
-   def build_pipeline(data):
-       steps = []
-       
-       cleaned = data.clean()
-       steps.append(('clean', cleaned.fingerprint()))
-       
-       transformed = cleaned.transform()
-       steps.append(('transform', transformed.fingerprint()))
-       
-       return transformed, steps
-   ```
-
 ### Implementation
 
 Fingerprints use a **rolling hash**, computed lazily on first access and cached. Mutation invalidates the cache; the next `fingerprint()` call recomputes in O(n). Repeated access on unchanged data is O(1).
@@ -103,4 +97,28 @@ Fingerprints use a **rolling hash**, computed lazily on first access and cached.
 - Fingerprints answer "did this data change?", not "are these equal?".
   For comparison, remember `==` is **elementwise** (it returns a boolean
   vector, with `None` where either side is null).
+- Python deliberately randomizes hashes for values such as strings, so this
+  fingerprint is not a persistent cross-process identifier.
+
+## Semantic fingerprints for DAGs and persistent caches
+
+Use `semantic_fingerprint()` when identity must survive the current Python
+process:
+
+```python
+input_key = table.semantic_fingerprint()
+```
+
+It returns a 64-character, versioned BLAKE2b digest over:
+
+- vector/table dimensions and names
+- dtype and nullability
+- categorical order and decimal scale/precision
+- canonically encoded Python values
+
+The digest is deterministic across Python hash seeds and execution backends.
+It is recomputed in O(n) on each call; persistent identity favors certainty
+over a metadata cache that could become stale. Unknown object values raise
+with a conversion remedy rather than falling back to a potentially
+address-bearing `repr()`.
 

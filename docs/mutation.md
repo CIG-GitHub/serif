@@ -47,6 +47,7 @@ t.v[0] = 5          # ✗ SerifTypeError — and the error contains the fix
 t['v'][0] = 5       # ✗ same path, string spelling
 v = t.v
 v[0] = 5            # ✗ the same operation, three lines apart
+t.v.alias('new')     # ✗ metadata is frozen too; use t.rename(...)
 ```
 
 ## Why: the two spellings are the same spelling
