@@ -20,6 +20,7 @@ from ._vector.storage import TupleStorage, ArrayStorage
 from .errors import SerifKeyError
 from .errors import SerifValueError
 from .errors import SerifTypeError
+from .errors import SerifIndexError
 from .errors import SerifEmptyReductionError
 
 
@@ -1030,15 +1031,21 @@ class Table(Vector):
             row_spec = key
             col_spec = slice(None)
 
-        # --- 2. Resolve Target Columns ---
-        # This replicates the lookup logic from __getitem__
+        # --- 2. Validate the complete selector before any write lands ---
+        self._validate_assignment_rows(row_spec)
         target_indices = []
         n_cols = len(self._storage)
         
         if isinstance(col_spec, slice):
             target_indices = list(range(n_cols)[col_spec])
+        elif isinstance(col_spec, bool):
+            raise SerifTypeError("Boolean values are not column indices")
         elif isinstance(col_spec, int):
-            target_indices = [col_spec]
+            if not (-n_cols <= col_spec < n_cols):
+                raise SerifIndexError(
+                    f"Column index {col_spec} out of range for table width {n_cols}"
+                )
+            target_indices = [col_spec % n_cols]
         elif isinstance(col_spec, str):
             # Look up by name
             idx = self._column_map.get(col_spec)
@@ -1057,8 +1064,19 @@ class Table(Vector):
                     if idx is None:
                         raise SerifKeyError(f"Column '{c}' not found")
                     target_indices.append(idx)
+                elif isinstance(c, bool):
+                    raise SerifTypeError("Boolean values are not column indices")
                 elif isinstance(c, int):
-                    target_indices.append(c)
+                    if not (-n_cols <= c < n_cols):
+                        raise SerifIndexError(
+                            f"Column index {c} out of range for table width {n_cols}"
+                        )
+                    target_indices.append(c % n_cols)
+                else:
+                    raise SerifTypeError(
+                        "Column selector lists may contain only names or "
+                        f"integer positions, not {type(c).__name__}"
+                    )
         else:
             raise SerifTypeError(f"Invalid column index type: {type(col_spec)}")
 
@@ -1127,6 +1145,64 @@ class Table(Vector):
             return
 
         raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
+
+    def _validate_assignment_rows(self, row_spec):
+        """Validate every row coordinate before a multi-column write starts."""
+        nrows = len(self)
+
+        if isinstance(row_spec, bool):
+            raise SerifTypeError("Boolean scalar values are not row indices")
+        if isinstance(row_spec, int):
+            if not (-nrows <= row_spec < nrows):
+                raise SerifIndexError(
+                    f"Row index {row_spec} out of range for table length {nrows}"
+                )
+            return
+        if isinstance(row_spec, slice):
+            # Validate a zero step now, before any target column is rebuilt.
+            try:
+                row_spec.indices(nrows)
+            except ValueError as exc:
+                raise SerifValueError(str(exc)) from None
+            return
+        if isinstance(row_spec, Vector):
+            schema = row_spec.schema()
+            if schema.kind is bool:
+                if len(row_spec) != nrows:
+                    raise SerifValueError(
+                        f"Boolean mask length mismatch: {len(row_spec)} != {nrows}"
+                    )
+                return
+            if schema.kind is int and not schema.nullable:
+                indices = row_spec
+            else:
+                raise SerifTypeError(
+                    "Row selector vectors must be bool masks or non-nullable "
+                    "integer positions"
+                )
+        elif isinstance(row_spec, (list, tuple)):
+            if all(type(item) is bool for item in row_spec):
+                if len(row_spec) != nrows:
+                    raise SerifValueError(
+                        f"Boolean mask length mismatch: {len(row_spec)} != {nrows}"
+                    )
+                return
+            if not all(type(item) is int for item in row_spec):
+                raise SerifTypeError(
+                    "Row selector lists may contain only booleans or integer "
+                    "positions"
+                )
+            indices = row_spec
+        else:
+            raise SerifTypeError(
+                f"Invalid row selector type: {type(row_spec).__name__}"
+            )
+
+        for idx in indices:
+            if not (-nrows <= idx < nrows):
+                raise SerifIndexError(
+                    f"Row index {idx} out of range for table length {nrows}"
+                )
 
     def _write_column(self, col_idx, row_spec, value):
         """

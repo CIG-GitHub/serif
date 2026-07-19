@@ -9,7 +9,12 @@ test_mutation_doctrine.py.
 
 import pytest
 from serif import Vector, Table
-from serif.errors import SerifKeyError, SerifValueError, SerifTypeError
+from serif.errors import (
+	SerifIndexError,
+	SerifKeyError,
+	SerifValueError,
+	SerifTypeError,
+)
 
 
 class TestScalarAssignment:
@@ -242,6 +247,32 @@ class TestErrorConditions:
 		t = Table({'x': [1, 2]})
 		with pytest.raises(SerifTypeError, match="Unsupported assignment value type"):
 			t[:, 'x'] = {1: 'a', 2: 'b'}  # Dict not supported
+
+	def test_invalid_mixed_column_selector_is_atomic(self):
+		t = Table({'a': [1, 2], 'b': [3, 4]})
+		with pytest.raises(SerifTypeError, match="only names or integer"):
+			t[0, [0, object()]] = 9
+		assert t.to_dict() == {'a': [1, 2], 'b': [3, 4]}
+
+	def test_out_of_range_column_selector_is_atomic(self):
+		t = Table({'a': [1, 2], 'b': [3, 4]})
+		with pytest.raises(SerifIndexError, match="Column index 9"):
+			t[0, [0, 9]] = 9
+		assert t.to_dict() == {'a': [1, 2], 'b': [3, 4]}
+
+	def test_out_of_range_row_selector_is_atomic(self):
+		t = Table({'a': [1, 2], 'b': [3, 4]})
+		with pytest.raises(SerifIndexError, match="Row index 9"):
+			t[[0, 9]] = 9
+		assert t.to_dict() == {'a': [1, 2], 'b': [3, 4]}
+
+	def test_boolean_scalar_is_not_a_position(self):
+		t = Table({'a': [1, 2], 'b': [3, 4]})
+		with pytest.raises(SerifTypeError, match="Boolean scalar"):
+			t[True, :] = 9
+		with pytest.raises(SerifTypeError, match="Boolean values"):
+			t[0, True] = 9
+		assert t.to_dict() == {'a': [1, 2], 'b': [3, 4]}
 
 
 class TestMixedTypeAssignment:
