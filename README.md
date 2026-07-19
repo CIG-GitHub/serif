@@ -159,7 +159,6 @@ unchanged until the table has materialized.
 - [Performance](docs/performance.md) — complexity of the core operations
 - [Gotchas](docs/gotchas.md) — sharp edges worth knowing up front
 - [Development](docs/development.md) — running tests, project structure
-- [Releasing](docs/releasing.md) — versioning, CI gates, tags, and artifacts
 
 ## License
 
