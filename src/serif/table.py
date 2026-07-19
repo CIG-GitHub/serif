@@ -542,6 +542,92 @@ class Table(Vector):
             result[key] = list(col._storage)
         return result
 
+    # ------------------------------------------------------------------
+    # Vector-surface conformance
+    # ------------------------------------------------------------------
+
+    def _map_columns(self, fn):
+        """Apply a value-producing Vector operation to every column.
+
+        Table subclasses Vector so the useful element-wise Vector surface is
+        available on tables too.  The result must still be a structurally
+        complete Table, with the source column names restored explicitly.
+        """
+        result = []
+        for source in self._storage:
+            derived = fn(source)
+            if not isinstance(derived, Vector) or derived.ndims() != 1:
+                raise SerifTypeError(
+                    "Table column operation must produce one Vector per column"
+                )
+            derived._name = source._name
+            derived._wild = False
+            result.append(derived)
+        return Table(result, name=self._name)
+
+    @classmethod
+    def filled(cls, value, length, typesafe=False):
+        raise SerifTypeError(
+            "Table.filled() is ambiguous because a table has columns. "
+            "Build named filled columns instead, e.g. "
+            "Table({'x': Vector.filled(value, length)})."
+        )
+
+    def cast(self, target_type):
+        """Cast every column to *target_type*, preserving table structure."""
+        return self._map_columns(lambda col: col.cast(target_type))
+
+    def to_object(self):
+        """Return a table whose columns all use object dtype."""
+        return self._map_columns(lambda col: col.to_object())
+
+    def fillna(self, value):
+        """Fill null cells in every column with *value*."""
+        return self._map_columns(lambda col: col.fillna(value))
+
+    def isna(self):
+        """Return a same-shaped bool Table marking null cells."""
+        return self._map_columns(lambda col: col.isna())
+
+    def is_type(self, types):
+        """Return a same-shaped bool Table applying ``isinstance`` per cell."""
+        return self._map_columns(lambda col: col.is_type(types))
+
+    def pluck(self, key, default=None):
+        """Pluck *key* from every cell, preserving table structure."""
+        return self._map_columns(lambda col: col.pluck(key, default))
+
+    def dropna(self):
+        """Return rows having no null cells (complete-case filtering)."""
+        keep = Vector(
+            all(col[row_idx] is not None for col in self._storage)
+            for row_idx in range(len(self))
+        )
+        return Table(tuple(col[keep] for col in self._storage), name=self._name)
+
+    def unique(self):
+        """Return the first occurrence of each distinct row, in source order."""
+        seen_hashable = set()
+        seen_rows = []
+        keep = []
+        for row_idx in range(len(self)):
+            row = tuple(col[row_idx] for col in self._storage)
+            try:
+                duplicate = row in seen_hashable
+            except TypeError:
+                duplicate = row in seen_rows
+            if duplicate:
+                continue
+            try:
+                seen_hashable.add(row)
+            except TypeError:
+                seen_rows.append(row)
+            keep.append(row_idx)
+        return Table(
+            tuple(col._clone(_take(col._storage, keep)) for col in self._storage),
+            name=self._name,
+        )
+
     def __getattr__(self, attr):
         """Access columns by sanitized attribute name using pre-computed column map."""
         # Check if any column has been renamed and rebuild map if needed
@@ -1252,6 +1338,22 @@ class Table(Vector):
             warnings.warn("\n".join(lines), UserWarning, stacklevel=2)
         
         return Table(tuple(result_cols))
+
+    def _table_reverse_scalar_operation(self, other, op_func):
+        """Apply ``other op column`` while retaining the table schema."""
+        return self._map_columns(lambda col: op_func(other, col))
+
+    def __neg__(self):
+        return self._map_columns(operator.neg)
+
+    def __pos__(self):
+        return self._map_columns(operator.pos)
+
+    def __abs__(self):
+        return self._map_columns(operator.abs)
+
+    def __invert__(self):
+        return self._map_columns(operator.invert)
     
     def __add__(self, other):
         return self._table_elementwise_operation(other, operator.add, '__add__', '+')
@@ -1273,6 +1375,33 @@ class Table(Vector):
     
     def __pow__(self, other):
         return self._table_elementwise_operation(other, operator.pow, '__pow__', '**')
+
+    def __radd__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.add)
+
+    def __rmul__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.mul)
+
+    def __rsub__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.sub)
+
+    def __rtruediv__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.truediv)
+
+    def __rfloordiv__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.floordiv)
+
+    def __rmod__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.mod)
+
+    def __rpow__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.pow)
+
+    def bit_lshift(self, other):
+        return self._map_columns(lambda col: col.bit_lshift(other))
+
+    def bit_rshift(self, other):
+        return self._map_columns(lambda col: col.bit_rshift(other))
 
     @staticmethod
     def _validate_key_tuple_hashable(key_tuple, key_cols, row_idx):
