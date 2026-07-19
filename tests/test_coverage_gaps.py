@@ -105,6 +105,27 @@ def test_to_dict_unnamed_column_positional_key():
     assert t.to_dict() == {'col0_': [1, 2]}
 
 
+def test_to_dict_duplicate_names_raise_instead_of_losing_a_column():
+    with pytest.warns(UserWarning, match="Duplicate column name"):
+        t = Table([
+            Vector([1, 2], name='x'),
+            Vector([3, 4], name='x'),
+        ])
+
+    with pytest.raises(SerifValueError, match="columns 0 and 1"):
+        t.to_dict()
+
+
+def test_to_dict_named_column_cannot_collide_with_positional_fallback():
+    t = Table([
+        Vector([1, 2]),
+        Vector([3, 4], name='col0_'),
+    ])
+
+    with pytest.raises(SerifValueError, match="both map to 'col0_'"):
+        t.to_dict()
+
+
 # ---------------------------------------------------------------------------
 # Vector @ Vector (dot product)
 # ---------------------------------------------------------------------------

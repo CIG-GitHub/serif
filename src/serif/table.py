@@ -520,8 +520,9 @@ class Table(Vector):
         """Serialize table to a column-oriented dict of plain Python lists.
 
         Intended for transport/export only — not a lossless round-trip.
-        Column names fall back to positional keys ('col_0', 'col_1', ...)
-        for unnamed columns.
+        Column names fall back to positional keys ('col0_', 'col1_', ...)
+        for unnamed columns. Export keys must be unique; a collision raises
+        instead of silently dropping an earlier column.
 
         Returns
         -------
@@ -535,10 +536,25 @@ class Table(Vector):
         {'x': [1, 2], 'y': [3, 4]}
         """
         result = {}
+        positions = {}
         for i, col in enumerate(self._storage):
             # Unnamed columns use the same col{i}_ spelling as attribute
             # access, so the dict key round-trips through t.col0_ etc.
             key = col._name if col._name is not None else f"col{i}_"
+            try:
+                previous = positions.get(key)
+            except TypeError:
+                raise SerifTypeError(
+                    f"Cannot export column {i} to dict: column name {key!r} "
+                    "is not hashable. Rename the column first."
+                ) from None
+            if previous is not None:
+                raise SerifValueError(
+                    f"to_dict() requires unique export keys; columns "
+                    f"{previous} and {i} both map to {key!r}. Rename one of "
+                    "the columns or export the columns as ordered pairs."
+                )
+            positions[key] = i
             result[key] = list(col._storage)
         return result
 
