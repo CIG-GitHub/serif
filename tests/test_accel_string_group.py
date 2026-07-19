@@ -179,7 +179,7 @@ def test_string_key_expect_right_unique_error_matches_pure():
 # The fast path actually engages (guards against silent decline rot)
 # ---------------------------------------------------------------------------
 
-def test_string_group_fast_path_engages(monkeypatch):
+def test_string_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     calls = []
     orig = bridge.group_strings
 
@@ -189,6 +189,9 @@ def test_string_group_fast_path_engages(monkeypatch):
         return result
 
     monkeypatch.setattr(bridge, 'group_strings', spy)
+    # Exercise string bucketing as a fallback after the fused grouped-sum
+    # path declines; that earlier path has its own engagement test.
+    monkeypatch.setattr(bridge, 'grouped_sums', lambda *args, **kwargs: None)
 
     t = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t.aggregate(groupby=t.g, aggregations={'m': t.x.sum})

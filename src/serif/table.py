@@ -1935,6 +1935,51 @@ class Table(Vector):
                     f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
                 )
 
+    def _bound_grouped_sums(self, groupby, aggregations, nrows):
+        """Recognize the narrow Arrow hash-grouped sum fast path.
+
+        Return ``(group_column, keys, [(name, values), ...])`` or None to
+        decline. Validation errors that the ordinary path would raise before
+        doing work are raised here with the same text.
+        """
+        if not aggregations:
+            return None
+        specs = [groupby] if isinstance(groupby, (str, Vector)) else groupby
+        if specs is None or len(specs) != 1:
+            return None
+        group_col = self._resolve_column(specs[0])
+        if len(group_col) != nrows:
+            raise SerifValueError(
+                f"groupby key at index 0 has length {len(group_col)}, "
+                f"but table has {nrows} rows."
+            )
+
+        names = []
+        sources = []
+        for agg_name, func in aggregations.items():
+            if not (hasattr(func, '__self__')
+                    and isinstance(func.__self__, Vector)
+                    and func.__name__ == 'sum'):
+                return None
+            source = func.__self__
+            if len(source) != nrows:
+                raise SerifValueError(
+                    f"aggregations['{agg_name}']: vector length {len(source)} "
+                    f"!= table length {nrows}"
+                )
+            if source.ndims() != 1:
+                return None
+            names.append(agg_name)
+            sources.append(source)
+
+        from ._accel.arrow import grouped_sums
+        result = grouped_sums(
+            group_col._storage, [source._storage for source in sources])
+        if result is None:
+            return None
+        keys, columns = result
+        return group_col, keys, list(zip(names, columns))
+
     @staticmethod
     def _chain_empty_reduction(e, agg_name, desc, key, fn_name):
         """Re-raise a no-verdict error with the group's coordinates attached,
@@ -2006,6 +2051,21 @@ class Table(Vector):
         if isinstance(groupby, dict):
             aggregations = groupby
             groupby = None
+
+        if aggregations is None:
+            aggregations = {}
+
+        if groupby is not None:
+            fast = self._bound_grouped_sums(groupby, aggregations, len(self))
+            if fast is not None:
+                group_col, keys, summed = fast
+                uniquify = Table._make_uniquifier()
+                result_cols = [Table._wrap_group_key_column(
+                    keys, group_col, uniquify(group_col._name))]
+                for agg_name, values in summed:
+                    result_cols.append(Vector(
+                        values, name=uniquify(agg_name)))
+                return Table(result_cols)
 
         if groupby is None:
             # Treat the entire table as one group

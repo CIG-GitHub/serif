@@ -278,10 +278,14 @@ def _spy(monkeypatch, module, fn_name, calls):
     monkeypatch.setattr(module, fn_name, wrapper)
 
 
-def test_group_fast_path_engages(monkeypatch):
+def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     from serif._accel import group as group_mod
+    from serif._accel import arrow as arrow_mod
     calls = []
     _spy(monkeypatch, group_mod, 'group_indices', calls)
+    # Exercise the numpy bucket fallback, not the earlier fused Arrow
+    # grouped-sum path (covered by test_accel_arrow_grouped_sum.py).
+    monkeypatch.setattr(arrow_mod, '_USE_ARROW', False)
 
     t = Table({'g': [1, 2, 1], 'x': [1.0, 2.0, 3.0]})
     t.aggregate(groupby=t.g, aggregations={'m': t.x.sum})
@@ -294,12 +298,17 @@ def test_group_fast_path_engages(monkeypatch):
     #                          picks it up when installed (its own suite)
 
 
-def test_join_fast_paths_engage(monkeypatch):
+def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
     from serif._accel import join as join_mod
     from serif._accel import mask as mask_mod
+    from serif._accel import arrow as arrow_mod
     probe_calls, pad_calls = [], []
     _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)
     _spy(monkeypatch, mask_mod, 'take_pad_storage', pad_calls)
+    monkeypatch.setattr(join_mod, 'probe_int64_dense',
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(arrow_mod, 'join_probe_strings_hash',
+                        lambda *args, **kwargs: None)
 
     left = Table({'id': [1, 2, 3], 'a': [1.0, 2.0, 3.0]})
     right = Table({'id': [2, 3], 'b': ['x', 'y']})

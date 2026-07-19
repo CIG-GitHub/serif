@@ -75,6 +75,7 @@ _USE_ARROW = _pa is not None
 _I32_MAX = 2**31 - 1
 _I64_MAX = 2**63 - 1
 _I64_MIN = -2**63
+_U64 = 2**64
 
 _NUMERIC_PA_TYPES = ({'q': _pa.int64(), 'd': _pa.float64()}
                      if _pa is not None else {})
@@ -412,6 +413,136 @@ def join_probe_strings(left_storage, right_storage,
         return result
     tag, (code,), count = result
     return (tag, (enc.dictionary[code].as_py(),), count)
+
+
+def join_probe_strings_hash(left_storage, right_storage,
+                            expect_left_unique, expect_right_unique,
+                            keep_unmatched_left, keep_unmatched_right):
+    """O(n) right-unique string probe over shared Arrow dictionary codes.
+
+    String joins already must hash/decode their content. This path removes the
+    subsequent code sort for the right-unique case; duplicate and unsupported
+    cases decline to join_probe_strings and its established diagnostics.
+    """
+    from . import _USE_NUMPY
+    if not _USE_ARROW or not _USE_NUMPY or _np is None:
+        return None
+    if not expect_right_unique:
+        return None
+    if not (isinstance(left_storage, StringStorage)
+            and isinstance(right_storage, StringStorage)):
+        return None
+    if left_storage._mask is not None or right_storage._mask is not None:
+        return None
+    left_arr = string_array(left_storage)
+    right_arr = string_array(right_storage)
+    if left_arr is None or right_arr is None:
+        return None
+
+    # Right first makes its code lane a convenient prefix. One shared
+    # dictionary is essential: independently encoded absent values could
+    # otherwise collide when the left codes probe the right lookup.
+    enc = _pa.concat_arrays([right_arr, left_arr]).dictionary_encode()
+    codes = enc.indices.to_numpy(zero_copy_only=True)
+    n_right = len(right_storage)
+    right_codes = codes[:n_right]
+    left_codes = codes[n_right:]
+    n_codes = len(enc.dictionary)
+
+    from .join import probe_unique_codes
+    return probe_unique_codes(
+        left_codes, right_codes, n_codes,
+        expect_left_unique, expect_right_unique,
+        keep_unmatched_left, keep_unmatched_right)
+
+
+def grouped_sums(key_storage, value_storages):
+    """Hash-group one key and sum one or more numeric value columns.
+
+    Return ``(keys, value_columns)`` in first-appearance group order, or
+    None to decline. This is deliberately narrower than Arrow's group-by
+    surface: dense int/string keys and numeric values only. The caller uses
+    it only for recognized bound ``Vector.sum`` aggregations.
+
+    Arrow's int64 hash sum is a modular carrier, not Serif's answer. For
+    each value column we also ask for count/min/max and apply reduce.py's
+    residue proof independently to every group. If one group is ambiguous,
+    the entire operation declines to the ordinary per-group path.
+    """
+    if not _USE_ARROW:
+        return None
+
+    if (isinstance(key_storage, ArrayStorage)
+            and key_storage._data.typecode == 'q'
+            and key_storage._mask is None):
+        key_arr = int64_array(key_storage)
+    elif (isinstance(key_storage, StringStorage)
+          and key_storage._mask is None):
+        key_arr = string_array(key_storage)
+    else:
+        return None
+    if key_arr is None:
+        return None
+
+    value_arrays = []
+    for storage in value_storages:
+        arr = numeric_array(storage)
+        if arr is None:
+            return None
+        value_arrays.append(arr)
+
+    key_name = '__serif_group_key'
+    value_names = [f'__serif_value_{i}' for i in range(len(value_arrays))]
+    table = _pa.Table.from_arrays(
+        [key_arr, *value_arrays], names=[key_name, *value_names])
+    specs = []
+    for name in value_names:
+        specs.extend([
+            (name, 'sum'),
+            (name, 'count'),
+            (name, 'min'),
+            (name, 'max'),
+        ])
+    try:
+        # Threaded grouping has no stable-output guarantee. Single-threaded
+        # grouping retains encounter order, Serif's public group-order rule.
+        grouped = table.group_by(key_name, use_threads=False).aggregate(specs)
+    except (_pa.ArrowInvalid, _pa.ArrowNotImplementedError):
+        return None
+
+    keys = grouped[key_name].to_pylist()
+    outputs = []
+    for storage, name in zip(value_storages, value_names):
+        wrapped = grouped[f'{name}_sum'].to_pylist()
+        counts = grouped[f'{name}_count'].to_pylist()
+        mins = grouped[f'{name}_min'].to_pylist()
+        maxs = grouped[f'{name}_max'].to_pylist()
+
+        if storage._data.typecode == 'q':
+            values = []
+            for residue, count, mn, mx in zip(wrapped, counts, mins, maxs):
+                n = int(count)
+                if n == 0:
+                    values.append(0)
+                    continue
+                mn = int(mn)
+                mx = int(mx)
+                if n * (mx - mn) >= _U64:
+                    return None
+                residue = int(residue)
+                spread_sum = (residue - n * mn) % _U64
+                values.append(n * mn + spread_sum)
+            outputs.append(values)
+        else:
+            # Existing accelerated float sum already accepts backend
+            # reduction-order differences. All-null groups retain Python
+            # sum's identity rather than Arrow's null scalar.
+            outputs.append([
+                0 if count == 0 else float(value)
+                for value, count in zip(wrapped, counts)
+            ])
+
+    return keys, outputs
 
 
 def bool_storage(arr):
