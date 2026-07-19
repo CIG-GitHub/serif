@@ -270,10 +270,11 @@ def test_column_replacement_after_defer_does_not_leak(tier):
     assert list(q.a) == [4, 5, 6]
 
 
-def test_source_alias_after_defer_keeps_capture_names(tier):
+def test_source_alias_after_defer_is_rejected_and_keeps_capture_names(tier):
     t = make_table()
     q = t[t.a > 3]
-    t.a.alias('z')  # renames the SOURCE column in place, marks it wild
+    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+        t.a.alias('z')
     assert q.column_names() == ['a', 'b', 's', 'n', 'f']
     assert list(q.a) == [4, 5, 6]
     assert q._mat is None
@@ -576,29 +577,24 @@ def test_compose_existing_name_warning_survives_deferral(tier):
     assert type(qc) is Table
 
 
-def test_alias_on_gathered_column_rebuilds_like_eager(tier):
-    # Renaming through a read-out column (the wild mechanic) works on
-    # eager tables via the map rebuild in Table.__getattr__. On a
-    # deferred table the stale-map guard declines the shortcut and the
-    # Table path latches + rebuilds — same observable behavior.
+def test_alias_on_gathered_column_is_rejected_without_latching(tier):
+    # Metadata follows the same value doctrine as element buffers. Rejection
+    # happens on the gathered column without forcing the other columns.
     t = make_table()
     q = t[t.a > 3]
-    q.b.alias('height')
-    assert list(q.height) == [4.0, 5.5, 6.75]
-    assert q.column_names() == ['a', 'height', 's', 'n', 'f']
+    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+        q.b.alias('height')
+    assert q.column_names() == ['a', 'b', 's', 'n', 'f']
+    assert q._mat is None
 
 
-def test_alias_collision_on_gathered_column_warns_like_eager(tier):
+def test_rename_on_deferred_table_is_owner_addressed(tier):
     t = make_table()
-    mask = t.a > 3
-    q, e = t[mask], eager(t, mask)
-    q.b.alias('sum')
-    e.b.alias('sum')
+    q = t[t.a > 3]
     with pytest.warns(UserWarning, match="reserved"):
-        qv = q.sum_
-    with pytest.warns(UserWarning, match="reserved"):
-        ev = e.sum_
-    assert list(qv) == list(ev)
+        renamed = q.rename({'b': 'sum'})
+    assert list(renamed.sum_) == [4.0, 5.5, 6.75]
+    assert q.column_names() == ['a', 'b', 's', 'n', 'f']
 
 
 # ---------------------------------------------------------------------------

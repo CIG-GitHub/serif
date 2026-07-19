@@ -699,6 +699,7 @@ class Vector():
     @vector_name.setter
     def vector_name(self, new_name):
         """Set the name of this vector."""
+        self._require_mutable_metadata()
         self._name = new_name
         self._wild = True  # Mark as wild when renamed
 
@@ -823,6 +824,7 @@ class Vector():
         `Table([v.alias('x'), ...])`. Works whether or not the vector is
         already named (it just sets the name).
         """
+        self._require_mutable_metadata()
         self._name = new_name
         self._wild = True  # Mark as wild when (re)named
         return self
@@ -1101,6 +1103,18 @@ class Vector():
                 f"    t[key, {col!r}] = value\n"
                 "For an independent mutable vector use .copy(); for bulk "
                 "point-write loops use `with t.batch() as m:`."
+            )
+
+    def _require_mutable_metadata(self):
+        """Reject schema mutation through a table-owned column."""
+        if self._frozen:
+            col = self._name if self._name is not None else 'col'
+            raise SerifTypeError(
+                "Read-out columns are values: this vector is owned by a "
+                "Table and its metadata is frozen. Rename through the table "
+                "instead:\n"
+                f"    t = t.rename({{{col!r}: 'new_name'}})\n"
+                "For an independent renameable vector use .copy()."
             )
 
     def __setitem__(self, key, value):

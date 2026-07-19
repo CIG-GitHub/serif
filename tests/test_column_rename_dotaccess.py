@@ -1,131 +1,41 @@
 import pytest
-from serif import Vector, Table
+
+from serif import SerifTypeError, Table
 
 
-def test_stale_column_name_after_vector_rename():
-	"""Test that accessing old column name via dot-access fails after rename"""
-	t = Table({
-		'old_name': [1, 2, 3],
-		'other': [4, 5, 6]
-	})
-	
-	# Access and rename via vector's name property
-	t.old_name.vector_name = 'new_name'
-	
-	# Old name should raise AttributeError
-	with pytest.raises(AttributeError, match="old_name"):
-		_ = t.old_name
-	
-	# New name should work
-	assert list(t.new_name) == [1, 2, 3]
+def test_table_owned_column_vector_name_is_frozen():
+    t = Table({'old_name': [1, 2, 3], 'other': [4, 5, 6]})
+    col = t.old_name
+
+    with pytest.raises(SerifTypeError, match=r"t = t\.rename"):
+        col.vector_name = 'new_name'
+
+    assert t.column_names() == ['old_name', 'other']
+    assert list(t.old_name) == [1, 2, 3]
 
 
-def test_stale_column_name_after_multiple_renames():
-	"""Test that multiple renames invalidate previous names"""
-	t = Table({
-		'alpha': [1, 2, 3]
-	})
+def test_table_owned_column_alias_is_frozen():
+    t = Table({'old_name': [1, 2, 3]})
 
-	# Rename multiple times.
-	# ('first'/'last' are reserved Vector method names, so a column named 'first'
-	#  sanitizes to 'first_' for dot-access; this test uses a plain name to stay
-	#  focused on rename invalidation. Collision handling is covered in
-	#  test_reserved_name_collisions.py.)
-	t.alpha.vector_name = 'second'
-	t.second.vector_name = 'third'
+    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+        t.old_name.alias('new_name')
 
-	# Both old names should fail
-	with pytest.raises(AttributeError):
-		_ = t.alpha
-	
-	with pytest.raises(AttributeError):
-		_ = t.second
-	
-	# Only current name should work
-	assert list(t.third) == [1, 2, 3]
+    assert t.column_names() == ['old_name']
 
 
-def test_stale_column_name_subscript_access():
-	"""Test that subscript access with old name also fails"""
-	t = Table({
-		'old': [1, 2, 3]
-	})
-	
-	t.old.vector_name = 'new'
-	
-	# Subscript access with old name should raise KeyError
-	with pytest.raises(KeyError):
-		_ = t['old']
-	
-	# New name should work
-	assert list(t['new']) == [1, 2, 3]
+def test_copied_column_metadata_is_independent_and_mutable():
+    t = Table({'old_name': [1, 2, 3]})
+    col = t.old_name.copy().alias('new_name')
+
+    assert col.vector_name == 'new_name'
+    assert t.column_names() == ['old_name']
 
 
-def test_multiple_columns_rename_independently():
-	"""Test that renaming one column doesn't affect access to others"""
-	t = Table({
-		'a': [1, 2, 3],
-		'b': [4, 5, 6],
-		'c': [7, 8, 9]
-	})
-	
-	# Rename just 'b'
-	t.b.vector_name = 'beta'
-	
-	# 'a' and 'c' should still work
-	assert list(t.a) == [1, 2, 3]
-	assert list(t.c) == [7, 8, 9]
-	
-	# 'b' should not work
-	with pytest.raises(AttributeError):
-		_ = t.b
-	
-	# 'beta' should work
-	assert list(t.beta) == [4, 5, 6]
+def test_rename_remains_owner_addressed_and_non_mutating():
+    t = Table({'lowercase': [1, 2, 3]})
+    renamed = t.rename({'lowercase': 'UPPERCASE'})
 
-
-def test_vector_name_then_table_rename_method():
-	"""Test interaction between vector.vector_name property and table.rename()"""
-	t = Table({
-		'col1': [1, 2, 3],
-		'col2': [4, 5, 6]
-	})
-
-	# Use vector's name property (mutates the live column in place)
-	t.col1.vector_name = 'temp'
-
-	# Now use the table's rename() on the new name (returns a new table)
-	t = t.rename({'temp': 'final'})
-	
-	# All old names should fail
-	with pytest.raises(AttributeError):
-		_ = t.col1
-	
-	with pytest.raises(AttributeError):
-		_ = t.temp
-	
-	# Only 'final' should work
-	assert list(t.final) == [1, 2, 3]
-
-
-def test_rename_case_sensitivity():
-	"""Test that renamed columns respect case changes"""
-	t = Table({
-		'lowercase': [1, 2, 3]
-	})
-	
-	t.lowercase.vector_name = 'UPPERCASE'
-	
-	# Old lowercase should fail
-	with pytest.raises(AttributeError):
-		_ = t.lowercase
-	
-	# New uppercase should work (exact match)
-	assert list(t.UPPERCASE) == [1, 2, 3]
-	
-	# Lowercase version of new name should also work (case-insensitive fallback)
-	assert list(t.uppercase) == [1, 2, 3]
-
-
-
-
+    assert t.column_names() == ['lowercase']
+    assert renamed.column_names() == ['UPPERCASE']
+    assert list(renamed.UPPERCASE) == [1, 2, 3]
+    assert list(renamed.uppercase) == [1, 2, 3]
