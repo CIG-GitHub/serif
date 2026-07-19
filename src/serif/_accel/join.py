@@ -71,6 +71,86 @@ def probe_int64(left_storage, right_storage,
                        keep_unmatched_left, keep_unmatched_right)
 
 
+def probe_int64_dense(left_storage, right_storage,
+                      expect_left_unique, expect_right_unique,
+                      keep_unmatched_left, keep_unmatched_right):
+    """O(n) direct-address probe for compact, right-unique int ranges.
+
+    Two lookup-sized intp arrays are the material cost (counts and right-row
+    lookup), so the key span is capped relative to input size. Sparse ranges,
+    nullable keys, duplicate diagnostics, and non-unique-right joins decline
+    to probe_int64's sort path.
+    """
+    if _np is None or not expect_right_unique:
+        return None
+    if not (_supported(left_storage) and _supported(right_storage)):
+        return None
+    if len(left_storage) == 0 or len(right_storage) == 0:
+        return None
+
+    left_vals = _np.frombuffer(left_storage._data, dtype=_np.int64)
+    right_vals = _np.frombuffer(right_storage._data, dtype=_np.int64)
+    low = min(int(left_vals.min()), int(right_vals.min()))
+    high = max(int(left_vals.max()), int(right_vals.max()))
+    span = high - low + 1
+    max_span = max(4096, 2 * (len(left_vals) + len(right_vals)))
+    if span > max_span:
+        return None
+
+    # Unsigned modular subtraction avoids signed overflow when low is near
+    # -2**63. Because span passed the small-range guard, every code is the
+    # exact mathematical difference from low.
+    base = _np.uint64(low % (2**64))
+    left_codes = (left_vals.view(_np.uint64) - base).astype(_np.intp)
+    right_codes = (right_vals.view(_np.uint64) - base).astype(_np.intp)
+    return probe_unique_codes(
+        left_codes, right_codes, span,
+        expect_left_unique, expect_right_unique,
+        keep_unmatched_left, keep_unmatched_right)
+
+
+def probe_unique_codes(left_codes, right_codes, n_codes,
+                       expect_left_unique, expect_right_unique,
+                       keep_unmatched_left, keep_unmatched_right):
+    """Probe non-negative dense codes when the right side must be unique.
+
+    Duplicate cases decline so probe_codes can reproduce the pure path's
+    exact scan-order diagnostic. Otherwise this is O(n + n_codes).
+    """
+    if not expect_right_unique:
+        return None
+    right_counts = _np.bincount(right_codes, minlength=n_codes)
+    if (right_counts > 1).any():
+        return None
+    if expect_left_unique:
+        left_counts = _np.bincount(left_codes, minlength=n_codes)
+        if (left_counts > 1).any():
+            return None
+
+    lookup = _np.full(n_codes, -1, dtype=_np.intp)
+    lookup[right_codes] = _np.arange(len(right_codes), dtype=_np.intp)
+    right_for_left = lookup[left_codes]
+    matched = right_for_left >= 0
+
+    if keep_unmatched_left:
+        left_take = _np.arange(len(left_codes), dtype=_np.intp)
+        right_take = right_for_left
+    else:
+        left_take = _np.nonzero(matched)[0]
+        right_take = right_for_left[matched]
+
+    if keep_unmatched_right:
+        hit = _np.zeros(len(right_codes), dtype=bool)
+        hit[right_for_left[matched]] = True
+        unmatched = _np.nonzero(~hit)[0]
+        if len(unmatched):
+            left_take = _np.concatenate(
+                [left_take, _np.full(len(unmatched), -1, dtype=_np.intp)])
+            right_take = _np.concatenate([right_take, unmatched])
+
+    return 'ok', left_take, right_take
+
+
 def probe_codes(left_vals, right_vals,
                 expect_left_unique, expect_right_unique,
                 keep_unmatched_left, keep_unmatched_right):

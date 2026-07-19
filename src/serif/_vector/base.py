@@ -367,6 +367,18 @@ def _accel_join_probe(left_storage, right_storage,
     from .. import _accel
     fast = None
     if _accel._USE_NUMPY:
+        from .._accel.join import probe_int64_dense
+        fast = probe_int64_dense(
+            left_storage, right_storage,
+            expect_left_unique, expect_right_unique,
+            keep_unmatched_left, keep_unmatched_right)
+    if fast is None:
+        from .._accel.arrow import join_probe_strings_hash
+        fast = join_probe_strings_hash(
+            left_storage, right_storage,
+            expect_left_unique, expect_right_unique,
+            keep_unmatched_left, keep_unmatched_right)
+    if fast is None and _accel._USE_NUMPY:
         from .._accel.join import probe_int64
         fast = probe_int64(left_storage, right_storage,
                            expect_left_unique, expect_right_unique,

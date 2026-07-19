@@ -202,7 +202,7 @@ def test_mixed_key_kinds_decline():
 # The fast path actually engages (guards against silent decline rot)
 # ---------------------------------------------------------------------------
 
-def test_string_probe_engages(monkeypatch):
+def test_string_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
     calls = []
     orig = bridge.join_probe_strings
 
@@ -212,6 +212,8 @@ def test_string_probe_engages(monkeypatch):
         return result
 
     monkeypatch.setattr(bridge, 'join_probe_strings', spy)
+    monkeypatch.setattr(bridge, 'join_probe_strings_hash',
+                        lambda *args, **kwargs: None)
 
     left = Table({'k': ['a', 'b', 'c'], 'x': [1.0, 2.0, 3.0]})
     right = Table({'k': ['b', 'c'], 'y': ['u', 'v']})

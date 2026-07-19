@@ -415,6 +415,47 @@ def join_probe_strings(left_storage, right_storage,
     return (tag, (enc.dictionary[code].as_py(),), count)
 
 
+def join_probe_strings_hash(left_storage, right_storage,
+                            expect_left_unique, expect_right_unique,
+                            keep_unmatched_left, keep_unmatched_right):
+    """O(n) right-unique string probe over shared Arrow dictionary codes.
+
+    String joins already must hash/decode their content. This path removes the
+    subsequent code sort for the right-unique case; duplicate and unsupported
+    cases decline to join_probe_strings and its established diagnostics.
+    """
+    from . import _USE_NUMPY
+    if not _USE_ARROW or not _USE_NUMPY or _np is None:
+        return None
+    if not expect_right_unique:
+        return None
+    if not (isinstance(left_storage, StringStorage)
+            and isinstance(right_storage, StringStorage)):
+        return None
+    if left_storage._mask is not None or right_storage._mask is not None:
+        return None
+    left_arr = string_array(left_storage)
+    right_arr = string_array(right_storage)
+    if left_arr is None or right_arr is None:
+        return None
+
+    # Right first makes its code lane a convenient prefix. One shared
+    # dictionary is essential: independently encoded absent values could
+    # otherwise collide when the left codes probe the right lookup.
+    enc = _pa.concat_arrays([right_arr, left_arr]).dictionary_encode()
+    codes = enc.indices.to_numpy(zero_copy_only=True)
+    n_right = len(right_storage)
+    right_codes = codes[:n_right]
+    left_codes = codes[n_right:]
+    n_codes = len(enc.dictionary)
+
+    from .join import probe_unique_codes
+    return probe_unique_codes(
+        left_codes, right_codes, n_codes,
+        expect_left_unique, expect_right_unique,
+        keep_unmatched_left, keep_unmatched_right)
+
+
 def grouped_sums(key_storage, value_storages):
     """Hash-group one key and sum one or more numeric value columns.
 

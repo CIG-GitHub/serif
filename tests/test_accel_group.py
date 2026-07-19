@@ -298,12 +298,17 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     #                          picks it up when installed (its own suite)
 
 
-def test_join_fast_paths_engage(monkeypatch):
+def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
     from serif._accel import join as join_mod
     from serif._accel import mask as mask_mod
+    from serif._accel import arrow as arrow_mod
     probe_calls, pad_calls = [], []
     _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)
     _spy(monkeypatch, mask_mod, 'take_pad_storage', pad_calls)
+    monkeypatch.setattr(join_mod, 'probe_int64_dense',
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(arrow_mod, 'join_probe_strings_hash',
+                        lambda *args, **kwargs: None)
 
     left = Table({'id': [1, 2, 3], 'a': [1.0, 2.0, 3.0]})
     right = Table({'id': [2, 3], 'b': ['x', 'y']})
