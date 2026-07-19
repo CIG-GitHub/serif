@@ -26,8 +26,9 @@ Breaking, pre-1.0: **read through the column, write through the table**
   string grouping and join probes, checked numeric operations, and Parquet
   decoding. PyArrow works with or without NumPy installed.
 - Four supported dependency modes: pure Python, NumPy only, PyArrow only, and
-  NumPy + PyArrow. All modes return identical Serif values, null behavior,
-  errors, schemas, and concrete Python scalar types.
+  NumPy + PyArrow. Exact operations agree across modes; null behavior, errors,
+  schemas, and concrete Python scalar types remain the same. Floating-point
+  reductions retain their documented bounded-rounding allowance.
 - Complete decimal128 Parquet round-tripping, including nullable columns and
   preservation of scale and precision, in both the pure and Arrow readers.
 - Footer-backed Parquet reads: `read_parquet()` now returns a Table-compatible

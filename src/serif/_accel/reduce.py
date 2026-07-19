@@ -28,9 +28,9 @@ The three correctness rules this module exists to uphold:
     not, so the accelerator steps aside rather than "fix" it.
 
   * Float reductions are exempt from bit-identity (agreed doctrine).
-    The pure path's builtin sum() is Neumaier-COMPENSATED on CPython
-    >= 3.12 — often exactly rounded, and under catastrophic absorption
-    MORE accurate than numpy's pairwise summation (O(log n)·ULP). The
+    The pure path uses math.fsum on every supported Python version — often
+    exactly rounded, and under catastrophic absorption MORE accurate than
+    numpy's pairwise summation (O(log n)·ULP). The
     trade is explicit: the fast path buys speed at the cost of the last
     ULPs in pathological data; both paths stay within tight bounds of
     math.fsum, which is what the conformance tests anchor against —

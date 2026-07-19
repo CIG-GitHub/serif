@@ -26,10 +26,12 @@ python -m pytest tests/ -v          # verbose (what CI runs)
 python -m pytest tests/test_joins.py -v   # one file
 ```
 
-CI runs the suite on Python 3.10–3.14 in all four supported environments:
-pure Python, NumPy only, PyArrow only, and NumPy + PyArrow
-(`.github/workflows/tests.yml`). It also tests the declared minimum
-accelerator versions and builds and inspects the distribution artifacts.
+CI runs all four supported environments on Python 3.10: pure Python, NumPy
+only, PyArrow only, and NumPy + PyArrow. Python 3.11–3.14 run with both
+accelerators installed; conformance tests exercise their pure fallbacks
+internally (`.github/workflows/tests.yml`). The 3.10 jobs pin the declared
+minimum accelerator versions, and CI also builds and inspects the distribution
+artifacts.
 
 ### Warnings are load-bearing
 

@@ -5,10 +5,11 @@
   operations work directly over Serif's existing numeric and byte-mask
   buffers. When PyArrow is installed, it accelerates variable-width string
   work and Parquet decoding that NumPy cannot naturally express.
-- Accelerators are opportunistic and per-operation. They either return the
-  exact Serif result or decline to the pure implementation; installing one
-  never changes values, null behavior, errors, schemas, or surfaced Python
-  scalar types.
+- Accelerators are opportunistic and per-operation. Exact operations either
+  return the pure Serif result or decline; null behavior, errors, schemas, and
+  surfaced Python scalar types do not change. Floating-point reductions may
+  differ in their final rounding within the bounds pinned by the conformance
+  suite.
 
 ## Indexing
 - **Slices:** O(k) where k is slice length

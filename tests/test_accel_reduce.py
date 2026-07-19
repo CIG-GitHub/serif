@@ -11,8 +11,8 @@ Two tiers of guarantee (agreed doctrine):
   * FSUM-ANCHORED for float sum/mean/stdev: the two paths may differ in
     the last ULPs, so both are anchored against math.fsum (the exactly
     rounded sum) instead of against each other. Note the direction: the
-    PURE path's builtin sum() is Neumaier-compensated on CPython >= 3.12
-    and often exactly rounded — the fast path trades those last ULPs
+    PURE sum path uses math.fsum on every supported Python version and is
+    often exactly rounded — the fast path trades those last ULPs
     (numpy pairwise, O(log n)·ULP) for speed.
 
 Never silently wrong: integer sums recover the exact bigint total from
@@ -248,8 +248,8 @@ def test_float_sum_fsum_anchored():
 
 def test_absorption_case_both_paths_bounded():
     # The absorption pathology: a naive left-fold loses every 1.0 into
-    # 1e16 (error -1000). Neither path is naive: the pure builtin sum is
-    # Neumaier-compensated (exactly rounded here), numpy's pairwise sums
+    # 1e16 (error -1000). Neither path is naive: the pure math.fsum is
+    # exactly rounded here, while numpy's pairwise sum places
     # the small terms among themselves first (error ~ULPs). This pins the
     # documented trade — pure may be MORE accurate; fast stays within a
     # pairwise-scale bound of the exactly rounded answer.
