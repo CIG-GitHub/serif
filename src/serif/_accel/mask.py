@@ -77,7 +77,10 @@ def _gather(storage, indexer, src_n: int, pad=None):
         if pad is not None:
             out[pad] = 0  # the pure backends' zero sentinel under the mask
         data = _pyarray.array(storage._data.typecode)
-        data.frombytes(out.tobytes())
+        # array.frombytes accepts any contiguous bytes-like buffer. Passing
+        # the ndarray view directly avoids materializing an intermediate
+        # bytes copy before ArrayStorage takes ownership of its own copy.
+        data.frombytes(memoryview(out).cast('B'))
         return ArrayStorage(data, _gathered_mask(storage._mask, indexer, src_n, pad))
 
     if isinstance(storage, BoolStorage):
