@@ -14,11 +14,9 @@
   malformed or out-of-range selectors cannot partially land.
 - Exact and sanitized column names resolve through one rule in scalar rows,
   regions, reads, and writes; named column selectors may be supplied first.
-
-### Added
-- `semantic_fingerprint()` — a deterministic, schema-aware BLAKE2 digest for
-  persistent DAG/cache identity. The existing `fingerprint()` remains the
-  fast, cached, process-local value detector.
+- `fingerprint()` is now the single identity API: a deterministic,
+  schema-aware BLAKE2 digest for persistent DAG/cache keys. The former rolling
+  hash implementation and its cache/invalidation machinery were removed.
 
 ### Documentation
 - Re-centered the project rationale on spreadsheet-like analytical feedback

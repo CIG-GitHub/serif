@@ -41,11 +41,11 @@ each other; it does not (and should not) change what `=` means.
 - **`.copy()`:** creates an independent Vector shell and normally shares immutable storage; replacement values rebuild storage
 - **`batch()`:** privately copies writable buffers once on entry, then permits in-place writes only inside that ownership scope
 
-## Process-local fingerprints
+## Deterministic fingerprints
 
-`fingerprint()` enables **O(1) repeated change checks** without full data
-comparisons. Its first call is O(n); the cached result is process-local and
-hashes values only.
+`fingerprint()` returns a deterministic identity for a Vector or Table. It is
+suitable for dependency graphs, persistent caches, and ordinary change
+detection because it describes both the data and the analytical schema.
 
 ### Basic Usage
 
@@ -59,7 +59,7 @@ fp2 = v.fingerprint()
 assert fp1 != fp2  # Fingerprint changed
 ```
 
-### Use Cases
+### Use cases
 
 1. **Detect data changes without full comparisons**
    ```python
@@ -85,31 +85,9 @@ assert fp1 != fp2  # Fingerprint changed
            return self.cache
    ```
 
-### Implementation
+### Contract
 
-Fingerprints use a **rolling hash**, computed lazily on first access and cached. Mutation invalidates the cache; the next `fingerprint()` call recomputes in O(n). Repeated access on unchanged data is O(1).
-
-### Limitations
-
-- Fingerprints hash element **values** only — dtype is not part of the
-  hash, so `Vector([1])` and `Vector([1.0])` share a fingerprint
-  (`hash(1) == hash(1.0)`).
-- Fingerprints answer "did this data change?", not "are these equal?".
-  For comparison, remember `==` is **elementwise** (it returns a boolean
-  vector, with `None` where either side is null).
-- Python deliberately randomizes hashes for values such as strings, so this
-  fingerprint is not a persistent cross-process identifier.
-
-## Semantic fingerprints for DAGs and persistent caches
-
-Use `semantic_fingerprint()` when identity must survive the current Python
-process:
-
-```python
-input_key = table.semantic_fingerprint()
-```
-
-It returns a 64-character, versioned BLAKE2b digest over:
+The 64-character, versioned BLAKE2b digest covers:
 
 - vector/table dimensions and names
 - dtype and nullability
@@ -117,8 +95,18 @@ It returns a 64-character, versioned BLAKE2b digest over:
 - canonically encoded Python values
 
 The digest is deterministic across Python hash seeds and execution backends.
-It is recomputed in O(n) on each call; persistent identity favors certainty
-over a metadata cache that could become stale. Unknown object values raise
-with a conversion remedy rather than falling back to a potentially
-address-bearing `repr()`.
+It is recomputed in O(n) on every call; persistent identity favors certainty
+over metadata cache bookkeeping. Unknown object values raise with a conversion
+remedy rather than falling back to a potentially address-bearing `repr()`.
+
+Fingerprints answer "does this value and schema have the same identity?", not
+"are these equal?". For comparison, remember `==` is **elementwise** (it
+returns a boolean vector, with `None` where either side is null).
+
+- Names and schema are intentional parts of identity, so equal-looking values
+  with different analytical roles can have different fingerprints.
+- Supported values use canonical encodings; arbitrary objects must first be
+  converted to a supported Python type.
+- Fingerprinting is O(n), so callers should retain the returned digest at the
+  dependency-graph or cache layer when repeated checks are unnecessary.
 

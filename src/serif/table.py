@@ -275,7 +275,7 @@ class _BatchScope:
     Enter: un-share — every column whose storage supports it gets
     privately-copied buffers (the same principle as Table.__init__ copying
     its vectors: un-share whenever write-ownership changes hands), columns
-    thaw, fingerprints invalidate. `m` IS the table.
+    thaw. `m` IS the table.
 
     Inside: point writes go raw into the private buffers (fast), and
     thawed columns accept vector-addressed writes (m.v[i] = x); anything
@@ -284,8 +284,8 @@ class _BatchScope:
     path.
 
     Exit (including via exception — partial mutation persists, no
-    rollback): every column refreezes, in-place licenses revoke (so
-    escaped column refs re-freeze too), fingerprints invalidate again.
+    rollback): every column refreezes and in-place licenses revoke (so
+    escaped column refs re-freeze too).
     Observable semantics are identical to table-addressed writes; only
     the speed differs.
     """
@@ -302,14 +302,12 @@ class _BatchScope:
                 "Table is already inside a batch() scope; nesting is not supported."
             )
         t._unlocked = True
-        t._invalidate_fp()
         for col in t._storage:
             private = getattr(col._storage, 'private_copy', None)
             if private is not None:
                 col._storage = private()
                 col._inplace_ok = True
             col._frozen = False
-            col._invalidate_fp()
         return t
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -317,8 +315,6 @@ class _BatchScope:
         for col in t._storage:
             col._frozen = True
             col._inplace_ok = False
-            col._invalidate_fp()
-        t._invalidate_fp()
         t._unlocked = False
         return False
 
@@ -737,7 +733,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions', '_unlocked'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_wild', '_repr_rows', '_storage', '_warned_collisions', '_unlocked'):
             object.__setattr__(self, attr, value)
             return
 
@@ -792,7 +788,6 @@ class Table(Vector):
                 cols[col_idx_indexed] = value
                 self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
                 object.__setattr__(self, '_column_map', self._build_column_map())
-                self._invalidate_fp()
                 return
             
             # Regular column lookup by name. Explicit None checks — a column
@@ -824,7 +819,6 @@ class Table(Vector):
                 
                 # Rebuild column map to reflect any structural changes
                 object.__setattr__(self, '_column_map', self._build_column_map())
-                self._invalidate_fp()
                 return
         
         # Reject arbitrary attribute setting - only allow column updates
@@ -1232,7 +1226,6 @@ class Table(Vector):
         cols = list(self._storage)
         cols[col_idx] = new_col
         self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
-        self._invalidate_fp()
 
     def batch(self):
         """
@@ -2500,7 +2493,6 @@ class Table(Vector):
         object.__setattr__(t, '_dtype',         None)
         object.__setattr__(t, '_name',          None)
         object.__setattr__(t, '_wild',          False)
-        object.__setattr__(t, '_fp',            None)
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)
@@ -2612,7 +2604,6 @@ class MaskedTable(Table):
         object.__setattr__(self, '_dtype',      None)
         object.__setattr__(self, '_name',       None)
         object.__setattr__(self, '_wild',       False)
-        object.__setattr__(self, '_fp',         None)
         object.__setattr__(self, '_repr_rows',  None)
         object.__setattr__(self, '_length',     n)
         object.__setattr__(self, '_column_map', source._column_map)

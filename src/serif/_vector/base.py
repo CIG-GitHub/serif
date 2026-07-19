@@ -148,30 +148,12 @@ def _null_sort_flag(is_null: bool, reverse: bool, na_last: bool) -> bool:
     return (is_null != reverse) if na_last else (is_null == reverse)
 
 
-def _is_hashable(x: Any) -> bool:
-    try:
-        hash(x)
-        return True
-    except Exception:
-        return False
-
-
-def _safe_sortable_list(xs: Iterable[Any]) -> List[Any]:
-    """
-    Deterministic representation for sets in fingerprinting.
-    """
-    try:
-        return sorted(xs)
-    except Exception:
-        return sorted((repr(x) for x in xs))
-
-
-def _semantic_frame(tag: bytes, payload: bytes = b'') -> bytes:
-    """Unambiguous binary frame used by semantic_fingerprint()."""
+def _fingerprint_frame(tag: bytes, payload: bytes = b'') -> bytes:
+    """Return an unambiguous binary frame for fingerprint encoding."""
     return tag + len(payload).to_bytes(8, 'big') + payload
 
 
-def _semantic_encode(value: Any) -> bytes:
+def _fingerprint_encode(value: Any) -> bytes:
     """Canonical, cross-process encoding for supported Python values.
 
     Deliberately raises for unknown objects instead of falling back to repr(),
@@ -179,11 +161,11 @@ def _semantic_encode(value: Any) -> bytes:
     look deterministic while changing between processes.
     """
     if value is None:
-        return _semantic_frame(b'n')
+        return _fingerprint_frame(b'n')
     if type(value) is bool:
-        return _semantic_frame(b'b', b'1' if value else b'0')
+        return _fingerprint_frame(b'b', b'1' if value else b'0')
     if type(value) is int:
-        return _semantic_frame(b'i', str(value).encode('ascii'))
+        return _fingerprint_frame(b'i', str(value).encode('ascii'))
     if type(value) is float:
         if math.isnan(value):
             payload = b'nan'
@@ -192,49 +174,55 @@ def _semantic_encode(value: Any) -> bytes:
         else:
             # Python considers -0.0 and 0.0 equal; canonicalize accordingly.
             payload = struct.pack('>d', 0.0 if value == 0.0 else value)
-        return _semantic_frame(b'f', payload)
+        return _fingerprint_frame(b'f', payload)
     if type(value) is complex:
-        return _semantic_frame(
-            b'c', _semantic_encode(value.real) + _semantic_encode(value.imag))
+        return _fingerprint_frame(
+            b'c', _fingerprint_encode(value.real) + _fingerprint_encode(value.imag))
     if type(value) is str:
-        return _semantic_frame(b's', value.encode('utf-8'))
+        return _fingerprint_frame(b's', value.encode('utf-8'))
     if type(value) is bytes:
-        return _semantic_frame(b'y', value)
+        return _fingerprint_frame(b'y', value)
     if type(value) is bytearray:
-        return _semantic_frame(b'a', bytes(value))
+        return _fingerprint_frame(b'a', bytes(value))
     if isinstance(value, datetime):
         payload = value.isoformat(timespec='microseconds').encode('utf-8')
         payload += bytes((value.fold,))
-        return _semantic_frame(b'z', payload)
+        return _fingerprint_frame(b'z', payload)
     if isinstance(value, date):
-        return _semantic_frame(b'd', value.isoformat().encode('ascii'))
+        return _fingerprint_frame(b'd', value.isoformat().encode('ascii'))
     if isinstance(value, timedelta):
         payload = (
-            _semantic_encode(value.days)
-            + _semantic_encode(value.seconds)
-            + _semantic_encode(value.microseconds)
+            _fingerprint_encode(value.days)
+            + _fingerprint_encode(value.seconds)
+            + _fingerprint_encode(value.microseconds)
         )
-        return _semantic_frame(b't', payload)
+        return _fingerprint_frame(b't', payload)
     if isinstance(value, Decimal):
-        return _semantic_frame(b'm', _semantic_encode(value.as_tuple()))
+        decimal_tuple = value.as_tuple()
+        payload = (
+            _fingerprint_encode(decimal_tuple.sign)
+            + _fingerprint_encode(decimal_tuple.digits)
+            + _fingerprint_encode(decimal_tuple.exponent)
+        )
+        return _fingerprint_frame(b'm', payload)
     if isinstance(value, Vector):
-        return _semantic_frame(
-            b'v', bytes.fromhex(value.semantic_fingerprint()))
+        return _fingerprint_frame(b'v', bytes.fromhex(value.fingerprint()))
     if type(value) in (list, tuple):
         tag = b'l' if type(value) is list else b'q'
-        return _semantic_frame(tag, b''.join(_semantic_encode(v) for v in value))
+        return _fingerprint_frame(
+            tag, b''.join(_fingerprint_encode(v) for v in value))
     if type(value) in (set, frozenset):
         tag = b'e' if type(value) is set else b'r'
-        encoded = sorted(_semantic_encode(v) for v in value)
-        return _semantic_frame(tag, b''.join(encoded))
+        encoded = sorted(_fingerprint_encode(v) for v in value)
+        return _fingerprint_frame(tag, b''.join(encoded))
     if isinstance(value, dict):
-        encoded = [(_semantic_encode(k), _semantic_encode(v))
+        encoded = [(_fingerprint_encode(k), _fingerprint_encode(v))
                    for k, v in value.items()]
         encoded.sort(key=lambda pair: pair[0])
         payload = b''.join(k + v for k, v in encoded)
-        return _semantic_frame(b'g', payload)
+        return _fingerprint_frame(b'g', payload)
     raise SerifTypeError(
-        "semantic_fingerprint() does not know how to encode "
+        "fingerprint() does not know how to encode "
         f"{type(value).__module__}.{type(value).__qualname__}; cast the "
         "value to a supported Python type first."
     )
@@ -606,10 +594,6 @@ class Vector():
     _frozen = False
     _inplace_ok = False
     
-    # Fingerprint constants for O(1) change detection
-    _FP_P = (1 << 61) - 1  # Mersenne prime (2^61 - 1)
-    _FP_B = 1315423911     # Base for rolling hash
-
     def schema(self):
         """Get the Schema (kind, nullable) of this vector."""
         return self._dtype
@@ -654,7 +638,6 @@ class Vector():
         instance._dtype = dtype
         instance._name = name
         instance._wild = True
-        instance._fp = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(data, nullable)
         return instance
@@ -675,7 +658,6 @@ class Vector():
             self._dtype = dtype
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = self._build_storage(initial, nullable)
-        self._fp = None
 
     def _build_storage(self, data, nullable):
         tc = getattr(self, 'typecode', None)
@@ -725,7 +707,6 @@ class Vector():
         instance._dtype = self._dtype if dtype is ... else dtype
         instance._name = self._name if name is ... else name
         instance._wild = True
-        instance._fp = None
         instance._storage = new_storage
         return instance
 
@@ -739,7 +720,6 @@ class Vector():
         instance._dtype = dtype
         instance._name = name
         instance._wild = False
-        instance._fp = None
         instance._storage = storage
         return instance
 
@@ -752,7 +732,6 @@ class Vector():
         instance._dtype = dtype
         instance._name = name
         instance._wild = True
-        instance._fp = None
         nullable = dtype.nullable if dtype is not None else True
         instance._storage = instance._build_storage(iterable, nullable)
         return instance
@@ -785,99 +764,50 @@ class Vector():
     # Fingerprinting
     #-----------------------------------------------------
 
-    @staticmethod
-    def _hash_element(x: Any) -> int:
-        P = Vector._FP_P
-        B = Vector._FP_B
+    def fingerprint(self) -> str:
+        """Return a deterministic identity for values and analytical schema.
 
-        if x is None:
-            return 0x9E3779B97F4A7C15
-        
-        if hasattr(x, "fingerprint") and callable(getattr(x, "fingerprint")):
-            return int(x.fingerprint())
+        The digest is stable across Python processes and includes dimensions,
+        names, dtypes, nullability, categorical order, decimal metadata, and
+        values. The result is a 64-character BLAKE2b hex string.
 
-        if isinstance(x, float):
-            if math.isnan(x):
-                return 0xDEADBEEFCAFEBABE
-            return hash(x)
-
-        if isinstance(x, set):
-            rep = _safe_sortable_list(list(x))
-            return Vector._hash_element(tuple(rep))
-
-        if isinstance(x, (list, tuple)):
-            h = 0
-            for elem in x:
-                h = (h * B + Vector._hash_element(elem)) % P
-            return h
-
-        if _is_hashable(x):
-            return hash(x)
-
-        return hash(repr(x))
-
-    def _compute_fingerprint_full(self) -> int:
-        P = self._FP_P
-        B = self._FP_B
-        total = 0
-        for x in self._storage:
-            h = self._hash_element(x)
-            total = (total * B + h) % P
-        return total
-
-    def fingerprint(self) -> int:
-        if self._fp is None:
-            self._fp = self._compute_fingerprint_full()
-        return self._fp
-
-    def semantic_fingerprint(self) -> str:
-        """Return a deterministic identity for values plus analytical schema.
-
-        Unlike ``fingerprint()`` (the lightweight in-process change detector),
-        this digest is suitable for persistent DAG/cache keys: it is stable
-        across Python processes and includes dimensions, names, dtypes,
-        nullability, categorical order, decimal metadata, and values.
-
-        The result is a 64-character BLAKE2b hex digest. It is intentionally
-        recomputed on each call so metadata changes cannot be hidden by a stale
-        cache maintained outside the owner-addressed mutation paths.
+        Fingerprints are intentionally recomputed on each call. This keeps
+        metadata changes visible without coupling identity correctness to
+        mutation-path cache invalidation.
         """
-        digest = hashlib.blake2b(digest_size=32, person=b'serif-sem-v1')
+        digest = hashlib.blake2b(digest_size=32, person=b'serif-fp-v1')
 
         if self.ndims() == 2:
             columns = self.cols()
-            digest.update(_semantic_frame(b'T'))
-            digest.update(_semantic_encode(getattr(self, '_name', None)))
-            digest.update(_semantic_encode(len(self)))
-            digest.update(_semantic_encode(len(columns)))
+            digest.update(_fingerprint_frame(b'T'))
+            digest.update(_fingerprint_encode(getattr(self, '_name', None)))
+            digest.update(_fingerprint_encode(len(self)))
+            digest.update(_fingerprint_encode(len(columns)))
             for column in columns:
-                digest.update(bytes.fromhex(column.semantic_fingerprint()))
+                digest.update(bytes.fromhex(column.fingerprint()))
             return digest.hexdigest()
 
         schema = self.schema()
         kind = schema.kind
         kind_name = f"{kind.__module__}.{kind.__qualname__}"
-        digest.update(_semantic_frame(b'V'))
-        digest.update(_semantic_encode(getattr(self, '_name', None)))
-        digest.update(_semantic_encode(len(self)))
-        digest.update(_semantic_encode(kind_name))
-        digest.update(_semantic_encode(schema.nullable))
+        digest.update(_fingerprint_frame(b'V'))
+        digest.update(_fingerprint_encode(getattr(self, '_name', None)))
+        digest.update(_fingerprint_encode(len(self)))
+        digest.update(_fingerprint_encode(kind_name))
+        digest.update(_fingerprint_encode(schema.nullable))
 
         categories = getattr(self, '_categories', None)
-        digest.update(_semantic_encode(categories))
+        digest.update(_fingerprint_encode(categories))
 
         storage = self._storage
         decimal_meta = None
         if hasattr(storage, '_scale') and hasattr(storage, '_precision'):
             decimal_meta = (storage._scale, storage._precision)
-        digest.update(_semantic_encode(decimal_meta))
+        digest.update(_fingerprint_encode(decimal_meta))
 
         for value in storage:
-            digest.update(_semantic_encode(value))
+            digest.update(_fingerprint_encode(value))
         return digest.hexdigest()
-
-    def _invalidate_fp(self) -> None:
-        self._fp = None
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
@@ -909,9 +839,7 @@ class Vector():
         use_name = self._name if name is ... else name
         if self._dtype is not None:
             if new_values is None:
-                result = self._clone(self._storage, name=use_name)
-                result._fp = self._fp  # same frozen data, same fingerprint
-                return result
+                return self._clone(self._storage, name=use_name)
             # Typed 1D vector with replacement values: build storage
             # directly, no inference needed.
             return self._clone(self._build_storage(new_values, self._dtype.nullable), name=use_name)
@@ -1260,7 +1188,6 @@ class Vector():
         Includes:
         - dtype validation & promotion
         - copy-on-write
-        - fingerprint invalidation
         """
 
         # === Fast precomputed checks ===
@@ -1447,7 +1374,6 @@ class Vector():
         if self._inplace_ok and updates:
             write = getattr(self._storage, 'write_inplace', None)
             if write is not None and write(updates):
-                self._invalidate_fp()
                 return
 
         data_list = list(underlying)           # COW materialization
@@ -1462,7 +1388,6 @@ class Vector():
         # when the instance class lags the new dtype.
         nullable = self._dtype.nullable if self._dtype is not None else True
         self._storage = _storage_for_dtype(self._dtype, data_list, nullable)
-        self._invalidate_fp()
 
 
 

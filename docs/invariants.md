@@ -86,8 +86,8 @@ Write data through table indexing and rename through `Table.rename()`.
 A `.copy()` is an independent mutable and renameable Vector.
 
 ## 13. Persistent identity includes schema
-`fingerprint()` is a process-local, value-only change detector.
-`semantic_fingerprint()` is the deterministic DAG/cache identity: it includes
-shape, names, dtypes, nullability, categorical order, decimal metadata, and
-values. Unknown object values raise instead of using an unstable repr.
+`fingerprint()` is the deterministic DAG/cache identity. It includes shape,
+names, dtypes, nullability, categorical order, decimal metadata, and values.
+Unknown object values raise instead of using an unstable repr. There is no
+separate process-local or value-only fingerprint path.
 

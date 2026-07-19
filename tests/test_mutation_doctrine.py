@@ -190,7 +190,7 @@ def test_source_vector_untouched_by_owner_write():
     assert list(v) == [1, 2, 3]
 
 
-def test_owner_write_invalidates_table_and_column_fingerprint():
+def test_owner_write_changes_table_and_column_fingerprint():
     t = make_table()
     fp_col = t.a.fingerprint()
     t[0, 'a'] = 99

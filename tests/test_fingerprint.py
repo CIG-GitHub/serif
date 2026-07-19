@@ -1,467 +1,151 @@
-"""Fingerprint change detection tests"""
+"""Tests for Serif's single, deterministic fingerprint contract."""
+
 import os
 import subprocess
 import sys
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
-from serif import Schema, SerifTypeError, Vector
-from serif import Table
+
+from serif import Schema, SerifTypeError, Table, Vector
+from serif._vector.storage import DecimalStorage
 
 
-class TestBasicFingerprint:
-    """Test basic fingerprint functionality"""
-    
-    def test_fingerprint_returns_int(self):
-        v = Vector([1, 2, 3])
-        fp = v.fingerprint()
-        assert isinstance(fp, int)
-    
-    def test_same_data_same_fingerprint(self):
-        v1 = Vector([1, 2, 3])
-        v2 = Vector([1, 2, 3])
-        assert v1.fingerprint() == v2.fingerprint()
-    
-    def test_different_data_different_fingerprint(self):
-        v1 = Vector([1, 2, 3])
-        v2 = Vector([1, 2, 4])
-        assert v1.fingerprint() != v2.fingerprint()
+def test_fingerprint_returns_blake2_hex_digest():
+    digest = Vector([1, 2, 3]).fingerprint()
+
+    assert isinstance(digest, str)
+    assert len(digest) == 64
+    int(digest, 16)
 
 
-class TestMutationDetection:
-    """Test fingerprint changes on mutations"""
-    
-    def test_single_index_mutation(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp1 = v.fingerprint()
-        v[2] = 999
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-    
-    def test_slice_mutation(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp1 = v.fingerprint()
-        v[1:4] = [20, 30, 40]
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-    
-    def test_boolean_mask_mutation(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp1 = v.fingerprint()
-        v[v > 3] = 999
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-    
-    def test_integer_vector_mutation(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp1 = v.fingerprint()
-        indices = Vector([0, 2, 4], dtype=int, typesafe=True)
-        v[indices] = 999
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
+def test_fingerprint_is_stable_across_hash_seeds_and_processes():
+    code = (
+        "from serif import Vector; "
+        "print(Vector(['analyst', 'flow']).fingerprint())"
+    )
+    results = []
+    for seed in ('1', '987654'):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        results.append(subprocess.check_output(
+            [sys.executable, '-c', code], text=True, env=env).strip())
+
+    assert results[0] == results[1]
 
 
-class TestMultipleMutations:
-    """Test fingerprint tracking multiple mutations"""
-    
-    def test_sequential_mutations(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp0 = v.fingerprint()
-        
-        v[0] = 10
-        fp1 = v.fingerprint()
-        assert fp0 != fp1
-        
-        v[1] = 20
-        fp2 = v.fingerprint()
-        assert fp1 != fp2
-        assert fp0 != fp2
-        
-        v[2] = 30
-        fp3 = v.fingerprint()
-        assert fp2 != fp3
-        assert fp1 != fp3
-        assert fp0 != fp3
-    
-    def test_mutation_and_revert(self):
-        v = Vector([1, 2, 3])
-        fp_original = v.fingerprint()
-        
-        v[1] = 999
-        fp_mutated = v.fingerprint()
-        assert fp_original != fp_mutated
-        
-        v[1] = 2  # Revert to original value
-        fp_reverted = v.fingerprint()
-        assert fp_reverted == fp_original
+def test_fingerprint_is_stable_for_repeated_calls_and_copies():
+    vector = Vector([1, 2, 3], name='values')
+
+    assert vector.fingerprint() == vector.fingerprint()
+    assert vector.fingerprint() == vector.copy().fingerprint()
 
 
-class TestNestedStructures:
-    """Test fingerprint for nested vectors (tables)"""
-    
-    def test_table_fingerprint(self):
-        col1 = Vector([1, 2, 3])
-        col2 = Vector([4, 5, 6])
-        table = Vector([col1, col2])
-        fp = table.fingerprint()
-        assert isinstance(fp, int)
-    
-    def test_table_mutation_via_column(self):
-        col1 = Vector([1, 2, 3])
-        col2 = Vector([4, 5, 6])
-        table = Vector([col1, col2])
-        fp1 = table.fingerprint()
-        
-        # Mutate original column - value semantics means table is unaffected
-        col1[0] = 999
-        fp2 = table.fingerprint()
-        assert fp1 == fp2  # Table has a copy, not affected by mutation
+def test_fingerprint_changes_with_values_and_restores_on_revert():
+    vector = Vector([1, 2, 3])
+    original = vector.fingerprint()
+
+    vector[1] = 99
+    assert vector.fingerprint() != original
+
+    vector[1] = 2
+    assert vector.fingerprint() == original
 
 
-class TestFingerprintStability:
-    """Test fingerprint stability and reproducibility"""
-    
-    def test_repeated_calls_same_result(self):
-        v = Vector([1, 2, 3, 4, 5])
-        fp1 = v.fingerprint()
-        fp2 = v.fingerprint()
-        fp3 = v.fingerprint()
-        assert fp1 == fp2 == fp3
-    
-    def test_copy_has_same_fingerprint(self):
-        v1 = Vector([1, 2, 3])
-        v2 = v1.copy()
-        assert v1.fingerprint() == v2.fingerprint()
-    
-    def test_copy_mutations_independent(self):
-        v1 = Vector([1, 2, 3])
-        v2 = v1.copy()
-        fp1_original = v1.fingerprint()
-        fp2_original = v2.fingerprint()
-        
-        v2[0] = 999
-        assert v1.fingerprint() == fp1_original  # v1 unchanged
-        assert v2.fingerprint() != fp2_original  # v2 changed
+def test_fingerprint_includes_dtype_nullability_and_vector_name():
+    plain = Vector([1], dtype=Schema(int, False), name='x')
+    nullable = Vector([1], dtype=Schema(int, True), name='x')
+    floating = Vector([1.0], name='x')
+    renamed = Vector([1], name='y')
+
+    assert len({
+        vector.fingerprint()
+        for vector in (plain, nullable, floating, renamed)
+    }) == 4
 
 
-class TestFingerprintTypes:
-    """Test fingerprint with different data types"""
-    
-    def test_int_vector_fingerprint(self):
-        v = Vector([1, 2, 3])
-        fp = v.fingerprint()
-        assert isinstance(fp, int)
-    
-    def test_float_vector_fingerprint(self):
-        v = Vector([1.5, 2.5, 3.5])
-        fp = v.fingerprint()
-        assert isinstance(fp, int)
-    
-    def test_string_vector_fingerprint(self):
-        v = Vector(['hello', 'world'])
-        fp = v.fingerprint()
-        assert isinstance(fp, int)
-    
-    def test_different_types_different_fingerprints(self):
-        v1 = Vector([1, 2, 3])
-        v2 = Vector([1.0, 2.0, 3.0])
-        # These might have different fingerprints due to hash differences
-        # Just ensure they both return valid fingerprints
-        assert isinstance(v1.fingerprint(), int)
-        assert isinstance(v2.fingerprint(), int)
+def test_table_fingerprint_includes_shape_names_values_and_table_name():
+    a = Table({'a': [1, 2]})
+    b = Table({'b': [1, 2]})
+    c = Table({'a': [1, 3]})
+    named = Table({'a': [1, 2]}, name='model_input')
+
+    assert len({
+        a.fingerprint(),
+        b.fingerprint(),
+        c.fingerprint(),
+        named.fingerprint(),
+    }) == 4
+    assert a.fingerprint() != Vector([1, 2]).fingerprint()
 
 
-class TestChangeDetectionWorkflow:
-    """Test typical change detection workflow"""
-    
-    def test_track_changes_workflow(self):
-        # Create a vector
-        v = Vector([1, 2, 3, 4, 5])
-        initial_fp = v.fingerprint()
-        
-        # Simulate checking for changes (no changes)
-        assert v.fingerprint() == initial_fp
-        
-        # Make a change
-        v[2] = 999
-        
-        # Detect the change
-        assert v.fingerprint() != initial_fp
-        
-        # Update the stored fingerprint
-        new_fp = v.fingerprint()
-        
-        # No more changes
-        assert v.fingerprint() == new_fp
+def test_table_column_replacement_changes_fingerprint():
+    table = Table({'a': [1, 2]})
+    before = table.fingerprint()
+
+    table.a = [3, 4]
+
+    assert table.fingerprint() != before
 
 
-class TestFingerprintEdgeCases:
-	"""Test that fingerprinting handles edge cases correctly."""
-	
-	def test_none_fingerprint_stable(self):
-		"""None values should have consistent fingerprints."""
-		v1 = Vector([1, None, 3])
-		v2 = Vector([1, None, 3])
-		assert v1.fingerprint() == v2.fingerprint()
-	
-	def test_nan_fingerprint_stable(self):
-		"""NaN values should have consistent fingerprints despite NaN != NaN."""
-		v1 = Vector([1.0, float('nan'), 3.0])
-		v2 = Vector([1.0, float('nan'), 3.0])
-		assert v1.fingerprint() == v2.fingerprint()
-	
-	def test_negative_zero_equals_positive_zero(self):
-		"""Fingerprint should treat -0.0 and 0.0 as identical."""
-		v1 = Vector([1.0, -0.0, 3.0])
-		v2 = Vector([1.0, 0.0, 3.0])
-		assert v1.fingerprint() == v2.fingerprint()
-	
-	def test_complex_numbers(self):
-		"""Complex numbers should fingerprint consistently."""
-		v1 = Vector([1+2j, 3+4j])
-		v2 = Vector([1+2j, 3+4j])
-		assert v1.fingerprint() == v2.fingerprint()
-		
-		# Different complex numbers should have different fingerprints
-		v3 = Vector([1+2j, 3+5j])
-		assert v1.fingerprint() != v3.fingerprint()
-	
-	def test_date_fingerprint(self):
-		"""Date objects should fingerprint consistently."""
-		from datetime import date
-		v1 = Vector([date(2024, 1, 1), date(2024, 12, 31)])
-		v2 = Vector([date(2024, 1, 1), date(2024, 12, 31)])
-		assert v1.fingerprint() == v2.fingerprint()
-		
-		v3 = Vector([date(2024, 1, 1), date(2024, 12, 30)])
-		assert v1.fingerprint() != v3.fingerprint()
-	
-	def test_datetime_fingerprint(self):
-		"""DateTime objects should fingerprint consistently."""
-		from datetime import datetime
-		v1 = Vector([datetime(2024, 1, 1, 12, 0), datetime(2024, 12, 31, 23, 59)])
-		v2 = Vector([datetime(2024, 1, 1, 12, 0), datetime(2024, 12, 31, 23, 59)])
-		assert v1.fingerprint() == v2.fingerprint()
-		
-		v3 = Vector([datetime(2024, 1, 1, 12, 0), datetime(2024, 12, 31, 23, 58)])
-		assert v1.fingerprint() != v3.fingerprint()
-	
-	def test_set_fingerprint_order_independent(self):
-		"""Sets should fingerprint consistently regardless of iteration order."""
-		v1 = Vector([{1, 2, 3}, {4, 5}])
-		v2 = Vector([{3, 2, 1}, {5, 4}])
-		assert v1.fingerprint() == v2.fingerprint()
-	
-	def test_nested_list_fingerprint(self):
-		"""Nested lists should fingerprint without converting to tuples."""
-		v1 = Vector([[1, 2], [3, 4]])
-		v2 = Vector([[1, 2], [3, 4]])
-		assert v1.fingerprint() == v2.fingerprint()
-		
-		v3 = Vector([[1, 2], [3, 5]])
-		assert v1.fingerprint() != v3.fingerprint()
-	
-	def test_tuple_fingerprint(self):
-		"""Tuples should fingerprint recursively."""
-		v1 = Vector([(1, 2), (3, 4)])
-		v2 = Vector([(1, 2), (3, 4)])
-		assert v1.fingerprint() == v2.fingerprint()
-		
-		v3 = Vector([(1, 2), (3, 5)])
-		assert v1.fingerprint() != v3.fingerprint()
-	
-	def test_nested_tuple_fingerprint(self):
-		"""Nested tuples should fingerprint correctly."""
-		v1 = Vector([((1, 2), (3, 4)), ((5, 6), (7, 8))])
-		v2 = Vector([((1, 2), (3, 4)), ((5, 6), (7, 8))])
-		assert v1.fingerprint() == v2.fingerprint()
-	
-	def test_mixed_types_fingerprint(self):
-		"""Vectors with mixed types should fingerprint consistently."""
-		import warnings
-		from datetime import date
-		# Mixed types degrade to object dtype - expect warning
-		with warnings.catch_warnings():
-			warnings.simplefilter("ignore", UserWarning)
-			v1 = Vector([1, 'hello', 3.14, None, date(2024, 1, 1)])
-			v2 = Vector([1, 'hello', 3.14, None, date(2024, 1, 1)])
-		assert v1.fingerprint() == v2.fingerprint()
+def test_categorical_order_is_part_of_fingerprint():
+    left = Vector(['a', 'b']).categorize(['a', 'b'])
+    right = Vector(['a', 'b']).categorize(['b', 'a'])
+
+    assert list(left) == list(right)
+    assert left.fingerprint() != right.fingerprint()
 
 
-class TestFingerprintIncrementalUpdates:
-	"""Test that incremental fingerprint updates work correctly."""
-	
-	def test_single_update_matches_recompute(self):
-		"""Single element update should match full recompute."""
-		v = Vector([1, 2, 3, 4, 5])
-		fp_before = v.fingerprint()
-		
-		# Manual update
-		v[2] = 99
-		fp_after_incremental = v.fingerprint()
-		
-		# Full recompute
-		v_fresh = Vector([1, 2, 99, 4, 5])
-		fp_after_recompute = v_fresh.fingerprint()
-		
-		assert fp_after_incremental == fp_after_recompute
-		assert fp_before != fp_after_incremental
-	
-	def test_single_update_with_none(self):
-		"""Updating to/from None should work correctly."""
-		v = Vector([1, 2, 3])
-		v[1] = None
-		fp1 = v.fingerprint()
-		
-		v_expected = Vector([1, None, 3])
-		assert fp1 == v_expected.fingerprint()
-	
-	def test_single_update_with_nan(self):
-		"""Updating to/from NaN should work correctly."""
-		v = Vector([1.0, 2.0, 3.0])
-		v[1] = float('nan')
-		fp1 = v.fingerprint()
-		
-		v_expected = Vector([1.0, float('nan'), 3.0])
-		assert fp1 == v_expected.fingerprint()
-	
-	def test_single_update_with_negative_zero(self):
-		"""Updating between -0.0 and 0.0 should not change fingerprint."""
-		v = Vector([1.0, 0.0, 3.0])
-		fp_before = v.fingerprint()
-		
-		v[1] = -0.0
-		fp_after = v.fingerprint()
-		
-		assert fp_before == fp_after
-	
-	def test_multi_update_matches_recompute(self):
-		"""Multiple element updates should match full recompute."""
-		v = Vector([1, 2, 3, 4, 5])
-		
-		# Simulate multi-update via setitem slice
-		v[1:4] = [20, 30, 40]
-		fp_after_incremental = v.fingerprint()
-		
-		# Full recompute
-		v_fresh = Vector([1, 20, 30, 40, 5])
-		fp_after_recompute = v_fresh.fingerprint()
-		
-		assert fp_after_incremental == fp_after_recompute
-	
-	def test_update_with_complex_types(self):
-		"""Updates with complex types should work."""
-		v = Vector([[1, 2], [3, 4], [5, 6]])
-		v[1] = [30, 40]
-		fp1 = v.fingerprint()
-		
-		v_expected = Vector([[1, 2], [30, 40], [5, 6]])
-		assert fp1 == v_expected.fingerprint()
+def test_decimal_storage_metadata_is_part_of_fingerprint():
+    values = [Decimal('1.20')]
+    scale_2 = Vector._from_storage(
+        DecimalStorage.from_iterable(values, scale=2, precision=3),
+        Schema(Decimal, False),
+    )
+    scale_3 = Vector._from_storage(
+        DecimalStorage.from_iterable(values, scale=3, precision=4),
+        Schema(Decimal, False),
+    )
+
+    assert list(scale_2) == list(scale_3)
+    assert scale_2.fingerprint() != scale_3.fingerprint()
 
 
-class TestFingerprintDeterminism:
-	"""Test that fingerprints are deterministic across runs."""
-	
-	def test_same_data_same_fingerprint_multiple_times(self):
-		"""Creating the same vector multiple times should give same fingerprint."""
-		import warnings
-		fingerprints = []
-		for _ in range(10):
-			# Mixed types degrade to object dtype - suppress warning
-			with warnings.catch_warnings():
-				warnings.simplefilter("ignore", UserWarning)
-				v = Vector([1, 2, 3, 'hello', None, float('nan')])
-			fingerprints.append(v.fingerprint())
-		
-		# All should be identical
-		assert len(set(fingerprints)) == 1
-	
-	def test_empty_vector_fingerprint(self):
-		"""Empty vectors should fingerprint consistently."""
-		v1 = Vector([])
-		v2 = Vector([])
-		assert v1.fingerprint() == v2.fingerprint()
-		assert v1.fingerprint() == 0  # Empty should hash to 0
-	
-	def test_single_element_vectors(self):
-		"""Single element vectors should fingerprint correctly."""
-		v1 = Vector([42])
-		v2 = Vector([42])
-		v3 = Vector([43])
-		
-		assert v1.fingerprint() == v2.fingerprint()
-		assert v1.fingerprint() != v3.fingerprint()
+@pytest.mark.parametrize(
+    ('left', 'right'),
+    [
+        (float('nan'), float('nan')),
+        (-0.0, 0.0),
+        (complex(1, 2), complex(1, 2)),
+        (date(2024, 1, 1), date(2024, 1, 1)),
+        (datetime(2024, 1, 1, 12, 30), datetime(2024, 1, 1, 12, 30)),
+        (timedelta(days=2, microseconds=3), timedelta(days=2, microseconds=3)),
+        (Decimal('1.20'), Decimal('1.20')),
+        ([1, 2], [1, 2]),
+        ((1, 2), (1, 2)),
+        ({1, 2}, {2, 1}),
+        (frozenset({1, 2}), frozenset({2, 1})),
+        ({'a': 1, 'b': 2}, {'b': 2, 'a': 1}),
+        (b'abc', b'abc'),
+        (bytearray(b'abc'), bytearray(b'abc')),
+    ],
+)
+def test_supported_values_have_canonical_fingerprints(left, right):
+    assert (
+        Vector([left], dtype=object).fingerprint()
+        == Vector([right], dtype=object).fingerprint()
+    )
 
 
-class TestSemanticFingerprint:
-    def test_returns_blake2_hex_digest(self):
-        digest = Vector([1, 2, 3]).semantic_fingerprint()
-        assert len(digest) == 64
-        int(digest, 16)
+def test_unknown_object_raises_instead_of_hashing_repr():
+    class AddressBearingRepr:
+        pass
 
-    def test_is_stable_across_hash_seeds_and_processes(self):
-        code = (
-            "from serif import Vector; "
-            "print(Vector(['analyst', 'flow']).semantic_fingerprint())"
-        )
-        results = []
-        for seed in ('1', '987654'):
-            env = dict(os.environ, PYTHONHASHSEED=seed)
-            results.append(subprocess.check_output(
-                [sys.executable, '-c', code], text=True, env=env).strip())
-        assert results[0] == results[1]
+    vector = Vector([AddressBearingRepr()], dtype=object)
 
-    def test_includes_dtype_nullability_and_vector_name(self):
-        plain = Vector([1], dtype=Schema(int, False), name='x')
-        nullable = Vector([1], dtype=Schema(int, True), name='x')
-        floating = Vector([1.0], name='x')
-        renamed = Vector([1], name='y')
-
-        fingerprints = {
-            v.semantic_fingerprint()
-            for v in (plain, nullable, floating, renamed)
-        }
-        assert len(fingerprints) == 4
-
-    def test_table_identity_includes_shape_names_and_values(self):
-        a = Table({'a': [1, 2]})
-        b = Table({'b': [1, 2]})
-        c = Table({'a': [1, 3]})
-        named = Table({'a': [1, 2]}, name='model_input')
-
-        assert a.fingerprint() == b.fingerprint()  # legacy value-only detector
-        assert len({
-            a.semantic_fingerprint(),
-            b.semantic_fingerprint(),
-            c.semantic_fingerprint(),
-            named.semantic_fingerprint(),
-        }) == 4
-        assert a.semantic_fingerprint() != Vector([1, 2]).semantic_fingerprint()
-
-    def test_categorical_order_is_semantic(self):
-        left = Vector(['a', 'b']).categorize(['a', 'b'])
-        right = Vector(['a', 'b']).categorize(['b', 'a'])
-
-        assert list(left) == list(right)
-        assert left.semantic_fingerprint() != right.semantic_fingerprint()
-
-    def test_owner_column_replacement_changes_both_fingerprints(self):
-        table = Table({'a': [1, 2]})
-        content_before = table.fingerprint()
-        semantic_before = table.semantic_fingerprint()
-
-        table.a = [3, 4]
-
-        assert table.fingerprint() != content_before
-        assert table.semantic_fingerprint() != semantic_before
-
-    def test_unknown_object_raises_instead_of_hashing_repr(self):
-        class AddressBearingRepr:
-            pass
-
-        vector = Vector([AddressBearingRepr()], dtype=object)
-        with pytest.raises(SerifTypeError, match="does not know how to encode"):
-            vector.semantic_fingerprint()
+    with pytest.raises(SerifTypeError, match="does not know how to encode"):
+        vector.fingerprint()
 
 
-
-
+def test_semantic_fingerprint_api_does_not_exist():
+    assert not hasattr(Vector([1]), 'semantic_fingerprint')

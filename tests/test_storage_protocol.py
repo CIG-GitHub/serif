@@ -285,7 +285,7 @@ def test_promotion_on_copy_leaves_source_dtype():
     assert list(v) == [1, 2, 3]
 
 
-def test_copy_carries_fingerprint_then_detaches():
+def test_copy_matches_fingerprint_then_diverges():
     v = Vector([1, 2, 3])
     fp = v.fingerprint()
     c = v.copy()

@@ -123,7 +123,8 @@ class TestFingerprint:
     def test_fingerprint_exists(self):
         v = Vector([1, 2, 3])
         fp = v.fingerprint()
-        assert isinstance(fp, int)
+        assert isinstance(fp, str)
+        assert len(fp) == 64
 
 
 class TestFillNA:

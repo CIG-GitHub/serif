@@ -140,15 +140,17 @@ unchanged until the table has materialized.
 
 ### Identity for dependency graphs
 
-`fingerprint()` is a fast, cached, value-only change detector for one Python
-process. Persistent DAG and cache keys should use `semantic_fingerprint()`:
+`fingerprint()` returns Serif's deterministic identity for dependency graphs
+and persistent cache keys:
 
 ```python
-cache_key = t.semantic_fingerprint()
+cache_key = t.fingerprint()
 ```
 
-The semantic fingerprint is deterministic across processes and includes
+The 64-character BLAKE2 digest is deterministic across processes and includes
 shape, names, dtypes, nullability, categorical/decimal metadata, and values.
+It is recomputed on every call so identity does not depend on cache
+invalidation bookkeeping.
 
 ## Documentation
 
