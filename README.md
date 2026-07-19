@@ -42,6 +42,19 @@ pip install serif
 
 Zero dependencies — `pip freeze` in a fresh environment shows exactly one line.
 
+NumPy and PyArrow are optional accelerators. Install either independently or
+both together:
+
+```bash
+pip install "serif[numpy]"
+pip install "serif[arrow]"
+pip install "serif[numpy,arrow]"
+```
+
+They accelerate Serif's existing storage and operations; they do not change
+returned values, null behavior, errors, or concrete Python types. The pure
+Python implementation remains the specification and fallback.
+
 ## Quickstart
 
 ### Vectors
@@ -146,6 +159,7 @@ unchanged until the table has materialized.
 - [Performance](docs/performance.md) — complexity of the core operations
 - [Gotchas](docs/gotchas.md) — sharp edges worth knowing up front
 - [Development](docs/development.md) — running tests, project structure
+- [Releasing](docs/releasing.md) — versioning, CI gates, tags, and artifacts
 
 ## License
 

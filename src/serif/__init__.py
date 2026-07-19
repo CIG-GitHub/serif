@@ -16,7 +16,8 @@ Internals live in serif._vector:
     - _vector/string.py  — _String
     - _vector/dates.py   — _Date
 
-Zero external dependencies - pure Python stdlib only.
+Zero required dependencies. NumPy and PyArrow are optional accelerators;
+their presence may widen transport and improve performance, never semantics.
 """
 
 from ._vector import Vector
@@ -36,7 +37,7 @@ from .errors import SerifEmptyReductionError
 from .io import read_csv, read_parquet, write_parquet
 from .display import set_repr_rows
 
-__version__ = "0.1.8"
+__version__ = "0.2.0"
 __all__ = [
     "Vector",
     "Table",

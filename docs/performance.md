@@ -1,5 +1,15 @@
 # Performance & Complexity
 
+## Optional acceleration
+- Serif has no required dependencies. When NumPy is installed, fixed-width
+  operations work directly over Serif's existing numeric and byte-mask
+  buffers. When PyArrow is installed, it accelerates variable-width string
+  work and Parquet decoding that NumPy cannot naturally express.
+- Accelerators are opportunistic and per-operation. They either return the
+  exact Serif result or decline to the pure implementation; installing one
+  never changes values, null behavior, errors, schemas, or surfaced Python
+  scalar types.
+
 ## Indexing
 - **Slices:** O(k) where k is slice length
 - **Boolean masks:** O(n) scan + O(m) result construction
@@ -28,11 +38,14 @@
 - **Fingerprinting:** lazy O(n) on first access, cached (O(1)) until the next mutation invalidates it
 
 ## Rule of Thumb
-Vector handles **10K–1M rows** comfortably. For 10M+ rows or compute-heavy numerical work, use NumPy/Polars.
+Vector handles **10K–1M rows** comfortably in pure Python and can extend that
+range substantially when an optional accelerator matches the workload. Serif
+still optimizes for modeling-scale, interactive work rather than replacing a
+distributed or out-of-core engine.
 
 ## Performance Profile
 - **Sweet spot:** Modeling-scale data (thousands to low millions of rows)
 - Optimized for **workflow velocity**, not raw compute throughput
 - Cached fingerprinting enables efficient change detection and caching
-- Future "fast back-end" possibility without changing the Vector UX
+- Optional accelerators operate behind the same Vector and Table semantics
 
