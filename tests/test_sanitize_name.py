@@ -144,6 +144,32 @@ def test_table_getitem_sanitized():
 	assert list(t['price']) == [10, 20, 30]
 
 
+def test_original_names_resolve_in_every_two_axis_form():
+	t = Table({
+		'price ($)': [10, 20, 30],
+		'count@time': [1, 2, 3],
+	})
+
+	assert t[0, 'price ($)'] == 10
+	assert t['price ($)', 1] == 20
+	assert list(t[:, 'price ($)']) == [10, 20, 30]
+	assert t[2, 'price'] == 30
+
+	t[0, ['price ($)', 'count@time']] = [11, 4]
+	t['price ($)', 1] = 22
+
+	assert t.to_dict() == {
+		'price ($)': [11, 22, 30],
+		'count@time': [4, 2, 3],
+	}
+
+
+def test_row_missing_original_name_raises_key_error():
+	t = Table({'price ($)': [10]})
+	with pytest.raises(KeyError, match="missing"):
+		_ = t[0, 'missing']
+
+
 def test_table_dir_sanitized():
 	"""Test that __dir__ returns sanitized names for tab completion"""
 	t = Table({

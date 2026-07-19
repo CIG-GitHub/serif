@@ -124,7 +124,7 @@ class Row(Vector):
     We deliberately bypass Vector.__init__ to avoid O(N) scans, 
     fingerprinting, and alias tracking during iteration.
     """
-    __slots__ = ('_raw_cols', '_column_map', '_index', '_dtype')
+    __slots__ = ('_raw_cols', '_columns', '_column_map', '_index', '_dtype')
     
     def __new__(cls, table, index=0):
         # Bypass Vector.__new__ entirely.
@@ -145,7 +145,8 @@ class Row(Vector):
                 return storage._data  # array.array — O(1) index, lazy boxing
             return storage.to_tuple()
 
-        self._raw_cols = [_backing(col._storage) for col in table._storage]
+        self._columns = tuple(table._storage)
+        self._raw_cols = [_backing(col._storage) for col in self._columns]
         self._column_map = table._column_map
         self._index = index
         
@@ -246,7 +247,8 @@ class Row(Vector):
              return self._raw_cols[key][self._index]
         
         if type(key) is str:
-             return getattr(self, key)
+             col_idx = _resolve_column_key(self._columns, key)
+             return self._raw_cols[col_idx][self._index]
              
         # Fallback to standard vector slicing/masking
         return super().__getitem__(key)
@@ -1026,6 +1028,16 @@ class Table(Vector):
             if len(key) != 2:
                 raise SerifKeyError("Table assignment requires 1D (row) or 2D (row, col) key.")
             row_spec, col_spec = key
+            first_is_columns = (
+                isinstance(row_spec, str)
+                or (
+                    isinstance(row_spec, (list, tuple))
+                    and row_spec
+                    and all(isinstance(item, str) for item in row_spec)
+                )
+            )
+            if first_is_columns:
+                row_spec, col_spec = col_spec, row_spec
         else:
             # t[row] or t[slice] -> implies all columns
             row_spec = key
@@ -1047,23 +1059,12 @@ class Table(Vector):
                 )
             target_indices = [col_spec % n_cols]
         elif isinstance(col_spec, str):
-            # Look up by name
-            idx = self._column_map.get(col_spec)
-            if idx is None:
-                idx = self._column_map.get(col_spec.lower())
-            if idx is None:
-                raise SerifKeyError(f"Column '{col_spec}' not found")
-            target_indices = [idx]
+            target_indices = [_resolve_column_key(self._storage, col_spec)]
         elif isinstance(col_spec, (tuple, list)):
             # Handle list of names/ints
             for c in col_spec:
                 if isinstance(c, str):
-                    idx = self._column_map.get(c)
-                    if idx is None:
-                        idx = self._column_map.get(c.lower())
-                    if idx is None:
-                        raise SerifKeyError(f"Column '{c}' not found")
-                    target_indices.append(idx)
+                    target_indices.append(_resolve_column_key(self._storage, c))
                 elif isinstance(c, bool):
                     raise SerifTypeError("Boolean values are not column indices")
                 elif isinstance(c, int):
