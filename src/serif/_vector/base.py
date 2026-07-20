@@ -2,23 +2,21 @@ import warnings
 from collections.abc import Iterable
 
 from ..errors import SerifTypeError
-from ..errors import SerifIndexError
 from ..errors import SerifValueError
-from ..errors import SerifKeyError
 from ..display import _printr
 from ..naming import _sanitize_user_name
 from . import element_api as _element_api
+from . import mutation as _mutation
 from . import operators as _operators
 from . import reductions as _reductions
+from . import selection as _selection
 from . import transforms as _transforms
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import infer_kind
 from .dtype import promote_dtype
-from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import TupleStorage
-from .._accel.api import _accel_filter
 
 from datetime import date
 from datetime import datetime
@@ -490,326 +488,34 @@ class Vector():
         return len(self._storage)
 
     def __getitem__(self, key):
-        """ Get item(s) from self. Behavior varies by input type:
-        The following return a Vector:
-            # Vector of bool: Logical indexing (masking). Get all items where the boolean is True
-            # List where every element is a bool. See Vector of bool
-            # Slice: return the array elements of the slice.
+        """Get a scalar, slice, mask selection, or positional selection."""
+        return _selection.getitem(self, key)
 
-        Special: Indexing a single index returns a value
-            # Int: 
-        """
-        if isinstance(key, int):
-            # Effectively a different input type (single not a list). Returning a value, not a vector.
-            try:
-                return self._storage[key]
-            except IndexError:
-                raise SerifIndexError(
-                    f"Index {key} out of range for vector length {len(self)}"
-                ) from None
-
-        if isinstance(key, tuple):
-            # 1-D vectors accept only single-element tuples; deeper indexing
-            # belongs to Table (nested vectors are not a supported shape).
-            if len(key) != len(self.shape):
-                raise SerifKeyError(f"Matrix indexing must provide an index in each dimension: {self.shape}")
-            return self[key[0]]
-
-        key = self._check_duplicate(key)
-        if isinstance(key, Vector) and key.schema().kind == bool:
-            # Nullable masks are allowed: a null entry EXCLUDES the row
-            # (SQL WHERE semantics — None is falsy in the filter below).
-            if len(self) != len(key):
-                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
-            fast = _accel_filter(self._storage, key._storage)
-            if fast is not None:
-                return self._clone(fast)
-            return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
-        if isinstance(key, list) and {type(e) for e in key} == {bool}:
-            if len(self) != len(key):
-                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
-            fast = _accel_filter(self._storage, key)
-            if fast is not None:
-                return self._clone(fast)
-            return self.copy((x for x, y in zip(self, key, strict=True) if y), name=self._name)
-        if isinstance(key, slice):
-            return self._clone(self._storage.slice(key))
-
-        # NOT RECOMMENDED
-        if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
-            if len(self) > 1000:
-                warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
-            return self.copy((self[x] for x in key), name=self._name)
-
-        # NOT RECOMMENDED
-        if isinstance(key, list) and {type(e) for e in key} == {int}:
-            if len(self) > 1000:
-                warnings.warn('Subscript indexing is sub-optimal for large vectors')
-            return self.copy((self[x] for x in key), name=self._name)
-        raise SerifTypeError(f'Vector indices must be boolean vectors, integer vectors or integers, not {str(type(key))}')
 
 
     def _require_mutable(self):
-        """Raise if this vector is a frozen table-owned column.
+        """Raise if this vector is a frozen table-owned column."""
+        return _mutation.require_mutable(self)
 
-        The doctrine: read through the column, write through the table.
-        A vector read out of a table is a value — it cannot mutate the
-        table (and the table cannot mutate it back: owner writes swap in
-        a fresh column object). Mutation is owner-addressed.
-        """
-        if self._frozen:
-            col = self._name if self._name is not None else 'col'
-            raise SerifTypeError(
-                "Read-out columns are values: this vector is owned by a "
-                "Table and is frozen. Write through the owning table "
-                "instead:\n"
-                f"    t[key, {col!r}] = value\n"
-                "For an independent mutable vector use .copy(); for bulk "
-                "point-write loops use `with t.batch() as m:`."
-            )
 
     def _require_mutable_metadata(self):
-        """Reject schema mutation through a table-owned column."""
-        if self._frozen:
-            col = self._name if self._name is not None else 'col'
-            raise SerifTypeError(
-                "Read-out columns are values: this vector is owned by a "
-                "Table and its metadata is frozen. Rename through the table "
-                "instead:\n"
-                f"    t = t.rename({{{col!r}: 'new_name'}})\n"
-                "For an independent renameable vector use .copy()."
-            )
+        """Reject metadata mutation through a table-owned column."""
+        return _mutation.require_mutable_metadata(self)
+
 
     def __setitem__(self, key, value):
-        """Public assignment: frozen table-owned columns raise (write
-        through the table — see _require_mutable); everything else
-        delegates to _setitem_impl."""
-        self._require_mutable()
-        self._setitem_impl(key, value)
+        """Assign through a mutable Vector using copy-on-write semantics."""
+        return _mutation.setitem(self, key, value)
+
 
     def _setitem_impl(self, key, value):
+        """Plan, validate, and apply an assignment.
+
+        Table batch and owner-write paths call this hook after establishing
+        their own ownership boundary.
         """
-        Optimized in-place assignment for Vector with:
-        - boolean masks
-        - slices
-        - integer indices
-        - index vectors
-        - list/tuple index sets
+        return _mutation.setitem_impl(self, key, value)
 
-        Includes:
-        - dtype validation & promotion
-        - copy-on-write
-        """
-
-        # === Fast precomputed checks ===
-        key = self._check_duplicate(key)
-        value = self._check_duplicate(value)
-
-        # Is the incoming value iterable?
-        is_seq_val = (
-            isinstance(value, Iterable)
-            and not isinstance(value, (str, bytes, bytearray))
-        )
-
-        n = len(self)
-        underlying = self._storage  # local bind
-
-        updates = []  # list of (idx, new_value)
-
-        # =====================================================================
-        # CASE 1 — Boolean mask (fast-path)
-        # =====================================================================
-        if (
-            isinstance(key, Vector) and key.schema().kind == bool
-        ) or (
-            isinstance(key, list) and all(isinstance(e, bool) for e in key)
-        ):
-            if len(key) != n:
-                raise SerifValueError("Boolean mask length must match vector length.")
-
-            # Precompute true indices (much faster than branch-per-element).
-            # A null mask entry assigns nothing (None is falsy here) — SQL
-            # WHERE semantics, see docs/null-semantics.md.
-            true_indices = [i for i, flag in enumerate(key) if flag]
-            tcount = len(true_indices)
-
-            if is_seq_val:
-                if tcount != len(value):
-                    raise SerifValueError(
-                        "Iterable length must match number of True mask elements."
-                    )
-                for idx, v in zip(true_indices, value):
-                    updates.append((idx, v))
-            else:
-                for idx in true_indices:
-                    updates.append((idx, value))
-
-        # =====================================================================
-        # CASE 2 — Slice assignment
-        # =====================================================================
-        elif isinstance(key, slice):
-            start, stop, step = key.indices(n)
-            slice_len = len(range(start, stop, step))
-
-            if is_seq_val:
-                if slice_len != len(value):
-                    raise SerifValueError("Slice length and value length must match.")
-                values_to_assign = value
-            else:
-                # repeat the scalar
-                values_to_assign = [value] * slice_len
-
-            # faster than enumerate(zip()) for slices
-            rng = range(start, stop, step)
-            for idx, new_val in zip(rng, values_to_assign):
-                updates.append((idx, new_val))
-
-        # =====================================================================
-        # CASE 3 — Single integer index
-        # =====================================================================
-        elif isinstance(key, int):
-            # normalize negative index
-            if key < 0:
-                key += n
-            if not (0 <= key < n):
-                raise SerifIndexError(
-                    f"Index {key} out of range for vector length {n}"
-                )
-            updates.append((key, value))
-
-        # =====================================================================
-        # CASE 4 — Vector of integer indices
-        # =====================================================================
-        elif (
-            isinstance(key, Vector)
-            and key.schema().kind == int
-            and not key.schema().nullable
-        ):
-            if is_seq_val:
-                if len(key) != len(value):
-                    raise SerifValueError(
-                        "Index-vector length must match value length."
-                    )
-                for idx, val in zip(key, value):
-                    if idx < 0:
-                        idx += n
-                    if not (0 <= idx < n):
-                        raise SerifIndexError(f"Index {idx} out of range.")
-                    updates.append((idx, val))
-            else:
-                for idx in key:
-                    if idx < 0:
-                        idx += n
-                    if not (0 <= idx < n):
-                        raise SerifIndexError(f"Index {idx} out of range.")
-                    updates.append((idx, value))
-
-        # =====================================================================
-        # CASE 5 — List or tuple of integer indices
-        # =====================================================================
-        elif (
-            isinstance(key, (list, tuple))
-            and all(isinstance(e, int) for e in key)
-        ):
-            if is_seq_val:
-                if len(key) != len(value):
-                    raise SerifValueError("Index list must match value length.")
-                for idx, val in zip(key, value):
-                    if idx < 0:
-                        idx += n
-                    if not (0 <= idx < n):
-                        raise SerifIndexError(f"Index {idx} out of range.")
-                    updates.append((idx, val))
-            else:
-                for idx in key:
-                    if idx < 0:
-                        idx += n
-                    if not (0 <= idx < n):
-                        raise SerifIndexError(f"Index {idx} out of range.")
-                    updates.append((idx, value))
-
-        else:
-            raise SerifTypeError(
-                f"Invalid key type: {type(key)}. Must be boolean mask, slice, int, "
-                "integer vector, or list/tuple of ints."
-            )
-
-        # =====================================================================
-        # FAST-PATH TYPE CHECK / PROMOTION
-        # =====================================================================
-        if updates:
-            new_values = [v for _, v in updates]
-
-            # Object dtype accepts any type - skip validation
-            if self._dtype is not None and self._dtype.kind is not object:
-                incompatible = None
-                saw_none = False
-                for val in new_values:
-                    if val is None:
-                        # Assigning None widens a non-nullable schema to
-                        # nullable — the column is typed "X", not "X and
-                        # never absent". (A strict never-null column mode
-                        # would raise here; that is a future concept, not
-                        # today's default.)
-                        saw_none = True
-                        continue
-                    try:
-                        validate_scalar(val, self._dtype)
-                    except TypeError:
-                        incompatible = val
-                        break
-
-                if incompatible is not None:
-                    required_dtype = infer_dtype([incompatible])
-                    try:
-                        self._promote(required_dtype.kind)
-                        underlying = self._storage
-                    except SerifTypeError:
-                        raise SerifTypeError(
-                            f"Cannot set {required_dtype.kind.__name__} in "
-                            f"{self._dtype.kind.__name__} vector. "
-                            f"Promotion not supported."
-                        )
-
-                if saw_none and not self._dtype.nullable:
-                    self._dtype = Schema(self._dtype.kind, True)
-        # =====================================================================
-        # MUTATE — in-place fast path (batch() scope only), else rebuild
-        # =====================================================================
-        # Raw writes are legal only inside a batch() scope: copy-on-enter
-        # privatized the buffers, so nothing else can observe them. The
-        # storage declines (False) anything it can't hold — including after
-        # an in-place kind promotion, which swapped in a TupleStorage with
-        # no write_inplace at all — and the rebuild path below remains the
-        # specification.
-        if self._inplace_ok and updates:
-            write = getattr(self._storage, 'write_inplace', None)
-            if write is not None and write(updates):
-                return
-
-        data_list = list(underlying)           # COW materialization
-
-        for idx, new_val in updates:
-            data_list[idx] = new_val
-
-        # Rebuild through a dtype-keyed dispatch (not the instance class):
-        # typed vectors keep their backend across mutation — an int column
-        # stays ArrayStorage('q') and remains e.g. Parquet-writable — and the
-        # dispatch stays correct even right after an in-place kind promotion,
-        # when the instance class lags the new dtype.
-        nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = _storage_for_dtype(self._dtype, data_list, nullable)
-
-
-
-    """ Comparison Operators - equality and hashing
-        # __eq__ ==
-        # __ge__ >=
-        # __gt__ >
-        # __lt__ <
-        # __le__ <=
-        # __ne__ !=
-    """
     def _elementwise_compare(self, other, op):
         return _operators.elementwise_compare(self, other, op)
 
