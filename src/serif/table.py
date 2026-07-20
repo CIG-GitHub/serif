@@ -5,12 +5,12 @@ from collections.abc import Iterable
 from ._vector import Vector
 from ._vector import Schema
 from ._vector.base import _null_sort_flag
-from ._vector.base import _accel_take
-from ._vector.base import _accel_take_pad
-from ._vector.base import _accel_popcount
-from ._vector.base import _accel_group
-from ._vector.base import _accel_join_probe
-from ._vector.base import _take
+from ._accel.api import _accel_take
+from ._accel.api import _accel_take_pad
+from ._accel.api import _accel_popcount
+from ._accel.api import _accel_group
+from ._accel.api import _accel_join_probe
+from ._accel.api import _take
 
 from .naming import _sanitize_user_name
 from .naming import _disambiguate

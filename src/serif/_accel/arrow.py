@@ -42,7 +42,7 @@ Arrow's *_checked kernels detect instead: they skip null lanes, compute
 once, and raise on the first lane that actually overflows or divides by
 zero — so int over-declines get a second chance before pure, and
 division skips the preparation passes entirely (which is why truediv
-tries arrow FIRST — see base.py's _accel_binop).
+tries arrow FIRST — see api.py's _accel_binop).
 
 Buffer lifetime and mutation: py_buffer holds a reference to the object
 it wraps, so a returned arrow array keeps serif's buffers alive on its

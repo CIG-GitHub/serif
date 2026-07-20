@@ -602,7 +602,7 @@ def test_rename_on_deferred_table_is_owner_addressed(tier):
 
 def test_popcount_conformance():
     pytest.importorskip("numpy")
-    from serif._vector.base import _accel_popcount
+    from serif._accel.api import _accel_popcount
     for values in ([True, False, True], [True, None, False, True],
                    [None, None], [], [False, False]):
         mask = Vector(values, dtype=None) if values else Vector([True])[0:0]
