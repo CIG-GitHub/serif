@@ -211,7 +211,5 @@ def setitem_impl(vector, key, value):
         data[index] = new_value
 
     nullable = vector._dtype.nullable if vector._dtype is not None else True
-    # Construction policy moves in Commit 7. Keep this import lazy until then
-    # so mutation can be extracted without creating an import cycle.
-    from .base import _storage_for_dtype
+    from .construction import _storage_for_dtype
     vector._storage = _storage_for_dtype(vector._dtype, data, nullable)

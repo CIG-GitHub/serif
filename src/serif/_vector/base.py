@@ -5,6 +5,7 @@ from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..display import _printr
 from ..naming import _sanitize_user_name
+from . import construction as _construction
 from . import element_api as _element_api
 from . import mutation as _mutation
 from . import operators as _operators
@@ -12,10 +13,6 @@ from . import reductions as _reductions
 from . import selection as _selection
 from . import transforms as _transforms
 from .dtype import Schema
-from .dtype import infer_dtype
-from .dtype import infer_kind
-from .dtype import promote_dtype
-from .storage import ArrayStorage
 from .storage import TupleStorage
 
 from datetime import date
@@ -34,110 +31,6 @@ from typing import List
 # ============================================================
 # Vector construction helpers
 # ============================================================
-
-def _collect_and_infer(iterable, dtype_hint):
-    """
-    Walk 'iterable' exactly once.
-
-    Simultaneously: collects values into a list, checks whether all items are
-    Vector instances (Table candidate), and infers the DataType.
-
-    Returns
-    -------
-    data        : list
-    all_vectors : bool  — True if every item is a Vector (Table candidate)
-    dtype       : DataType | None
-    """
-    data = []
-    all_vectors = True
-    dtype = dtype_hint
-    saw_none = False
-    saw_vector = False
-
-    for val in iterable:
-        data.append(val)
-        if isinstance(val, Vector):
-            # Columns don't inform a SCALAR dtype: running promote_dtype on
-            # them fires the object-degrade warning for every mixed-kind
-            # table composed via >> (the "column" it degrades is a phantom
-            # — the 1-D reading abandoned once is_table comes back True).
-            saw_vector = True
-            continue
-        all_vectors = False
-        if dtype is None:
-            # Order-independent inference: a leading None only sets nullable;
-            # the kind comes from the first non-None value.
-            if val is None:
-                saw_none = True
-                continue
-            dtype = Schema(infer_kind(val), saw_none)
-        else:
-            dtype = promote_dtype(dtype, val)
-
-    if saw_vector and not all_vectors:
-        # Degenerate mix of columns and scalars in one collection — not a
-        # table, so the Vectors ARE elements after all. Re-infer over
-        # everything so promotion (and its degrade warning) fires here,
-        # where it's real. Rare path; the second walk costs nothing.
-        dtype = dtype_hint
-        saw_none = False
-        for val in data:
-            if dtype is None:
-                if val is None:
-                    saw_none = True
-                    continue
-                dtype = Schema(infer_kind(val), saw_none)
-            else:
-                dtype = promote_dtype(dtype, val)
-
-    if dtype is None and saw_none:
-        # All values were None: no kind to infer.
-        dtype = Schema(object, True)
-
-    return data, all_vectors, dtype
-
-
-def _storage_for_dtype(dtype, data, nullable):
-    """
-    Build the storage backend appropriate for a Schema. Mirrors the subclass
-    _build_storage dispatch, but keyed on dtype rather than instance class —
-    used by __setitem__ rebuilds, where an in-place kind promotion can leave
-    the instance class behind the new dtype.
-    """
-    kind = dtype.kind if dtype is not None else None
-    if kind is int:
-        try:
-            return ArrayStorage.from_iterable(data, typecode='q', nullable=nullable)
-        except OverflowError:
-            # Arbitrary-precision ints don't fit i64 — values stay exact in
-            # a tuple backend (never truncate; Python semantics first).
-            return TupleStorage.from_iterable(data, nullable=nullable)
-    if kind is float:
-        return ArrayStorage.from_iterable(data, typecode='d', nullable=nullable)
-    if kind is str:
-        from .storage import StringStorage
-        return StringStorage.from_iterable(data)
-    return TupleStorage.from_iterable(data, nullable=nullable)
-
-
-def _pick_target_class(dtype):
-    """Return the Vector subclass appropriate for the given DataType."""
-    if dtype is None:
-        return Vector
-    if dtype.kind is str:
-        from .string import _String
-        return _String
-    if dtype.kind is int:
-        from .numeric import _Int
-        return _Int
-    if dtype.kind is float:
-        from .numeric import _Float
-        return _Float
-    if dtype.kind is date:
-        from .dates import _Date
-        return _Date
-    return Vector
-
 
 # ============================================================
 # Main backend
@@ -166,141 +59,61 @@ class Vector():
 
 
     def __new__(cls, initial=(), dtype=None, name=None, **kwargs):
-        # Subclass construction (Table, _Int, _Float, etc.): just allocate,
-        # __init__ will handle initialization.
-        if cls is not Vector:
-            return object.__new__(cls)
+        return _construction.new(
+            cls,
+            initial=initial,
+            dtype=dtype,
+            name=name,
+            **kwargs,
+        )
 
-        # Normalize dtype: plain Python types are a hint, not a full Schema.
-        # Only a Schema instance carries both kind and nullable — use the fast path.
-        # Plain types need inference to determine nullable from actual data.
-        if dtype is not None and not isinstance(dtype, Schema):
-            dtype_hint = Schema(dtype, False)
-        else:
-            dtype_hint = dtype
-
-        # Fast path: data already materialized and Schema known (internal calls).
-        if isinstance(initial, (list, tuple)) and isinstance(dtype_hint, Schema):
-            data = initial
-            is_table = False
-            dtype = dtype_hint
-        else:
-            # Single Python loop: collect + table-check + infer simultaneously
-            data, is_table, dtype = _collect_and_infer(initial, dtype_hint)
-
-        # Table path
-        if is_table and data:
-            if len({len(x) for x in data}) == 1:
-                from ..table import Table
-                return Table(initial=data, dtype=dtype, name=name)
-            from ..errors import SerifValueError
-            raise SerifValueError('Passing vectors of different length will not produce a Table.')
-
-        # Dispatch to the right subclass
-        target_class = _pick_target_class(dtype)
-
-        # Allocate and fully initialize — __init__ will see _storage and return early
-        instance = object.__new__(target_class)
-        instance._dtype = dtype
-        instance._name = name
-        instance._wild = True
-        nullable = dtype.nullable if dtype is not None else True
-        instance._storage = instance._build_storage(data, nullable)
-        return instance
 
 
     def __init__(self, initial=(), dtype=None, name=None, **kwargs):
-        # Factory path: __new__ already built the instance fully.
-        if '_storage' in self.__dict__:
-            return
+        return _construction.initialize(
+            self,
+            initial=initial,
+            dtype=dtype,
+            name=name,
+            **kwargs,
+        )
 
-        # Subclass path: Table.__init__ → super().__init__(), or other subclass
-        # direct construction. self._dtype may already be set by the subclass.
-        self._name = name
-        self._wild = True
-        if dtype is not None:
-            if not isinstance(dtype, Schema):
-                dtype = Schema(dtype, False)
-            self._dtype = dtype
-        nullable = self._dtype.nullable if self._dtype is not None else True
-        self._storage = self._build_storage(initial, nullable)
 
     def _build_storage(self, data, nullable):
-        tc = getattr(self, 'typecode', None)
-        if tc is not None:
-            return ArrayStorage.from_iterable(data, typecode=tc, nullable=nullable)
-        # Route str and bool columns to their compact buffer backends
-        if getattr(self, '_dtype', None) is not None and self._dtype.kind is str:
-            from .storage import StringStorage
-            return StringStorage.from_iterable(data)
-        if getattr(self, '_dtype', None) is not None and self._dtype.kind is bool:
-            from .storage import BoolStorage
-            return BoolStorage.from_iterable(data, nullable=nullable)
-        return TupleStorage.from_iterable(data, nullable=nullable)
+        return _construction.build_storage(self, data, nullable)
+
 
     def _clone(self, new_storage, dtype=..., name=...):
-        """
-        Fastest possible copy: bypass __new__, __init__, and all inference.
+        """Clone with known storage, preserving subtype and schema by default."""
+        return _construction.clone(
+            self,
+            new_storage,
+            dtype=dtype,
+            name=name,
+        )
 
-        Use when the output dtype and subclass are already known — e.g. after
-        a sort, permutation, or any op where the type cannot change.
-
-        dtype and name default to self's values (sentinel ... means "keep").
-        Pass explicit values to override.
-
-        Construction-path contract (which builder to use when)
-        -------------------------------------------------------
-        Vector(...)                    — public: full inference + class
-                                         dispatch; the only path that may
-                                         return a Table.
-        copy()                         — same subclass & schema, name kept
-                                         by default; storage SHARED (rebuild-
-                                         on-write keeps copies independent),
-                                         rebuilt only when new_values given.
-        _clone(storage)                — SAME subclass, dtype/name kept:
-                                         permutations of existing data only.
-                                         Never changes the element kind.
-        _from_storage(storage, dtype)  — class picked FROM dtype, unnamed
-                                         wildness off: I/O fast paths with a
-                                         fully-known prebuilt backend.
-        _from_iterable_known_dtype(it, dtype)
-                                       — class picked from dtype, one walk
-                                         into storage, zero inference:
-                                         derived results whose schema is
-                                         known before materialization.
-        """
-        instance = object.__new__(type(self))
-        instance._dtype = self._dtype if dtype is ... else dtype
-        instance._name = self._name if name is ... else name
-        instance._wild = True
-        instance._storage = new_storage
-        return instance
 
     @classmethod
     def _from_storage(cls, storage, dtype, name=None):
-        """Create a Vector directly from a pre-built storage object.
-        Zero iterations, zero inference — for I/O fast paths where storage
-        and dtype are fully known (e.g. Parquet DOUBLE/INT64 non-nullable)."""
-        target_cls = _pick_target_class(dtype) if dtype is not None else cls
-        instance = object.__new__(target_cls)
-        instance._dtype = dtype
-        instance._name = name
-        instance._wild = False
-        instance._storage = storage
-        return instance
+        """Create a Vector from fully known, pre-built storage."""
+        return _construction.from_storage(
+            cls,
+            storage,
+            dtype,
+            name=name,
+        )
+
 
     @classmethod
     def _from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
-        """Build a Vector directly from an iterable when the dtype is already known.
-        Bypasses __new__/__init__ inference; one walk into storage."""
-        target_cls = _pick_target_class(dtype)
-        instance = object.__new__(target_cls)
-        instance._dtype = dtype
-        instance._name = name
-        instance._wild = True
-        nullable = dtype.nullable if dtype is not None else True
-        instance._storage = instance._build_storage(iterable, nullable)
-        return instance
+        """Build from an iterable without repeating known-dtype inference."""
+        return _construction.from_iterable_known_dtype(
+            cls,
+            iterable,
+            dtype,
+            name=name,
+        )
+
 
 
     @property
@@ -328,44 +141,24 @@ class Vector():
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
-        """Create a vector of `length` copies of `value` (a fill-constructor).
+        """Create a vector containing length copies of value."""
+        return _construction.filled(
+            cls,
+            value,
+            length,
+            typesafe=typesafe,
+        )
 
-        Example: ``Vector.filled(0.5, length=15)`` → fifteen 0.5s.
-        A length of 0 yields an empty vector that still carries `value`'s dtype.
-        """
-        if length:
-            assert isinstance(length, int)
-            dtype = infer_dtype([value])
-            if typesafe:
-                dtype = Schema(dtype.kind, False)
-            return cls([value for _ in range(length)], dtype=dtype)
-        dtype = infer_dtype([value]) if value is not None else Schema(object, False)
-        if typesafe:
-            dtype = Schema(dtype.kind, False)
-        return cls(dtype=dtype)
 
 
     def copy(self, new_values=None, name=...):
-        """
-        Snapshot of this vector. With no new_values this is O(1): the frozen
-        storage object is SHARED, not duplicated — the storage protocol is
-        rebuild-only (storage.py), so mutating either vector rebinds it a NEW
-        storage and the other never sees the write. Pass new_values to build
-        a same-schema vector from different data (storage rebuilt).
-        """
-        use_name = self._name if name is ... else name
-        if self._dtype is not None:
-            if new_values is None:
-                return self._clone(self._storage, name=use_name)
-            # Typed 1D vector with replacement values: build storage
-            # directly, no inference needed.
-            return self._clone(self._build_storage(new_values, self._dtype.nullable), name=use_name)
-        # dtype unknown (Table or untyped vector): full constructor for class
-        # dispatch. Explicit None check — an empty new_values means "empty
-        # copy", not "copy the original".
-        source = list(new_values) if new_values is not None else list(self._storage)
-        return Vector(source, dtype=None, name=use_name)
-    
+        """Create an independent Vector shell, sharing frozen storage when possible."""
+        return _construction.copy(
+            self,
+            new_values=new_values,
+            name=name,
+        )
+
     def to_object(self):
         """
         Convert this vector to object dtype, allowing mixed types.
