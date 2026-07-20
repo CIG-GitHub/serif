@@ -14,10 +14,10 @@ def test_fillna_maps_over_cells_and_preserves_names():
     assert t.to_dict() == {'a': [1, None], 'b': [None, 4.0]}
 
 
-def test_isna_returns_same_shaped_named_table():
+def test_is_na_returns_same_shaped_named_table():
     t = Table({'a': [1, None], 'b': [None, 4]})
 
-    result = t.isna()
+    result = t.is_na()
 
     assert result.shape == t.shape
     assert result.to_dict() == {

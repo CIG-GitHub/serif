@@ -294,11 +294,11 @@ class TestSetitemPromotion:
 
 
 class TestNullableBehavior:
-    """Masking and null-handling APIs: isna, fillna, dropna."""
+    """Masking and null-handling APIs: is_na, fillna, dropna."""
 
-    def test_isna_returns_boolean_mask(self):
+    def test_is_na_returns_boolean_mask(self):
         v = Vector([1, None, 3, None])
-        m = v.isna()
+        m = v.is_na()
 
         s = m.schema()
         assert s.kind is bool

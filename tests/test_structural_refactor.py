@@ -1,7 +1,7 @@
 """
 Pins for behavior changes that ride along with the structural refactor
 (commit 1): dtype/backend preservation through sort/join/window, the
-unified duplicate-name disambiguation rule, and isna() derivation rules.
+unified duplicate-name disambiguation rule, and is_na() derivation rules.
 """
 
 import warnings
@@ -129,7 +129,7 @@ def test_window_key_stays_categorical():
 
 
 # ---------------------------------------------------------------------------
-# isna(): derived, unnamed, plain bool Vector on every backend
+# is_na(): derived, unnamed, plain bool Vector on every backend
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('data', [
@@ -138,9 +138,9 @@ def test_window_key_stays_categorical():
     ['a', None, 'c'],             # str → StringStorage + mask
     [1, 2, 3],                    # no nulls, no mask
 ])
-def test_isna_returns_unnamed_plain_bool_vector(data):
+def test_is_na_returns_unnamed_plain_bool_vector(data):
     v = Vector(data, name='src')
-    m = v.isna()
+    m = v.is_na()
     assert m.vector_name is None, "derived vectors start unnamed (invariant 5)"
     assert type(m).__name__ == 'Vector'
     assert m.schema() == Schema(bool, False)

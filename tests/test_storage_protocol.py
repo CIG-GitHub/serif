@@ -151,8 +151,8 @@ def test_first_last(factory, values):
 # ---------------------------------------------------------------------------
 
 @_params(CASES, IDS)
-def test_isna(factory, values):
-    assert list(factory().isna()) == [x is None for x in values]
+def test_is_na(factory, values):
+    assert list(factory().is_na()) == [x is None for x in values]
 
 
 @_params(CASES, IDS)
