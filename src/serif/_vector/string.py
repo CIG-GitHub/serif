@@ -1,5 +1,5 @@
 from .base import Vector
-from .base import _elementwise_proxy
+from .element_api import _elementwise_proxy
 
 
 class _String(Vector):

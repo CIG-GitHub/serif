@@ -397,7 +397,7 @@ class _Category(Vector):
     # ------------------------------------------------------------------
 
     def sort_by(self, reverse=False, na_last=True):
-        from .base import _null_sort_flag
+        from .transforms import _null_sort_flag
         n = len(self)
         key_fn = lambda i: (
             _null_sort_flag(self._code_storage.is_null(i), reverse, na_last),

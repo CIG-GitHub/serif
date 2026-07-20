@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 from ._vector import Vector
 from ._vector import Schema
-from ._vector.base import _null_sort_flag
+from ._vector.transforms import _null_sort_flag
 from ._accel.api import _accel_take
 from ._accel.api import _accel_take_pad
 from ._accel.api import _accel_popcount

@@ -1,5 +1,4 @@
 import warnings
-from builtins import isinstance as b_isinstance
 from collections.abc import Iterable
 
 from ..errors import SerifTypeError
@@ -8,8 +7,10 @@ from ..errors import SerifValueError
 from ..errors import SerifKeyError
 from ..display import _printr
 from ..naming import _sanitize_user_name
+from . import element_api as _element_api
 from . import operators as _operators
 from . import reductions as _reductions
+from . import transforms as _transforms
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import infer_kind
@@ -18,7 +19,6 @@ from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import TupleStorage
 from .._accel.api import _accel_filter
-from .._accel.api import _take
 
 from datetime import date
 from datetime import datetime
@@ -32,53 +32,6 @@ from typing import List
 # ============================================================
 # Small helpers
 # ============================================================
-
-def _null_sort_flag(is_null: bool, reverse: bool, na_last: bool) -> bool:
-    """
-    Sort-key flag that places nulls last (na_last=True) or first for BOTH
-    sort directions: the flag flips with `reverse` so the nulls' final
-    position is direction-independent. Shared by Vector.sort_by,
-    _Category.sort_by, and Table.sort_by — one rule, three callers.
-    """
-    return (is_null != reverse) if na_last else (is_null == reverse)
-
-
-class MethodProxy:
-    """Proxy that defers method calls to each element in a Vector."""
-    def __init__(self, vector, method_name):
-        self._vector = vector
-        self._method_name = method_name
-
-    def __call__(self, *args, **kwargs):
-        method = self._method_name
-        results = []
-        for elem in self._vector._storage:
-            if elem is None:
-                results.append(None)
-            else:
-                results.append(getattr(elem, method)(*args, **kwargs))
-        return Vector(results)
-
-
-def _elementwise_proxy(method_name):
-    """
-    Build a per-element proxy method: None passes through, every other
-    element has `method_name` called on it, results collected into a Vector.
-
-    Used by the typed subclasses (_String, _Date) to stamp element methods
-    onto the class at definition time — same semantics as the MethodProxy
-    that Vector.__getattr__ falls back to, but visible to dir() and
-    tab-completion.
-    """
-    def proxy(self, *args, **kwargs):
-        return Vector(tuple(
-            (getattr(s, method_name)(*args, **kwargs) if s is not None else None)
-            for s in self._storage
-        ))
-    proxy.__name__ = method_name
-    proxy.__doc__ = f"Element-wise {method_name}() on each value (None passes through)."
-    return proxy
-
 
 # ============================================================
 # Vector construction helpers
@@ -427,11 +380,8 @@ class Vector():
             a = a.to_object()            # now object vector
             a[2] = "ryan"                # allowed - can mix types
         """
-        return self._clone(
-            TupleStorage.from_iterable(self._storage),
-            dtype=Schema(object, self._dtype.nullable if self._dtype is not None else True),
-            name=self._name,
-        )
+        return _transforms.to_object(self)
+
 
     def alias(self, new_name):
         """
@@ -459,96 +409,12 @@ class Vector():
         Convert each element to target_type, recursively if the element is a Vector.
         Preserves None values and infers nullable dtype.
         """
-        py_target_type = target_type  # logical type for dtype / error messages
+        return _transforms.cast(self, target_type)
 
-        # Python Date interceptors
-        if target_type is date:
-            def caster(x):
-                if isinstance(x, date):
-                    return x
-                return date.fromisoformat(x)
-        elif target_type is datetime:
-            def caster(x):
-                if isinstance(x, datetime):
-                    return x
-                return datetime.fromisoformat(x)
-        else:
-            caster = target_type  # either a type like str/int, or a callable
-
-        out = []
-        has_none = False
-        for i, elem in enumerate(self._storage):
-            if elem is None:
-                out.append(None)
-                has_none = True
-                continue
-
-            try:
-                if isinstance(elem, Vector):
-                    out.append(elem.cast(target_type))
-                else:
-                    out.append(caster(elem))
-            except Exception as exc:
-                type_name = getattr(py_target_type, "__name__", repr(py_target_type))
-                raise SerifValueError(
-                    f"Cast failed at index {i}: {elem!r} cannot be converted to {type_name}"
-                ) from exc
-
-        # Now decide dtype using the *logical* type, not the callable
-        if isinstance(py_target_type, type):
-            new_dtype = Schema(py_target_type, has_none)
-        else:
-            new_dtype = infer_dtype(out)
-
-        return Vector(out, dtype=new_dtype, name=self._name)
 
     def fillna(self, value):
-        dtype = self.schema()
+        return _transforms.fillna(self, value)
 
-        # Type check and promotion (same pattern as __setitem__)
-        if dtype is not None and value is not None:
-            try:
-                validate_scalar(value, dtype)
-            except TypeError:
-                # Value is incompatible - need promotion
-                required_dtype = infer_dtype([value])
-                try:
-                    # Clone (zero-cost storage share), then promote in one walk.
-                    result = self._clone(self._storage)
-                    result._promote(required_dtype.kind)
-                    # Fill in one walk; Vector(tuple, Schema) fast-paths to free wrap.
-                    out = tuple(value if x is None else x for x in result._storage)
-                    return Vector(
-                        out,
-                        dtype=Schema(required_dtype.kind, False),
-                        name=self._name,
-                    )
-                except SerifTypeError:
-                    raise SerifValueError(
-                        f"fillna: value {value!r} (type {type(value).__name__}) "
-                        f"cannot be used with {dtype.kind.__name__} vector. "
-                        f"Promotion not supported."
-                    )
-
-        # Standard path: fill value is compatible with dtype
-        out = tuple(value if x is None else x for x in self._storage)
-
-        # Replacing None with a non-None value eliminates all nulls;
-        # replacing None with None leaves nullability unchanged.
-        new_nullable = value is None and (self._dtype.nullable if self._dtype is not None else True)
-
-        # Construct new dtype
-        if dtype is None:
-            # Mixed type → leave as None (dtype inference will happen)
-            new_dtype = None
-        else:
-            new_dtype = Schema(dtype.kind, new_nullable)
-
-        return Vector(
-            out,
-            dtype=new_dtype,
-            name=self._name,
-        )
 
     def dropna(self):
         """
@@ -565,10 +431,8 @@ class Vector():
         >>> v.dropna()
         Vector([1, 3, 5])
         """
-        storage = self._storage
-        new_dtype = Schema(self._dtype.kind, False) if self._dtype is not None else None
-        kept = [i for i in range(len(storage)) if not storage.is_null(i)]
-        return self._clone(_take(storage, kept), dtype=new_dtype)
+        return _transforms.dropna(self)
+
 
     def is_na(self):
         """
@@ -585,25 +449,8 @@ class Vector():
         >>> v.is_na()
         Vector([False, True, False])
         """
-        storage = self._storage
-        from .storage import StringStorage, BoolStorage
-        if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage)):
-            # Fast path: iterate the null mask directly — it already knows
-            # which slots are null (yields True per null), so we avoid
-            # unboxing numerics / decoding UTF-8 just to test None. If there
-            # is no mask, no elements are null. Built via _from_storage (not
-            # _clone) so the result is a plain unnamed bool Vector, per the
-            # naming invariant for derived vectors.
-            if storage._mask is None:
-                result = BoolStorage(bytearray(len(storage)))
-            else:
-                result = BoolStorage(bytearray(
-                    1 if is_null else 0 for is_null in storage._mask))
-            return Vector._from_storage(result, Schema(bool, False))
-        return Vector._from_iterable_known_dtype(
-            (elem is None for elem in storage),
-            Schema(bool, False),
-        )
+        return _transforms.is_na(self)
+
 
     def is_type(self, types):
         """
@@ -631,10 +478,8 @@ class Vector():
         >>> v.is_type(type(None))
         Vector([False, False, False, True])
         """
-        return Vector._from_iterable_known_dtype(
-            (b_isinstance(elem, types) for elem in self._storage),
-            Schema(bool, False),
-        )
+        return _transforms.is_type(self, types)
+
 
     def __iter__(self):
         """ iterate over the underlying tuple """
@@ -1190,35 +1035,8 @@ class Vector():
         return _reductions.count(self)
 
     def unique(self):
-        seen = set()
-        out = []
-        has_none = False
+        return _transforms.unique(self)
 
-        # Fast path: hashable
-        try:
-            for x in self._storage:
-                if x not in seen:
-                    seen.add(x)
-                    out.append(x)
-                    if x is None:
-                        has_none = True
-            if self._dtype is not None:
-                return Vector(out, dtype=Schema(self._dtype.kind, has_none))
-            return Vector(out)
-        except TypeError:
-            pass   # fall through → slow path
-
-        # Slow path: unhashables
-        out = []
-        has_none = False
-        for x in self._storage:
-            if not any(x == y for y in out):
-                out.append(x)
-                if x is None:
-                    has_none = True
-        if self._dtype is not None:
-            return Vector(out, dtype=Schema(self._dtype.kind, has_none))
-        return Vector(out)
 
     def sort_by(self, reverse=False, na_last=True):
         """
@@ -1237,21 +1055,12 @@ class Vector():
         Vector
             Sorted vector with same dtype
         """
-        storage = self._storage
-        n = len(storage)
-
-        # Build sort order from indices — avoids materializing Python objects
-        # for the ArrayStorage case. is_null() is a direct mask check (no unboxing).
-        key_fn = lambda i: (
-            _null_sort_flag(storage.is_null(i), reverse, na_last),
-            storage[i] if not storage.is_null(i) else 0,
+        return _transforms.sort_by(
+            self,
+            reverse=reverse,
+            na_last=na_last,
         )
 
-        order = sorted(range(n), key=key_fn, reverse=reverse)
-
-        # Permute through the storage protocol — no Vector() constructor,
-        # no type inference, works for every backend.
-        return self._clone(_take(storage, order))
 
 
     def _check_duplicate(self, other):
@@ -1422,38 +1231,5 @@ class Vector():
 
 
     def __getattr__(self, name):
-        """Proxy attribute access to underlying dtype.
-        
-        Distinguishes between properties (like date.year) and methods (like str.replace):
-        - Properties are evaluated immediately and return a Vector
-        - Methods return a MethodProxy that waits for () to be called
-        """
-        # 1. If we are untyped (object), don't guess. Explicit > Implicit.
-        # Use __dict__ to avoid recursive __getattr__ calls
-        schema = object.__getattribute__(self, 'schema')()
-        if schema is None:
-            raise AttributeError(f"Empty Vector has no attribute '{name}'")
-        dtype_kind = schema.kind
-        if dtype_kind is object:
-            raise AttributeError(f"Vector[object] has no attribute '{name}'")
-        
-        # 2. Inspect the class definition of the type we are holding
-        # getattr(cls, name) returns the actual class member (method, property, slot)
-        cls_attr = getattr(dtype_kind, name, None)
-        
-        if cls_attr is None:
-            # If the class doesn't have it, we definitely don't have it
-            raise AttributeError(f"'{dtype_kind.__name__}' object has no attribute '{name}'")
-        
-        # 3. Check if it's callable at the class level
-        # If it's callable, it's a method. If not, it's a property/descriptor.
-        if callable(cls_attr):
-            # It's a method -> Return the proxy to wait for ()
-            return MethodProxy(self, name)
-        else:
-            # property (non-callable attribute)
-            return Vector(tuple(
-                getattr(x, name) if x is not None else None
-                for x in self._storage
-            ))
-
+        """Proxy attribute access to the underlying scalar dtype."""
+        return _element_api.resolve(self, name)
