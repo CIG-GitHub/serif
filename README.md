@@ -31,7 +31,7 @@ t
 #          20          5     100     10.0
 #          30          6     180     18.0
 #
-# 3×4 table <int:3, float>
+# 3×4 table <int, float>
 ```
 
 ## Installation
@@ -108,9 +108,12 @@ sales.aggregate(
     groupby=sales.customer,
     aggregations={'total': sales.amount.sum, 'n': len},
 )
-# customer  total  n
-#        A    250  2
-#        B    200  1
+# customer  total      n
+# [str]     [int]  [int]
+# A           250      2
+# B           200      1
+#
+# 2×3 table <int, str>
 ```
 
 ### CSV and Parquet
