@@ -35,7 +35,7 @@ Scalars broadcast deliberately; vectors never broadcast by length, align by
 label, or recycle values.
 
 ## 5. Names do not propagate through math
-Value-producing operations such as math, comparisons, `isna()`, `is_type()`,
+Value-producing operations such as math, comparisons, `is_na()`, `is_type()`,
 string methods, and `unique()` return unnamed vectors. Structural selections
 and same-column operations — copy, slice, mask, sort, cast, `fillna()`, and
 `dropna()` — retain the source name. Use `.alias()` to name a derived value

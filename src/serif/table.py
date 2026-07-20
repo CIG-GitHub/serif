@@ -600,9 +600,9 @@ class Table(Vector):
         """Fill null cells in every column with *value*."""
         return self._map_columns(lambda col: col.fillna(value))
 
-    def isna(self):
+    def is_na(self):
         """Return a same-shaped bool Table marking null cells."""
-        return self._map_columns(lambda col: col.isna())
+        return self._map_columns(lambda col: col.is_na())
 
     def is_type(self, types):
         """Return a same-shaped bool Table applying ``isinstance`` per cell."""

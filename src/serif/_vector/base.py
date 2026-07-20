@@ -1004,7 +1004,7 @@ class Vector():
         kept = [i for i in range(len(storage)) if not storage.is_null(i)]
         return self._clone(_take(storage, kept), dtype=new_dtype)
 
-    def isna(self):
+    def is_na(self):
         """
         Return boolean mask of None values.
         
@@ -1016,7 +1016,7 @@ class Vector():
         Examples
         --------
         >>> v = Vector([1, None, 3])
-        >>> v.isna()
+        >>> v.is_na()
         Vector([False, True, False])
         """
         storage = self._storage
@@ -1446,7 +1446,7 @@ class Vector():
         if other is None and op in (operator.eq, operator.ne):
             warnings.warn(
                 "Null comparison: `v == None` yields null for every element. "
-                "Use `v.isna()` to test for nulls.",
+                "Use `v.is_na()` to test for nulls.",
                 stacklevel=2
             )
         nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None

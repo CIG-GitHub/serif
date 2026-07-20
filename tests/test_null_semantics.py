@@ -57,7 +57,7 @@ def test_not_equal_propagates_null():
 
 def test_compare_to_none_scalar_is_all_null_and_warns():
     v = Vector([1, None, 3])
-    with pytest.warns(UserWarning, match='isna'):
+    with pytest.warns(UserWarning, match='is_na'):
         result = v == None  # noqa: E711 — the point of the test
     assert list(result) == [None, None, None]
 
@@ -174,9 +174,9 @@ def test_complement_filter_also_excludes_null_rows():
     assert list(v[~(v > 6)]) == [1]
 
 
-def test_isna_claims_the_unknowns():
+def test_is_na_claims_the_unknowns():
     v = Vector([1, None, 8])
-    assert list(v[v.isna()]) == [None]
+    assert list(v[v.is_na()]) == [None]
 
 
 def test_table_filter_with_nullable_mask():

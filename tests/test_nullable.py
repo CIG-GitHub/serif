@@ -132,10 +132,10 @@ def test_mark_valid_is_copy_on_write():
 
 
 # ---------------------------------------------------------------------------
-# Integration — a nullable Vector rides on a BitMask; isna() reads it
+# Integration — a nullable Vector rides on a BitMask; is_na() reads it
 # ---------------------------------------------------------------------------
 
-def test_vector_isna_reads_bitmask():
+def test_vector_is_na_reads_bitmask():
     v = Vector([1, None, 3, None, 5])
     assert isinstance(v._storage._mask, BitMask)
-    assert list(v.isna()) == [False, True, False, True, False]
+    assert list(v.is_na()) == [False, True, False, True, False]

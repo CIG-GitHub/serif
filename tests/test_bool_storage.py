@@ -48,10 +48,10 @@ def test_comparisons_emit_bool_storage():
     assert isinstance((v == 2)._storage, BoolStorage)
 
 
-def test_isna_emits_bool_storage():
-    assert isinstance(Vector([1, None, 3]).isna()._storage, BoolStorage)
-    assert isinstance(Vector(['a', 'b']).isna()._storage, BoolStorage)
-    assert list(Vector([1, None, 3]).isna()) == [False, True, False]
+def test_is_na_emits_bool_storage():
+    assert isinstance(Vector([1, None, 3]).is_na()._storage, BoolStorage)
+    assert isinstance(Vector(['a', 'b']).is_na()._storage, BoolStorage)
+    assert list(Vector([1, None, 3]).is_na()) == [False, True, False]
 
 
 def test_kleene_logic_emits_bool_storage():
