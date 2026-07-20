@@ -8,8 +8,9 @@ Main classes:
     - Vector: 1D vector with optional type safety
     - Table: 2D table (multiple columns of equal length)
 
-Internals live in serif._vector:
-    - _vector/base.py    — Vector mechanics
+Vector's public class lives in serif.vector; implementation modules live in
+serif._vector:
+    - vector.py          — Vector public API and dispatch
     - _vector/dtype.py   — DataType, infer_dtype, validate_scalar
     - _vector/storage.py — ArrayStorage, TupleStorage
     - _vector/numeric.py — _Int, _Float, sized subclasses, promotion table
@@ -20,7 +21,7 @@ Zero required dependencies. NumPy and PyArrow are optional accelerators;
 their presence may widen transport and improve performance, never semantics.
 """
 
-from ._vector import Vector
+from .vector import Vector
 from ._vector import Schema
 from ._vector import _Int
 from ._vector import _Float

@@ -153,7 +153,7 @@ def _accel_binop(storage, rhs, op_func, result_dtype):
         fast = binop_ints(storage, rhs, op_func, result_dtype.kind)
     if fast is None:
         return None
-    from .._vector.base import Vector
+    from ..vector import Vector
     result = Vector._from_storage(fast, result_dtype)
     result._wild = True   # match the pure constructors' name-tracking flag
     return result
@@ -174,7 +174,7 @@ def _accel_compare(storage, rhs, op_func, nullable):
         fast = compare_strings(storage, rhs, op_func)
     if fast is None:
         return None
-    from .._vector.base import Vector
+    from ..vector import Vector
     result = Vector._from_storage(fast, Schema(bool, nullable))
     result._wild = True
     return result
@@ -192,7 +192,7 @@ def _accel_logical(storage, rhs, op_name):
     fast = logical_storage(storage, rhs, op_name)
     if fast is None:
         return None
-    from .._vector.base import Vector
+    from ..vector import Vector
     result = Vector._from_storage(fast, Schema(bool, fast._mask is not None))
     result._wild = True
     return result
@@ -209,7 +209,7 @@ def _accel_invert(storage, nullable):
     fast = invert_storage(storage)
     if fast is None:
         return None
-    from .._vector.base import Vector
+    from ..vector import Vector
     result = Vector._from_storage(fast, Schema(bool, nullable))
     result._wild = True
     return result

@@ -12,7 +12,7 @@ def _get_reserved_names():
     adds methods after first use must invalidate _get_reserved_names._cache.
     """
     if not hasattr(_get_reserved_names, '_cache'):
-        from ._vector import Vector
+        from .vector import Vector
         from .table import Table
         
         reserved = set()

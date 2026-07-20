@@ -223,7 +223,7 @@ def binop_ints(lhs_storage, rhs, op_func, result_kind):
 
 def div_floats(lhs_storage, rhs, op_func, result_kind):
     """Checked float-producing division on buffers → ArrayStorage, or
-    None to DECLINE. Tried BEFORE the numpy tier (base.py): both wraps
+    None to DECLINE. Tried BEFORE the numpy tier by _accel/api.py: both wraps
     are zero-copy, and this kernel simply does less work — numpy must
     neutralize null-lane divisors to 1 (a copy) and scan for zeros (a
     pass) before it dares divide; arrow's divide_checked never executes

@@ -11,7 +11,7 @@ from ..errors import SerifValueError
 
 def _vector_class():
     # Local import avoids a cycle while Vector delegates __getitem__ here.
-    from .base import Vector
+    from ..vector import Vector
     return Vector
 
 

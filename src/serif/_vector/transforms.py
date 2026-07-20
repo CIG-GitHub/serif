@@ -18,7 +18,7 @@ from .storage import TupleStorage
 
 def _vector_class():
     # Local import avoids a cycle while Vector delegates transforms here.
-    from .base import Vector
+    from ..vector import Vector
     return Vector
 
 

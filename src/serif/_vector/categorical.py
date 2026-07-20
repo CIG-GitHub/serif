@@ -13,7 +13,7 @@ Properties:
 """
 
 from __future__ import annotations
-from .base import Vector
+from ..vector import Vector
 from .storage import ArrayStorage
 from .dtype import Schema
 from ..errors import SerifValueError, SerifTypeError

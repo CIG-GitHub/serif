@@ -12,7 +12,7 @@ from .dtype import validate_scalar
 
 def _vector_class():
     # Local import avoids a cycle while Vector delegates mutation here.
-    from .base import Vector
+    from ..vector import Vector
     return Vector
 
 

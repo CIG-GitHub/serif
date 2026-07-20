@@ -53,7 +53,7 @@ def read_csv(file, *, delimiter=',', has_header=True, encoding='utf-8-sig'):
 def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
     """Read CSV data from an open file object."""
     from ..table import Table
-    from .._vector import Vector
+    from ..vector import Vector
 
     reader = csv.reader(file_obj, delimiter=delimiter)
 

@@ -37,7 +37,7 @@ from datetime import date as _date, datetime as _datetime, timedelta as _timedel
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
-from .._vector import Vector
+from ..vector import Vector
 from .._accel.api import _accel_filter
 from .._vector.nullable import BitMask
 from .._vector.storage import (

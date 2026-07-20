@@ -4,7 +4,7 @@
 def _vector_class():
     # Local import avoids a cycle while Vector still imports this module to
     # delegate __getattr__.
-    from .base import Vector
+    from ..vector import Vector
     return Vector
 
 

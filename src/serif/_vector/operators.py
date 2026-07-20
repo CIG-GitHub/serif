@@ -17,9 +17,8 @@ from .storage import TupleStorage
 
 
 def _vector_class():
-    # Local import keeps this semantic module below the concrete Vector class
-    # during the transition out of _vector/base.py.
-    from .base import Vector
+    # Local import avoids a cycle while the concrete Vector delegates here.
+    from ..vector import Vector
     return Vector
 
 

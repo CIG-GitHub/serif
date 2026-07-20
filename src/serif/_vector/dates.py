@@ -1,4 +1,4 @@
-from .base import Vector
+from ..vector import Vector
 from .element_api import _elementwise_proxy
 from datetime import date
 from datetime import datetime

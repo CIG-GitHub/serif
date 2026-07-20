@@ -58,7 +58,7 @@ import pyarrow.parquet as _pq
 from datetime import date as _date, datetime as _datetime
 from decimal import Decimal as _Decimal
 
-from .._vector import Vector
+from ..vector import Vector
 from .._vector.dtype import Schema as _Schema
 from .._vector.nullable import BitMask
 from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolStorage

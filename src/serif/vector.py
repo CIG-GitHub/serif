@@ -1,25 +1,27 @@
 import warnings
 from collections.abc import Iterable
 
-from ..errors import SerifTypeError
-from ..errors import SerifValueError
-from ..display import _printr
-from ..naming import _sanitize_user_name
-from . import construction as _construction
-from . import element_api as _element_api
-from . import mutation as _mutation
-from . import operators as _operators
-from . import reductions as _reductions
-from . import selection as _selection
-from . import transforms as _transforms
-from .dtype import Schema
-from .storage import TupleStorage
+from .errors import SerifTypeError
+from .errors import SerifValueError
+from .display import _printr
+from .naming import _sanitize_user_name
+from ._vector import construction as _construction
+from ._vector import element_api as _element_api
+from ._vector import mutation as _mutation
+from ._vector import operators as _operators
+from ._vector import reductions as _reductions
+from ._vector import selection as _selection
+from ._vector import transforms as _transforms
+from ._vector.dtype import Schema
+from ._vector.storage import TupleStorage
 
 from datetime import date
 from datetime import datetime
 from itertools import chain
 
 from typing import List
+
+__all__ = ["Vector"]
 
 # ============================================================
 # Reverse arithmetic operation helpers
