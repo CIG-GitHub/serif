@@ -13,7 +13,7 @@ Properties:
 """
 
 from __future__ import annotations
-from .base import Vector
+from ..vector import Vector
 from .storage import ArrayStorage
 from .dtype import Schema
 from ..errors import SerifValueError, SerifTypeError
@@ -397,7 +397,7 @@ class _Category(Vector):
     # ------------------------------------------------------------------
 
     def sort_by(self, reverse=False, na_last=True):
-        from .base import _null_sort_flag
+        from .transforms import _null_sort_flag
         n = len(self)
         key_fn = lambda i: (
             _null_sort_flag(self._code_storage.is_null(i), reverse, na_last),

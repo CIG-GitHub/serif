@@ -15,6 +15,19 @@ from serif._vector.storage import ArrayStorage
 
 
 # ---------------------------------------------------------------------------
+# Vector has one canonical public class identity
+# ---------------------------------------------------------------------------
+
+def test_vector_public_module_is_canonical():
+    from serif.vector import Vector as PublicVector
+    from serif._vector import Vector as PrivateCompatibilityVector
+
+    assert Vector is PublicVector
+    assert Vector is PrivateCompatibilityVector
+    assert Vector.__module__ == 'serif.vector'
+
+
+# ---------------------------------------------------------------------------
 # Table.sort_by preserves column backends and subclasses
 # ---------------------------------------------------------------------------
 

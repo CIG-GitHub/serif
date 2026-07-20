@@ -1,7 +1,7 @@
 # ============================================================
 # Container for numeric backends
 # ============================================================
-from .base import Vector
+from ..vector import Vector
 from .storage import ArrayStorage
 from .storage import TupleStorage
 
@@ -22,7 +22,7 @@ class _Int(Vector):
 
 
 # Kind-level promotion for plain Python numeric types.
-# Used by _pre_compute_op_schema in base.py to resolve output dtype
+# Used by _pre_compute_op_schema in vector.py to resolve output dtype
 # before touching any data.
 _KIND_PROMOTION = {
     (bool,    bool):    bool,

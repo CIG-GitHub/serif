@@ -42,7 +42,7 @@ Arrow's *_checked kernels detect instead: they skip null lanes, compute
 once, and raise on the first lane that actually overflows or divides by
 zero — so int over-declines get a second chance before pure, and
 division skips the preparation passes entirely (which is why truediv
-tries arrow FIRST — see base.py's _accel_binop).
+tries arrow FIRST — see api.py's _accel_binop).
 
 Buffer lifetime and mutation: py_buffer holds a reference to the object
 it wraps, so a returned arrow array keeps serif's buffers alive on its
@@ -223,7 +223,7 @@ def binop_ints(lhs_storage, rhs, op_func, result_kind):
 
 def div_floats(lhs_storage, rhs, op_func, result_kind):
     """Checked float-producing division on buffers → ArrayStorage, or
-    None to DECLINE. Tried BEFORE the numpy tier (base.py): both wraps
+    None to DECLINE. Tried BEFORE the numpy tier by _accel/api.py: both wraps
     are zero-copy, and this kernel simply does less work — numpy must
     neutralize null-lane divisors to 1 (a copy) and scan for zeros (a
     pass) before it dares divide; arrow's divide_checked never executes

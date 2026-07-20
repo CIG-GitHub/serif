@@ -1,7 +1,7 @@
 """
 Reductions over storage buffers: sum, min, max, mean, stdev.
 
-Each function mirrors its pure counterpart in base.py structurally —
+Each function mirrors its pure counterpart in _vector/reductions.py structurally —
 compress out the null lanes, then reduce — and returns either a concrete
 Python scalar or DECLINED, in which case the pure path runs and its
 behavior is the specification. Scope: ArrayStorage 'q'/'d' only.

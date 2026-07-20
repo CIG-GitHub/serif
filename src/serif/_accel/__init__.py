@@ -29,7 +29,8 @@ proven by the pyarrow reader (serif/io/_arrow.py):
     layout (validity bitmap, offsets, UTF-8 buffer), so pyarrow wraps it
     with zero copies. The storage layout being arrow-shaped keeps paying.
 
-Modules: mask (row gathering — filter, take, padded take), reduce
+Modules: api (the current semantic-layer call-through boundary), mask (row
+gathering — filter, take, padded take), reduce
 (sum/mean/stdev/min/max), ops (elementwise), group (single-key
 bucketing for partitions), join (vectorized single-key join probe),
 arrow (the pyarrow backend: zero-copy wrap/unwrap between storage
