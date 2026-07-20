@@ -1965,29 +1965,6 @@ class Vector():
             return Vector(out, dtype=Schema(self._dtype.kind, has_none))
         return Vector(out)
 
-
-    def pluck(self, key, default=None):
-        """Extract a key/index from each element, returning default if not found.
-        
-        Works with dicts, lists, tuples, strings, or any subscriptable object.
-        """
-        results = []
-        for item in self._storage:
-            # If item is None, can't subscript it
-            if item is None:
-                results.append(default)
-                continue
-            
-            try:
-                results.append(item[key])
-            except (KeyError, IndexError, TypeError):
-                # KeyError: dict key missing
-                # IndexError: list/tuple index out of range
-                # TypeError: item not subscriptable
-                results.append(default)
-        
-        return Vector(results)
-
     def sort_by(self, reverse=False, na_last=True):
         """
         Stable sort. Returns a new Vector.

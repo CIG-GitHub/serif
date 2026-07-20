@@ -608,10 +608,6 @@ class Table(Vector):
         """Return a same-shaped bool Table applying ``isinstance`` per cell."""
         return self._map_columns(lambda col: col.is_type(types))
 
-    def pluck(self, key, default=None):
-        """Pluck *key* from every cell, preserving table structure."""
-        return self._map_columns(lambda col: col.pluck(key, default))
-
     def dropna(self):
         """Return rows having no null cells (complete-case filtering)."""
         keep = Vector(
