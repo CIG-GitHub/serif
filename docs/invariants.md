@@ -85,9 +85,3 @@ Data and metadata read out of a table are frozen. Element assignment,
 Write data through table indexing and rename through `Table.rename()`.
 A `.copy()` is an independent mutable and renameable Vector.
 
-## 13. Persistent identity includes schema
-`fingerprint()` is the deterministic DAG/cache identity. It includes shape,
-names, dtypes, nullability, categorical order, decimal metadata, and values.
-Unknown object values raise instead of using an unstable repr. There is no
-separate process-local or value-only fingerprint path.
-

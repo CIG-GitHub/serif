@@ -190,13 +190,6 @@ def test_source_vector_untouched_by_owner_write():
     assert list(v) == [1, 2, 3]
 
 
-def test_owner_write_changes_table_and_column_fingerprint():
-    t = make_table()
-    fp_col = t.a.fingerprint()
-    t[0, 'a'] = 99
-    assert t.a.fingerprint() != fp_col
-
-
 # ---------------------------------------------------------------------------
 # batch(): the bulk fast path
 # ---------------------------------------------------------------------------
@@ -307,9 +300,3 @@ def test_batch_string_column_write_rebuilds():
     assert t.s[0] == 'hello'
 
 
-def test_fingerprint_stable_across_empty_batch():
-    t = make_table()
-    before = t.a.fingerprint()
-    with t.batch():
-        pass
-    assert t.a.fingerprint() == before

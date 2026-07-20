@@ -121,8 +121,8 @@ class Row(Vector):
     Row behaves like a Vector (math, logic, isinstance), but it is a 
     zero-copy view into the Table's columns.
     
-    We deliberately bypass Vector.__init__ to avoid O(N) scans, 
-    fingerprinting, and alias tracking during iteration.
+    We deliberately bypass Vector.__init__ to avoid O(N) scans and alias
+    tracking during iteration.
     """
     __slots__ = ('_raw_cols', '_columns', '_column_map', '_index', '_dtype')
     

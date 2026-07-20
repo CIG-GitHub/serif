@@ -285,16 +285,6 @@ def test_promotion_on_copy_leaves_source_dtype():
     assert list(v) == [1, 2, 3]
 
 
-def test_copy_matches_fingerprint_then_diverges():
-    v = Vector([1, 2, 3])
-    fp = v.fingerprint()
-    c = v.copy()
-    assert c.fingerprint() == fp
-    c[0] = 9
-    assert c.fingerprint() != fp
-    assert v.fingerprint() == fp
-
-
 def test_table_snapshot_isolated_from_source_writes():
     from serif import Table
     v = Vector([1, 2, 3], name="a")

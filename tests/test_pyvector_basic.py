@@ -117,16 +117,6 @@ class TestBooleanBehavior:
         assert len(v) > 0  # Even with 0, the vector itself has length
 
 
-class TestFingerprint:
-    """Test fingerprint computation"""
-    
-    def test_fingerprint_exists(self):
-        v = Vector([1, 2, 3])
-        fp = v.fingerprint()
-        assert isinstance(fp, str)
-        assert len(fp) == 64
-
-
 class TestFillNA:
     """Test fillna behavior"""
     
