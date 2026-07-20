@@ -142,7 +142,7 @@ unchanged until the table has materialized.
 - [Repr](docs/repr.md) — what the display shows and why
 - [Invariants](docs/invariants.md) — the promises the internals keep
 - [Exceptions](docs/exceptions.md) — error types and when they raise
-- [Aliasing & Fingerprints](docs/aliasing.md) — copy-on-write and change detection
+- [Aliasing](docs/aliasing.md) — copy-on-write
 - [Performance](docs/performance.md) — complexity of the core operations
 - [Gotchas](docs/gotchas.md) — sharp edges worth knowing up front
 - [Development](docs/development.md) — running tests, project structure

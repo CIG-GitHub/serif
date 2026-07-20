@@ -14,10 +14,10 @@ def test_fillna_maps_over_cells_and_preserves_names():
     assert t.to_dict() == {'a': [1, None], 'b': [None, 4.0]}
 
 
-def test_isna_returns_same_shaped_named_table():
+def test_is_na_returns_same_shaped_named_table():
     t = Table({'a': [1, None], 'b': [None, 4]})
 
-    result = t.isna()
+    result = t.is_na()
 
     assert result.shape == t.shape
     assert result.to_dict() == {
@@ -55,7 +55,7 @@ def test_cast_and_to_object_map_over_columns():
     assert all(col.schema().kind is object for col in obj.cols())
 
 
-def test_is_type_and_pluck_map_over_cells():
+def test_is_type_maps_over_cells():
     t = Table({
         'a': Vector([{'x': 1}, {'x': 2}]).to_object(),
         'b': Vector([{'x': 3}, None]).to_object(),
@@ -65,9 +65,6 @@ def test_is_type_and_pluck_map_over_cells():
         'a': [True, True],
         'b': [True, False],
     }
-    assert t.pluck('x').to_dict() == {'a': [1, 2], 'b': [3, None]}
-
-
 @pytest.mark.parametrize(
     ('operation', 'expected'),
     [

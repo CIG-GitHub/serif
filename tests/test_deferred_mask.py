@@ -125,12 +125,11 @@ def test_empty_source_table(tier):
     assert_same_table(q, eager(t, mask))
 
 
-def test_iteration_and_fingerprint_match_eager(tier):
+def test_iteration_matches_eager(tier):
     t = make_table()
     mask = t.a > 2
     q, e = t[mask], eager(t, mask)
     assert [tuple(row) for row in q] == [tuple(row) for row in e]
-    assert q.fingerprint() == e.fingerprint()
 
 
 def test_repr_matches_eager(tier):

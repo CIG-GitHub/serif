@@ -35,9 +35,9 @@ v == v2      →  None wherever either side is null
 ```
 
 `v == None` yields null at every position (comparing anything to unknown is
-unknown) and warns — use `v.isna()` to test for nulls. Note the SQL corollary:
+unknown) and warns — use `v.is_na()` to test for nulls. Note the SQL corollary:
 null == null is **null**, not True. Identity of position is not equality of
-value; `isna()` is the tool for "which cells are null."
+value; `is_na()` is the tool for "which cells are null."
 
 ### Kleene tables for `&` and `|` (bool vectors)
 
@@ -136,7 +136,7 @@ Neither filter includes the null rows, so the two halves do **not** reunite
 to the whole table — honestly: the missing rows are the ones you know
 nothing about. (Under the previous False-at-null semantics, the complement
 filter silently asserted "null <= 6" — a claim about data that doesn't
-exist.) To claim the unknowns, `v[v.isna()]`.
+exist.) To claim the unknowns, `v[v.is_na()]`.
 
 Masked assignment follows the same rule: a null mask entry assigns nothing.
 
@@ -156,7 +156,7 @@ refusal loud.
 
 ## Explicit null tools
 
-`isna()` — which positions are null. `fillna(x)` — replace nulls with a
+`is_na()` — which positions are null. `fillna(x)` — replace nulls with a
 value. `dropna()` — remove null positions. These are the only operations
 that *look at* nullness; everything else either propagates it (element-wise)
 or skips it (aggregate).

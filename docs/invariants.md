@@ -35,7 +35,7 @@ Scalars broadcast deliberately; vectors never broadcast by length, align by
 label, or recycle values.
 
 ## 5. Names do not propagate through math
-Value-producing operations such as math, comparisons, `isna()`, `is_type()`,
+Value-producing operations such as math, comparisons, `is_na()`, `is_type()`,
 string methods, and `unique()` return unnamed vectors. Structural selections
 and same-column operations — copy, slice, mask, sort, cast, `fillna()`, and
 `dropna()` — retain the source name. Use `.alias()` to name a derived value
@@ -84,10 +84,4 @@ Data and metadata read out of a table are frozen. Element assignment,
 `.vector_name = ...`, and `.alias(...)` all raise on table-owned columns.
 Write data through table indexing and rename through `Table.rename()`.
 A `.copy()` is an independent mutable and renameable Vector.
-
-## 13. Persistent identity includes schema
-`fingerprint()` is the deterministic DAG/cache identity. It includes shape,
-names, dtypes, nullability, categorical order, decimal metadata, and values.
-Unknown object values raise instead of using an unstable repr. There is no
-separate process-local or value-only fingerprint path.
 

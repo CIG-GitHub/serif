@@ -1,11 +1,8 @@
 import operator
 import warnings
 import math
-import hashlib
-import struct
 from builtins import isinstance as b_isinstance
 from collections.abc import Iterable
-from decimal import Decimal
 
 from ..errors import SerifTypeError
 from ..errors import SerifIndexError
@@ -24,10 +21,8 @@ from .storage import TupleStorage
 
 from datetime import date
 from datetime import datetime
-from datetime import timedelta
 from itertools import chain
 
-from typing import Any
 from typing import List
 
 # ============================================================
@@ -146,86 +141,6 @@ def _null_sort_flag(is_null: bool, reverse: bool, na_last: bool) -> bool:
     _Category.sort_by, and Table.sort_by — one rule, three callers.
     """
     return (is_null != reverse) if na_last else (is_null == reverse)
-
-
-def _fingerprint_frame(tag: bytes, payload: bytes = b'') -> bytes:
-    """Return an unambiguous binary frame for fingerprint encoding."""
-    return tag + len(payload).to_bytes(8, 'big') + payload
-
-
-def _fingerprint_encode(value: Any) -> bytes:
-    """Canonical, cross-process encoding for supported Python values.
-
-    Deliberately raises for unknown objects instead of falling back to repr(),
-    which commonly embeds memory addresses and would make a persistent DAG key
-    look deterministic while changing between processes.
-    """
-    if value is None:
-        return _fingerprint_frame(b'n')
-    if type(value) is bool:
-        return _fingerprint_frame(b'b', b'1' if value else b'0')
-    if type(value) is int:
-        return _fingerprint_frame(b'i', str(value).encode('ascii'))
-    if type(value) is float:
-        if math.isnan(value):
-            payload = b'nan'
-        elif math.isinf(value):
-            payload = b'+inf' if value > 0 else b'-inf'
-        else:
-            # Python considers -0.0 and 0.0 equal; canonicalize accordingly.
-            payload = struct.pack('>d', 0.0 if value == 0.0 else value)
-        return _fingerprint_frame(b'f', payload)
-    if type(value) is complex:
-        return _fingerprint_frame(
-            b'c', _fingerprint_encode(value.real) + _fingerprint_encode(value.imag))
-    if type(value) is str:
-        return _fingerprint_frame(b's', value.encode('utf-8'))
-    if type(value) is bytes:
-        return _fingerprint_frame(b'y', value)
-    if type(value) is bytearray:
-        return _fingerprint_frame(b'a', bytes(value))
-    if isinstance(value, datetime):
-        payload = value.isoformat(timespec='microseconds').encode('utf-8')
-        payload += bytes((value.fold,))
-        return _fingerprint_frame(b'z', payload)
-    if isinstance(value, date):
-        return _fingerprint_frame(b'd', value.isoformat().encode('ascii'))
-    if isinstance(value, timedelta):
-        payload = (
-            _fingerprint_encode(value.days)
-            + _fingerprint_encode(value.seconds)
-            + _fingerprint_encode(value.microseconds)
-        )
-        return _fingerprint_frame(b't', payload)
-    if isinstance(value, Decimal):
-        decimal_tuple = value.as_tuple()
-        payload = (
-            _fingerprint_encode(decimal_tuple.sign)
-            + _fingerprint_encode(decimal_tuple.digits)
-            + _fingerprint_encode(decimal_tuple.exponent)
-        )
-        return _fingerprint_frame(b'm', payload)
-    if isinstance(value, Vector):
-        return _fingerprint_frame(b'v', bytes.fromhex(value.fingerprint()))
-    if type(value) in (list, tuple):
-        tag = b'l' if type(value) is list else b'q'
-        return _fingerprint_frame(
-            tag, b''.join(_fingerprint_encode(v) for v in value))
-    if type(value) in (set, frozenset):
-        tag = b'e' if type(value) is set else b'r'
-        encoded = sorted(_fingerprint_encode(v) for v in value)
-        return _fingerprint_frame(tag, b''.join(encoded))
-    if isinstance(value, dict):
-        encoded = [(_fingerprint_encode(k), _fingerprint_encode(v))
-                   for k, v in value.items()]
-        encoded.sort(key=lambda pair: pair[0])
-        payload = b''.join(k + v for k, v in encoded)
-        return _fingerprint_frame(b'g', payload)
-    raise SerifTypeError(
-        "fingerprint() does not know how to encode "
-        f"{type(value).__module__}.{type(value).__qualname__}; cast the "
-        "value to a supported Python type first."
-    )
 
 
 class MethodProxy:
@@ -760,55 +675,6 @@ class Vector():
         self._name = new_name
         self._wild = True  # Mark as wild when renamed
 
-    #-----------------------------------------------------
-    # Fingerprinting
-    #-----------------------------------------------------
-
-    def fingerprint(self) -> str:
-        """Return a deterministic identity for values and analytical schema.
-
-        The digest is stable across Python processes and includes dimensions,
-        names, dtypes, nullability, categorical order, decimal metadata, and
-        values. The result is a 64-character BLAKE2b hex string.
-
-        Fingerprints are intentionally recomputed on each call. This keeps
-        metadata changes visible without coupling identity correctness to
-        mutation-path cache invalidation.
-        """
-        digest = hashlib.blake2b(digest_size=32, person=b'serif-fp-v1')
-
-        if self.ndims() == 2:
-            columns = self.cols()
-            digest.update(_fingerprint_frame(b'T'))
-            digest.update(_fingerprint_encode(getattr(self, '_name', None)))
-            digest.update(_fingerprint_encode(len(self)))
-            digest.update(_fingerprint_encode(len(columns)))
-            for column in columns:
-                digest.update(bytes.fromhex(column.fingerprint()))
-            return digest.hexdigest()
-
-        schema = self.schema()
-        kind = schema.kind
-        kind_name = f"{kind.__module__}.{kind.__qualname__}"
-        digest.update(_fingerprint_frame(b'V'))
-        digest.update(_fingerprint_encode(getattr(self, '_name', None)))
-        digest.update(_fingerprint_encode(len(self)))
-        digest.update(_fingerprint_encode(kind_name))
-        digest.update(_fingerprint_encode(schema.nullable))
-
-        categories = getattr(self, '_categories', None)
-        digest.update(_fingerprint_encode(categories))
-
-        storage = self._storage
-        decimal_meta = None
-        if hasattr(storage, '_scale') and hasattr(storage, '_precision'):
-            decimal_meta = (storage._scale, storage._precision)
-        digest.update(_fingerprint_encode(decimal_meta))
-
-        for value in storage:
-            digest.update(_fingerprint_encode(value))
-        return digest.hexdigest()
-
     @classmethod
     def filled(cls, value, length, typesafe=False):
         """Create a vector of `length` copies of `value` (a fill-constructor).
@@ -1004,7 +870,7 @@ class Vector():
         kept = [i for i in range(len(storage)) if not storage.is_null(i)]
         return self._clone(_take(storage, kept), dtype=new_dtype)
 
-    def isna(self):
+    def is_na(self):
         """
         Return boolean mask of None values.
         
@@ -1016,7 +882,7 @@ class Vector():
         Examples
         --------
         >>> v = Vector([1, None, 3])
-        >>> v.isna()
+        >>> v.is_na()
         Vector([False, True, False])
         """
         storage = self._storage
@@ -1446,7 +1312,7 @@ class Vector():
         if other is None and op in (operator.eq, operator.ne):
             warnings.warn(
                 "Null comparison: `v == None` yields null for every element. "
-                "Use `v.isna()` to test for nulls.",
+                "Use `v.is_na()` to test for nulls.",
                 stacklevel=2
             )
         nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None
@@ -1964,29 +1830,6 @@ class Vector():
         if self._dtype is not None:
             return Vector(out, dtype=Schema(self._dtype.kind, has_none))
         return Vector(out)
-
-
-    def pluck(self, key, default=None):
-        """Extract a key/index from each element, returning default if not found.
-        
-        Works with dicts, lists, tuples, strings, or any subscriptable object.
-        """
-        results = []
-        for item in self._storage:
-            # If item is None, can't subscript it
-            if item is None:
-                results.append(default)
-                continue
-            
-            try:
-                results.append(item[key])
-            except (KeyError, IndexError, TypeError):
-                # KeyError: dict key missing
-                # IndexError: list/tuple index out of range
-                # TypeError: item not subscriptable
-                results.append(default)
-        
-        return Vector(results)
 
     def sort_by(self, reverse=False, na_last=True):
         """

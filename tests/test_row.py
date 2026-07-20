@@ -125,8 +125,8 @@ def test_row_compare_nulls_are_null(null_t):
     assert list(null_t[1] == null_t[1]) == [True, None]
 
 
-def test_row_isna(null_t):
-    assert list(null_t[1].isna()) == [False, True]
+def test_row_is_na(null_t):
+    assert list(null_t[1].is_na()) == [False, True]
 
 
 def test_row_isinstance(num_t):

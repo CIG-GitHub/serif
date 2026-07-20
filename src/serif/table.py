@@ -121,8 +121,8 @@ class Row(Vector):
     Row behaves like a Vector (math, logic, isinstance), but it is a 
     zero-copy view into the Table's columns.
     
-    We deliberately bypass Vector.__init__ to avoid O(N) scans, 
-    fingerprinting, and alias tracking during iteration.
+    We deliberately bypass Vector.__init__ to avoid O(N) scans and alias
+    tracking during iteration.
     """
     __slots__ = ('_raw_cols', '_columns', '_column_map', '_index', '_dtype')
     
@@ -600,17 +600,13 @@ class Table(Vector):
         """Fill null cells in every column with *value*."""
         return self._map_columns(lambda col: col.fillna(value))
 
-    def isna(self):
+    def is_na(self):
         """Return a same-shaped bool Table marking null cells."""
-        return self._map_columns(lambda col: col.isna())
+        return self._map_columns(lambda col: col.is_na())
 
     def is_type(self, types):
         """Return a same-shaped bool Table applying ``isinstance`` per cell."""
         return self._map_columns(lambda col: col.is_type(types))
-
-    def pluck(self, key, default=None):
-        """Pluck *key* from every cell, preserving table structure."""
-        return self._map_columns(lambda col: col.pluck(key, default))
 
     def dropna(self):
         """Return rows having no null cells (complete-case filtering)."""

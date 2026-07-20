@@ -52,7 +52,7 @@ src/serif/
 ├── errors.py          # Serif* exception hierarchy
 ├── _accel/            # optional NumPy/PyArrow compute accelerators
 ├── _vector/
-│   ├── base.py        # core Vector: operators, masks, aggregations, fingerprints
+│   ├── base.py        # core Vector: operators, masks, aggregations
 │   ├── dtype.py       # dtype inference and validation
 │   ├── storage.py     # ArrayStorage / TupleStorage / StringStorage
 │   ├── numeric.py     # _Int, _Float typed subclasses
@@ -76,7 +76,7 @@ installed package then tracks your working tree.
 ## Key Modules
 
 - **`_vector/base.py`** — the `Vector` class: elementwise operators,
-  boolean masks, aggregations, copy-on-write mutation, fingerprinting.
+  boolean masks, aggregations, copy-on-write mutation.
   Typed subclasses (`_Int`, `_Float`, `_String`, `_Date`, `_Category`)
   layer dtype-specific methods on top.
 - **`table.py`** — `Table` (a vector of column vectors): construction,
