@@ -1,6 +1,5 @@
 import operator
 import warnings
-import math
 from builtins import isinstance as b_isinstance
 from collections.abc import Iterable
 
@@ -8,9 +7,9 @@ from ..errors import SerifTypeError
 from ..errors import SerifIndexError
 from ..errors import SerifValueError
 from ..errors import SerifKeyError
-from ..errors import SerifEmptyReductionError
 from ..display import _printr
 from ..naming import _sanitize_user_name
+from . import reductions as _reductions
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import infer_kind
@@ -19,7 +18,6 @@ from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import TupleStorage
 from .._accel.api import _accel_filter
-from .._accel.api import _accel_reduce
 from .._accel.api import _accel_binop
 from .._accel.api import _accel_compare
 from .._accel.api import _accel_logical
@@ -90,15 +88,6 @@ def _kleene_xor(x, y):
 # anything else passed to _logical_elementwise declines to the pure zip.
 _KLEENE_OP_NAMES = {_kleene_and: 'and', _kleene_or: 'or', _kleene_xor: 'xor'}
 
-
-def _check_on_empty(method_name, on_empty):
-    # Identity checks, not truthiness: on_empty=1 is a bug, not a True.
-    if on_empty is None or on_empty is True or on_empty is False:
-        return
-    raise SerifTypeError(
-        f"{method_name}(): on_empty must be True or False (or None, the "
-        f"default, which raises on zero valid values); got {on_empty!r}"
-    )
 
 def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
     """
@@ -1455,22 +1444,10 @@ class Vector():
     Recursive Vector Operations
     """
     def max(self):
-        if self.ndims() == 2:
-            return self.copy((c.max() for c in self.cols()), name=None)
-        ok, fast = _accel_reduce(self._storage, 'max_')
-        if ok:
-            return fast
-        non_none = [v for v in self._storage if v is not None]
-        return max(non_none) if non_none else None
+        return _reductions.max(self)
 
     def min(self):
-        if self.ndims() == 2:
-            return self.copy((c.min() for c in self.cols()), name=None)
-        ok, fast = _accel_reduce(self._storage, 'min_')
-        if ok:
-            return fast
-        non_none = [v for v in self._storage if v is not None]
-        return min(non_none) if non_none else None
+        return _reductions.min(self)
 
     def first(self):
         """
@@ -1481,51 +1458,16 @@ class Vector():
         element of each column (the first row). For an ordered pick, sort first:
         t.sort_by('date').first().
         """
-        if self.ndims() == 2:
-            return self.copy((c.first() for c in self.cols()), name=None)
-        return self._storage[0] if len(self._storage) else None
+        return _reductions.first(self)
 
     def last(self):
         """
         Last element by position (mirror of first()). Returns None if empty.
         """
-        if self.ndims() == 2:
-            return self.copy((c.last() for c in self.cols()), name=None)
-        n = len(self._storage)
-        return self._storage[n - 1] if n else None
+        return _reductions.last(self)
 
     def sum(self):
-        if self.ndims() == 2:
-            return self.copy((c.sum() for c in self.cols()), name=None)
-        ok, fast = _accel_reduce(self._storage, 'sum_')
-        if ok:
-            return fast
-        # Exclude None values from sum
-        values = (v for v in self._storage if v is not None)
-        if self.schema().kind is not float:
-            return sum(values)
-
-        first = next(values, None)
-        if first is None:
-            return 0
-        try:
-            return math.fsum(chain((first,), values))
-        except (OverflowError, ValueError):
-            # math.fsum rejects mixtures such as +inf and -inf. Preserve
-            # Python's non-finite behavior while finite sums remain stable
-            # across every supported Python version.
-            return sum(v for v in self._storage if v is not None)
-
-    def _no_verdict(self, method_name, on_empty):
-        if on_empty is not None:
-            return on_empty
-        n = len(self._storage)
-        detail = "empty vector" if n == 0 else f"length {n}, all null"
-        raise SerifEmptyReductionError(
-            f"{method_name}() over zero valid values ({detail}): no verdict "
-            f"is possible. Pass on_empty=True or on_empty=False to choose "
-            f"the empty-case verdict, or fillna()/dropna() upstream."
-        )
+        return _reductions.sum(self)
 
     def all(self, on_empty=None):
         """
@@ -1537,19 +1479,7 @@ class Vector():
         pass (True or False) is the value returned. See
         docs/null-semantics.md.
         """
-        _check_on_empty('all', on_empty)
-        if self.ndims() == 2:
-            return self.copy((c.all(on_empty=on_empty) for c in self.cols()), name=None)
-        seen_valid = False
-        for v in self._storage:
-            if v is None:
-                continue
-            if not v:
-                return False
-            seen_valid = True
-        if seen_valid:
-            return True
-        return self._no_verdict('all', on_empty)
+        return _reductions.all(self, on_empty=on_empty)
 
     def any(self, on_empty=None):
         """
@@ -1561,51 +1491,16 @@ class Vector():
         pass (True or False) is the value returned. See
         docs/null-semantics.md.
         """
-        _check_on_empty('any', on_empty)
-        if self.ndims() == 2:
-            return self.copy((c.any(on_empty=on_empty) for c in self.cols()), name=None)
-        seen_valid = False
-        for v in self._storage:
-            if v is None:
-                continue
-            if v:
-                return True
-            seen_valid = True
-        if seen_valid:
-            return False
-        return self._no_verdict('any', on_empty)
+        return _reductions.any(self, on_empty=on_empty)
 
     def mean(self):
-        if self.ndims() == 2:
-            return self.copy((c.mean() for c in self.cols()), name=None)
-        ok, fast = _accel_reduce(self._storage, 'mean')
-        if ok:
-            return fast
-        # Exclude None values from mean
-        non_none = [v for v in self._storage if v is not None]
-        return sum(non_none) / len(non_none) if non_none else None
+        return _reductions.mean(self)
 
     def stdev(self, population=False):
-        if self.ndims() == 2:
-            return self.copy((c.stdev(population) for c in self.cols()), name=None)
-        ok, fast = _accel_reduce(self._storage, 'stdev', population=population)
-        if ok:
-            return fast
-        # Exclude None values from stdev
-        non_none = [v for v in self._storage if v is not None]
-        if len(non_none) < 2:
-            return None
-        m = sum(non_none) / len(non_none)
-        # use in-place sum over generator for fastness. I AM SPEED!
-        # This is no longer 10x slower than numpy — numpy IS the fast path
-        # above; this is the zero-dependency fallback and the specification.
-        num = sum((x-m)*(x-m) for x in non_none)
-        return (num/(len(non_none) - 1 + population))**0.5
+        return _reductions.stdev(self, population=population)
 
     def count(self):
-        if self.ndims() == 2:
-            return self.copy((c.count() for c in self.cols()), name=None)
-        return sum(1 for v in self._storage if v is not None)
+        return _reductions.count(self)
 
     def unique(self):
         seen = set()
