@@ -1,4 +1,3 @@
-import operator
 import warnings
 from builtins import isinstance as b_isinstance
 from collections.abc import Iterable
@@ -9,6 +8,7 @@ from ..errors import SerifValueError
 from ..errors import SerifKeyError
 from ..display import _printr
 from ..naming import _sanitize_user_name
+from . import operators as _operators
 from . import reductions as _reductions
 from .dtype import Schema
 from .dtype import infer_dtype
@@ -18,10 +18,6 @@ from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import TupleStorage
 from .._accel.api import _accel_filter
-from .._accel.api import _accel_binop
-from .._accel.api import _accel_compare
-from .._accel.api import _accel_logical
-from .._accel.api import _accel_invert
 from .._accel.api import _take
 
 from datetime import date
@@ -33,98 +29,6 @@ from typing import List
 # ============================================================
 # Reverse arithmetic operation helpers
 # ============================================================
-def _reverse_add(y, x):
-    return x + y
-
-def _reverse_sub(y, x):
-    return x - y
-
-def _reverse_truediv(y, x):
-    return x / y
-
-def _reverse_floordiv(y, x):
-    return x // y
-
-def _reverse_mod(y, x):
-    return x % y
-
-def _reverse_pow(y, x):
-    return x ** y
-
-
-# ============================================================
-# Kleene three-valued logic (see docs/null-semantics.md)
-# The known operand may settle the result; otherwise unknown propagates.
-# ============================================================
-
-def _kleene_and(x, y):
-    if x is not None and not x:
-        return False
-    if y is not None and not y:
-        return False
-    if x is None or y is None:
-        return None
-    return True
-
-
-def _kleene_or(x, y):
-    if x is not None and x:
-        return True
-    if y is not None and y:
-        return True
-    if x is None or y is None:
-        return None
-    return False
-
-
-def _kleene_xor(x, y):
-    # No settling operand for xor: unknown with anything is unknown.
-    if x is None or y is None:
-        return None
-    return bool(x) != bool(y)
-
-
-# Accelerator dispatch: only THESE functions have a vectorized twin —
-# anything else passed to _logical_elementwise declines to the pure zip.
-_KLEENE_OP_NAMES = {_kleene_and: 'and', _kleene_or: 'or', _kleene_xor: 'xor'}
-
-
-def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
-    """
-    Resolve the output Schema for a binary math op purely from types.
-
-    Returns None when the result type cannot be determined without touching data
-    (e.g. object dtype, temporal ops, or an unknown rhs kind).
-    """
-    from .numeric import _KIND_PROMOTION
-
-    if lhs_schema is None or lhs_schema.kind is object:
-        return None
-    lhs_kind = lhs_schema.kind
-
-    _is_truediv = op_func is operator.truediv or op_func is _reverse_truediv
-
-    if isinstance(rhs, Vector):
-        rhs_schema = rhs._dtype
-        if rhs_schema is None or rhs_schema.kind is object:
-            return None
-        result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_schema.kind))
-        if result_kind is None:
-            return None
-        if _is_truediv and result_kind in (bool, int):
-            result_kind = float
-        return Schema(result_kind, lhs_schema.nullable or rhs_schema.nullable)
-
-    # Scalar: resolve rhs kind
-    rhs_kind = type(rhs)
-    result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_kind))
-    if result_kind is None:
-        return None
-    if _is_truediv and result_kind in (bool, int):
-        result_kind = float
-    return Schema(result_kind, lhs_schema.nullable)
-
-
 # ============================================================
 # Small helpers
 # ============================================================
@@ -1062,166 +966,45 @@ class Vector():
         # __ne__ !=
     """
     def _elementwise_compare(self, other, op):
-        other = self._check_duplicate(other)
+        return _operators.elementwise_compare(self, other, op)
 
-        # CASE A: Self is 2D (Table on Left)
-        # T == v -> [C1==v, C2==v, ...]
-        if self.ndims() == 2:
-            return self.copy(tuple(
-                # recursive call: Column == other
-                col._elementwise_compare(other, op) 
-                for col in self.cols()
-            ))
-        
-        # CASE B: Other is 2D (Table on Right)
-        # v == T -> [v==C1, v==C2, ...]
-        if isinstance(other, Vector) and other.ndims() == 2:
-            return other.copy(tuple(
-                # recursive call: self == Column
-                self._elementwise_compare(col, op) 
-                for col in other.cols()
-            ))
-        
-        # Element-wise: unknown in, unknown out (docs/null-semantics.md).
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            other_schema = other.schema()
-            nullable = (
-                (self._dtype.nullable if self._dtype is not None else True)
-                or (other_schema.nullable if other_schema is not None else True)
-            )
-            fast = _accel_compare(self._storage, other._storage, op, nullable)
-            if fast is not None:
-                return fast
-            return Vector._from_iterable_known_dtype(
-                (None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)),
-                Schema(bool, nullable),
-            )
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            vals = [None if (x is None or y is None) else bool(op(x, y)) for x, y in zip(self, other, strict=True)]
-            return Vector._from_iterable_known_dtype(
-                vals, Schema(bool, any(v is None for v in vals)))
-        # Scalar comparison
-        if other is None and op in (operator.eq, operator.ne):
-            warnings.warn(
-                "Null comparison: `v == None` yields null for every element. "
-                "Use `v.is_na()` to test for nulls.",
-                stacklevel=2
-            )
-        nullable = (self._dtype.nullable if self._dtype is not None else True) or other is None
-        fast = _accel_compare(self._storage, other, op, nullable)
-        if fast is not None:
-            return fast
-        return Vector._from_iterable_known_dtype(
-            (None if (x is None or other is None) else bool(op(x, other)) for x in self),
-            Schema(bool, nullable),
-        )    # Now, we can redefine the comparison methods using the helper function
-    
     def __eq__(self, other):
-        return self._elementwise_compare(other, operator.eq)
+        return _operators.eq(self, other)
 
     def __ge__(self, other):
-        return self._elementwise_compare(other, operator.ge)
+        return _operators.ge(self, other)
 
     def __gt__(self, other):
-        return self._elementwise_compare(other, operator.gt)
+        return _operators.gt(self, other)
 
     def __le__(self, other):
-        return self._elementwise_compare(other, operator.le)
+        return _operators.le(self, other)
 
     def __lt__(self, other):
-        return self._elementwise_compare(other, operator.lt)
+        return _operators.lt(self, other)
 
     def __ne__(self, other):
-        return self._elementwise_compare(other, operator.ne)
+        return _operators.ne(self, other)
 
     def _logical_elementwise(self, other, kleene_func):
         """Kleene three-valued logical op (docs/null-semantics.md)."""
-        other = self._check_duplicate(other)
-        if self.ndims() == 2:
-            return self.copy(tuple(
-                col._logical_elementwise(other, kleene_func) for col in self.cols()
-            ))
-        if isinstance(other, Vector) and other.ndims() == 2:
-            return other.copy(tuple(
-                self._logical_elementwise(col, kleene_func) for col in other.cols()
-            ))
-        op_name = _KLEENE_OP_NAMES.get(kleene_func)
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            if op_name is not None and isinstance(other, Vector):
-                fast = _accel_logical(self._storage, other._storage, op_name)
-                if fast is not None:
-                    return fast
-            vals = [kleene_func(x, y) for x, y in zip(self, other, strict=True)]
-        else:
-            if op_name is not None and (other is None or type(other) is bool):
-                fast = _accel_logical(self._storage, other, op_name)
-                if fast is not None:
-                    return fast
-            vals = [kleene_func(x, other) for x in self]
-        return Vector._from_iterable_known_dtype(
-            vals, Schema(bool, any(v is None for v in vals)))
-
-    # &, |, ^ dispatch by dtype: bool vectors get Kleene logic; int vectors
-    # get Python's bitwise operators (values obey Python, absence obeys the
-    # null doctrine). Every other dtype raises — `1.5 & 2.5` is a TypeError
-    # in Python, so it is one here too (docs/null-semantics.md).
+        return _operators.logical_elementwise(self, other, kleene_func)
 
     def _bitwise_kind_error(self, op_symbol):
-        kind = self._dtype.kind if self._dtype is not None else None
-        kind_name = kind.__name__ if kind is not None else 'object'
-        return SerifTypeError(
-            f"Unsupported operand type(s) for '{op_symbol}': Vector<{kind_name}>. "
-            f"'{op_symbol}' is Kleene-logical on bool vectors and bitwise on "
-            f"int vectors; other dtypes raise, as in plain Python."
-        )
+        return _operators.bitwise_kind_error(self, op_symbol)
 
     def _tablewise_bitwise(self, other, op_dunder):
-        """Per-column recursion for &, |, ^ on a 2-D block: each column's own
-        dtype dispatch (Kleene / bitwise / raise) applies. Names preserved
-        from the left side, matching Table arithmetic."""
-        other = self._check_duplicate(other)
-        result_cols = [getattr(col, op_dunder)(other) for col in self.cols()]
-        for orig_col, result_col in zip(self.cols(), result_cols):
-            result_col._name = orig_col._name
-            result_col._wild = False
-        from ..table import Table
-        return Table(result_cols)
+        """Per-column recursion for &, |, ^ using each column's dtype."""
+        return _operators.tablewise_bitwise(self, other, op_dunder)
 
     def __and__(self, other):
-        if self.ndims() == 2:
-            return self._tablewise_bitwise(other, '__and__')
-        kind = self._dtype.kind if self._dtype is not None else None
-        if kind is int:
-            return self._elementwise_operation(other, operator.and_, '__and__', '&')
-        if kind is bool:
-            return self._logical_elementwise(other, _kleene_and)
-        raise self._bitwise_kind_error('&')
+        return _operators.bit_and(self, other)
 
     def __or__(self, other):
-        if self.ndims() == 2:
-            return self._tablewise_bitwise(other, '__or__')
-        kind = self._dtype.kind if self._dtype is not None else None
-        if kind is int:
-            return self._elementwise_operation(other, operator.or_, '__or__', '|')
-        if kind is bool:
-            return self._logical_elementwise(other, _kleene_or)
-        raise self._bitwise_kind_error('|')
+        return _operators.bit_or(self, other)
 
     def __xor__(self, other):
-        if self.ndims() == 2:
-            return self._tablewise_bitwise(other, '__xor__')
-        kind = self._dtype.kind if self._dtype is not None else None
-        if kind is int:
-            return self._elementwise_operation(other, operator.xor, '__xor__', '^')
-        if kind is bool:
-            return self._logical_elementwise(other, _kleene_xor)
-        raise self._bitwise_kind_error('^')
+        return _operators.bit_xor(self, other)
 
     def __rand__(self, other):
         return self.__and__(other)
@@ -1232,176 +1015,80 @@ class Vector():
     def __rxor__(self, other):
         return self.__xor__(other)
 
-
-    """ Math operations """
     def _elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
-        """Helper function to handle element-wise operations with broadcasting."""
-        other = self._check_duplicate(other)
-
-        # CASE A: Self is 2D (Table on Left)
-        # T + v -> [C1+v, C2+v, ...]
-        if self.ndims() == 2:
-            return self.copy(tuple(
-                col._elementwise_operation(other, op_func, op_name, op_symbol)
-                for col in self.cols()
-            ))
-
-        # CASE B: Other is 2D (Table on Right)
-        # v + T -> [v+C1, v+C2, ...]
-        if isinstance(other, Vector) and other.ndims() == 2:
-            return other.copy(tuple(
-                self._elementwise_operation(col, op_func, op_name, op_symbol)
-                for col in other.cols()
-            ))
-
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
-            if result_dtype is not None:
-                fast = _accel_binop(self._storage, other._storage, op_func, result_dtype)
-                if fast is not None:
-                    return fast
-            try:
-                result_values = tuple(
-                    None if (x is None or y is None) else op_func(x, y)
-                    for x, y in zip(self, other, strict=True)
-                )
-            except TypeError:
-                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
-                rhs_schema = other.schema()
-                rhs = rhs_schema.kind.__name__ if rhs_schema is not None else 'object'
-                raise SerifTypeError(
-                    f"Unsupported operand type(s) for '{op_symbol}': "
-                    f"Vector<{lhs}> and Vector<{rhs}>."
-                )
-            if result_dtype is None:
-                result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None)
-
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            try:
-                result_values = tuple(
-                    None if (x is None or y is None) else op_func(x, y)
-                    for x, y in zip(self, other, strict=True)
-                )
-            except TypeError:
-                lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
-                raise SerifTypeError(
-                    f"Unsupported operand type(s) for '{op_symbol}': "
-                    f"Vector<{lhs}> and {type(other).__name__} elements."
-                )
-            result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None)
-
-        # Scalar path
-        result_dtype = _pre_compute_op_schema(self._dtype, other, op_func)
-        if result_dtype is not None:
-            fast = _accel_binop(self._storage, other, op_func, result_dtype)
-            if fast is not None:
-                return fast
-        try:
-            result_values = tuple(
-                None if x is None else op_func(x, other)
-                for x in self._storage
-            )
-            if result_dtype is None:
-                result_dtype = infer_dtype(result_values)
-            return Vector(result_values, dtype=result_dtype, name=None)
-        except TypeError:
-            lhs = self._dtype.kind.__name__ if self._dtype is not None else 'object'
-            raise SerifTypeError(
-                f"Unsupported operand type(s) for '{op_symbol}': "
-                f"'{lhs}' and '{type(other).__name__}'."
-            )
+        """Handle an element-wise operation with scalar broadcasting."""
+        return _operators.elementwise_operation(
+            self,
+            other,
+            op_func,
+            op_name,
+            op_symbol,
+        )
 
     def _unary_operation(self, op_func, op_name: str):
-        """Helper function to handle unary operations on each element."""
-        storage = self._storage
-        if isinstance(storage, ArrayStorage):
-            from array import array as _array
-            tc = storage._data.typecode
-            new_data = _array(tc, (op_func(storage._data[i]) for i in range(len(storage._data))))
-            new_storage = ArrayStorage(new_data, storage._mask)
-        else:
-            new_storage = TupleStorage(tuple(
-                None if x is None else op_func(x) for x in storage
-            ))
-        return self._clone(new_storage)
-    
+        """Apply a unary operation to each element."""
+        return _operators.unary_operation(self, op_func, op_name)
+
     def __add__(self, other):
-        return self._elementwise_operation(other, operator.add, '__add__', '+')
+        return _operators.add(self, other)
 
     def __mul__(self, other):
-        return self._elementwise_operation(other, operator.mul, '__mul__', '*')
+        return _operators.mul(self, other)
 
     def __sub__(self, other):
-        return self._elementwise_operation(other, operator.sub, '__sub__', '-')
+        return _operators.sub(self, other)
 
     def __neg__(self):
-        return self._unary_operation(operator.neg, '__neg__')
+        return _operators.neg(self)
 
     def __pos__(self):
-        return self._unary_operation(operator.pos, '__pos__')
+        return _operators.pos(self)
 
     def __abs__(self):
-        return self._unary_operation(operator.abs, '__abs__')
+        return _operators.abs(self)
 
     def __invert__(self):
-        # For boolean vectors, use logical NOT instead of bitwise NOT.
-        # NOT unknown is unknown (docs/null-semantics.md) — the old
-        # `not None` mapped nulls to True.
-        if self._dtype and self._dtype.kind is bool:
-            fast = _accel_invert(self._storage, self._dtype.nullable)
-            if fast is not None:
-                return fast
-            return Vector._from_iterable_known_dtype(
-                (None if x is None else (not x) for x in self),
-                Schema(bool, self._dtype.nullable),
-            )
-        return self._unary_operation(operator.invert, '__invert__')
+        return _operators.invert(self)
 
     def __truediv__(self, other):
-        return self._elementwise_operation(other, operator.truediv, '__truediv__', '/')
+        return _operators.truediv(self, other)
 
     def __floordiv__(self, other):
-        return self._elementwise_operation(other, operator.floordiv, '__floordiv__', '//')
+        return _operators.floordiv(self, other)
 
     def __mod__(self, other):
-        return self._elementwise_operation(other, operator.mod, '__mod__', '%')
+        return _operators.mod(self, other)
 
     def __pow__(self, other):
-        return self._elementwise_operation(other, operator.pow, '__pow__', '**')
+        return _operators.pow(self, other)
 
     def __radd__(self, other):
         """Reverse addition: other + self.
 
-        Routed through _elementwise_operation like every other reverse op so
-        the result dtype is properly promoted — the old hand-rolled path
-        stamped results with self's dtype, so 1.5 + Vector([1, 2]) produced
-        floats labeled int and crashed the int storage backend.
+        Routed through the shared elementwise implementation so the result
+        dtype is promoted before storage is constructed.
         """
-        return self._elementwise_operation(other, _reverse_add, '__radd__', '+')
+        return _operators.radd(self, other)
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
     def __rsub__(self, other):
-        return self._elementwise_operation(other, _reverse_sub, '__rsub__', '-')
+        return _operators.rsub(self, other)
 
     def __rtruediv__(self, other):
-        return self._elementwise_operation(other, _reverse_truediv, '__rtruediv__', '/')
+        return _operators.rtruediv(self, other)
 
     def __rfloordiv__(self, other):
-        return self._elementwise_operation(other, _reverse_floordiv, '__rfloordiv__', '//')
+        return _operators.rfloordiv(self, other)
 
     def __rmod__(self, other):
-        return self._elementwise_operation(other, _reverse_mod, '__rmod__', '%')
+        return _operators.rmod(self, other)
 
     def __rpow__(self, other):
-        return self._elementwise_operation(other, _reverse_pow, '__rpow__', '**')
+        return _operators.rpow(self, other)
+
+
 
 
     def _promote(self, new_dtype):
@@ -1724,14 +1411,14 @@ class Vector():
         Bitwise left shift (<<).
         Explicit method since '<<' operator is used for concatenation.
         """
-        return self._elementwise_operation(other, operator.lshift, 'bit_lshift', '<<')
+        return _operators.bit_lshift(self, other)
 
     def bit_rshift(self, other):
         """
         Bitwise right shift (>>).
         Explicit method since '>>' operator is used for column addition.
         """
-        return self._elementwise_operation(other, operator.rshift, 'bit_rshift', '>>')
+        return _operators.bit_rshift(self, other)
 
 
     def __getattr__(self, name):
