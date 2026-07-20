@@ -1,23 +1,7 @@
 # Serif Design Philosophy
 
-Serif exists because Python does not adequately replace Excel along the
-dimensions that make Excel genuinely excellent. Excel provides a nearly ideal
-analytical feedback loop: data stays visible, transformations form a dependency
-graph, errors propagate through that graph, and downstream work cannot silently
-mutate upstream values. The analyst can think, transform, inspect, and adjust
-without fighting the tool.
-
-Serif brings those properties into Python. Transformations remain visible and
-composable; derived values cannot corrupt their sources; row mismatches and
-invalid operations raise instead of producing plausible results; optional
-execution backends do not change semantics; and `t._`, dot access, `>>=`, and
-the central repr keep the interface out of the analyst's way.
-
-Serif is intentionally small, predictable, and Pythonic. It is not another
-pandas clone or a performance-first DataFrame. It is the deterministic value
-and transformation layer underneath notebook DAGs and slide-building systems:
-spreadsheet-like dependency semantics without requiring the work to live in a
-spreadsheet grid.
+Serif is intentionally small, predictable, and Pythonic.  
+Its goal is not to compete with full-fledged analytics engines, but to provide a clean, minimal foundation for vectors, tables, and lightweight transformations that integrate naturally with Python and the UI systems built on top of it.
 
 This document outlines the core principles that guide the design of Serif.  
 Any future feature or contribution should be evaluated against these principles.

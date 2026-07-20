@@ -53,24 +53,3 @@ with actual usage.
 `>>` stacks columns, not rows.  
 Row-wise combining requires explicit user intent.
 
-## 7. Vector operations on tables
-
-Table deliberately exposes the Vector operations with coherent 2-D meanings:
-
-- element-wise methods (`fillna`, `isna`, `is_type`, `cast`, `to_object`,
-  `pluck`) map over columns and preserve the table shape and names
-- unary, reverse arithmetic, and bit-shift operations also map over columns
-- `dropna()` keeps complete rows (no null cell in any column)
-- `unique()` keeps the first occurrence of each distinct row
-- reductions such as `sum()`, `mean()`, and `count()` return one value per column
-
-`Table.filled()` raises because a table has no unambiguous column schema; build
-named `Vector.filled(...)` columns instead.
-
-## 8. Exporting duplicate names
-
-Repeated names remain valid inside a Table, but a Python dict cannot represent
-them. `to_dict()` therefore raises when two columns would map to the same key,
-including a collision with an unnamed column's `col<idx>_` fallback. Rename the
-columns or export ordered column pairs when duplicates must be preserved.
-
