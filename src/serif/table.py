@@ -20,6 +20,7 @@ from ._vector.storage import TupleStorage, ArrayStorage
 from .errors import SerifKeyError
 from .errors import SerifValueError
 from .errors import SerifTypeError
+from .errors import SerifIndexError
 from .errors import SerifEmptyReductionError
 
 
@@ -123,7 +124,7 @@ class Row(Vector):
     We deliberately bypass Vector.__init__ to avoid O(N) scans, 
     fingerprinting, and alias tracking during iteration.
     """
-    __slots__ = ('_raw_cols', '_column_map', '_index', '_dtype')
+    __slots__ = ('_raw_cols', '_columns', '_column_map', '_index', '_dtype')
     
     def __new__(cls, table, index=0):
         # Bypass Vector.__new__ entirely.
@@ -144,7 +145,8 @@ class Row(Vector):
                 return storage._data  # array.array — O(1) index, lazy boxing
             return storage.to_tuple()
 
-        self._raw_cols = [_backing(col._storage) for col in table._storage]
+        self._columns = tuple(table._storage)
+        self._raw_cols = [_backing(col._storage) for col in self._columns]
         self._column_map = table._column_map
         self._index = index
         
@@ -245,7 +247,8 @@ class Row(Vector):
              return self._raw_cols[key][self._index]
         
         if type(key) is str:
-             return getattr(self, key)
+             col_idx = _resolve_column_key(self._columns, key)
+             return self._raw_cols[col_idx][self._index]
              
         # Fallback to standard vector slicing/masking
         return super().__getitem__(key)
@@ -272,7 +275,7 @@ class _BatchScope:
     Enter: un-share — every column whose storage supports it gets
     privately-copied buffers (the same principle as Table.__init__ copying
     its vectors: un-share whenever write-ownership changes hands), columns
-    thaw, fingerprints invalidate. `m` IS the table.
+    thaw. `m` IS the table.
 
     Inside: point writes go raw into the private buffers (fast), and
     thawed columns accept vector-addressed writes (m.v[i] = x); anything
@@ -281,8 +284,8 @@ class _BatchScope:
     path.
 
     Exit (including via exception — partial mutation persists, no
-    rollback): every column refreezes, in-place licenses revoke (so
-    escaped column refs re-freeze too), fingerprints invalidate again.
+    rollback): every column refreezes and in-place licenses revoke (so
+    escaped column refs re-freeze too).
     Observable semantics are identical to table-addressed writes; only
     the speed differs.
     """
@@ -299,14 +302,12 @@ class _BatchScope:
                 "Table is already inside a batch() scope; nesting is not supported."
             )
         t._unlocked = True
-        t._invalidate_fp()
         for col in t._storage:
             private = getattr(col._storage, 'private_copy', None)
             if private is not None:
                 col._storage = private()
                 col._inplace_ok = True
             col._frozen = False
-            col._invalidate_fp()
         return t
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -314,8 +315,6 @@ class _BatchScope:
         for col in t._storage:
             col._frozen = True
             col._inplace_ok = False
-            col._invalidate_fp()
-        t._invalidate_fp()
         t._unlocked = False
         return False
 
@@ -520,8 +519,9 @@ class Table(Vector):
         """Serialize table to a column-oriented dict of plain Python lists.
 
         Intended for transport/export only — not a lossless round-trip.
-        Column names fall back to positional keys ('col_0', 'col_1', ...)
-        for unnamed columns.
+        Column names fall back to positional keys ('col0_', 'col1_', ...)
+        for unnamed columns. Export keys must be unique; a collision raises
+        instead of silently dropping an earlier column.
 
         Returns
         -------
@@ -535,12 +535,113 @@ class Table(Vector):
         {'x': [1, 2], 'y': [3, 4]}
         """
         result = {}
+        positions = {}
         for i, col in enumerate(self._storage):
             # Unnamed columns use the same col{i}_ spelling as attribute
             # access, so the dict key round-trips through t.col0_ etc.
             key = col._name if col._name is not None else f"col{i}_"
+            try:
+                previous = positions.get(key)
+            except TypeError:
+                raise SerifTypeError(
+                    f"Cannot export column {i} to dict: column name {key!r} "
+                    "is not hashable. Rename the column first."
+                ) from None
+            if previous is not None:
+                raise SerifValueError(
+                    f"to_dict() requires unique export keys; columns "
+                    f"{previous} and {i} both map to {key!r}. Rename one of "
+                    "the columns or export the columns as ordered pairs."
+                )
+            positions[key] = i
             result[key] = list(col._storage)
         return result
+
+    # ------------------------------------------------------------------
+    # Vector-surface conformance
+    # ------------------------------------------------------------------
+
+    def _map_columns(self, fn):
+        """Apply a value-producing Vector operation to every column.
+
+        Table subclasses Vector so the useful element-wise Vector surface is
+        available on tables too.  The result must still be a structurally
+        complete Table, with the source column names restored explicitly.
+        """
+        result = []
+        for source in self._storage:
+            derived = fn(source)
+            if not isinstance(derived, Vector) or derived.ndims() != 1:
+                raise SerifTypeError(
+                    "Table column operation must produce one Vector per column"
+                )
+            derived._name = source._name
+            derived._wild = False
+            result.append(derived)
+        return Table(result, name=self._name)
+
+    @classmethod
+    def filled(cls, value, length, typesafe=False):
+        raise SerifTypeError(
+            "Table.filled() is ambiguous because a table has columns. "
+            "Build named filled columns instead, e.g. "
+            "Table({'x': Vector.filled(value, length)})."
+        )
+
+    def cast(self, target_type):
+        """Cast every column to *target_type*, preserving table structure."""
+        return self._map_columns(lambda col: col.cast(target_type))
+
+    def to_object(self):
+        """Return a table whose columns all use object dtype."""
+        return self._map_columns(lambda col: col.to_object())
+
+    def fillna(self, value):
+        """Fill null cells in every column with *value*."""
+        return self._map_columns(lambda col: col.fillna(value))
+
+    def isna(self):
+        """Return a same-shaped bool Table marking null cells."""
+        return self._map_columns(lambda col: col.isna())
+
+    def is_type(self, types):
+        """Return a same-shaped bool Table applying ``isinstance`` per cell."""
+        return self._map_columns(lambda col: col.is_type(types))
+
+    def pluck(self, key, default=None):
+        """Pluck *key* from every cell, preserving table structure."""
+        return self._map_columns(lambda col: col.pluck(key, default))
+
+    def dropna(self):
+        """Return rows having no null cells (complete-case filtering)."""
+        keep = Vector(
+            all(col[row_idx] is not None for col in self._storage)
+            for row_idx in range(len(self))
+        )
+        return Table(tuple(col[keep] for col in self._storage), name=self._name)
+
+    def unique(self):
+        """Return the first occurrence of each distinct row, in source order."""
+        seen_hashable = set()
+        seen_rows = []
+        keep = []
+        for row_idx in range(len(self)):
+            row = tuple(col[row_idx] for col in self._storage)
+            try:
+                duplicate = row in seen_hashable
+            except TypeError:
+                duplicate = row in seen_rows
+            if duplicate:
+                continue
+            try:
+                seen_hashable.add(row)
+            except TypeError:
+                seen_rows.append(row)
+            keep.append(row_idx)
+        return Table(
+            tuple(col._clone(_take(col._storage, keep)) for col in self._storage),
+            name=self._name,
+        )
 
     def __getattr__(self, attr):
         """Access columns by sanitized attribute name using pre-computed column map."""
@@ -632,7 +733,7 @@ class Table(Vector):
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         # Let instance attributes initialize normally (before __init__ completes)
-        if attr in ('_length', '_column_map', '_dtype', '_name', '_fp', '_wild', '_repr_rows', '_storage', '_warned_collisions', '_unlocked'):
+        if attr in ('_length', '_column_map', '_dtype', '_name', '_wild', '_repr_rows', '_storage', '_warned_collisions', '_unlocked'):
             object.__setattr__(self, attr, value)
             return
 
@@ -923,40 +1024,56 @@ class Table(Vector):
             if len(key) != 2:
                 raise SerifKeyError("Table assignment requires 1D (row) or 2D (row, col) key.")
             row_spec, col_spec = key
+            first_is_columns = (
+                isinstance(row_spec, str)
+                or (
+                    isinstance(row_spec, (list, tuple))
+                    and row_spec
+                    and all(isinstance(item, str) for item in row_spec)
+                )
+            )
+            if first_is_columns:
+                row_spec, col_spec = col_spec, row_spec
         else:
             # t[row] or t[slice] -> implies all columns
             row_spec = key
             col_spec = slice(None)
 
-        # --- 2. Resolve Target Columns ---
-        # This replicates the lookup logic from __getitem__
+        # --- 2. Validate the complete selector before any write lands ---
+        self._validate_assignment_rows(row_spec)
         target_indices = []
         n_cols = len(self._storage)
         
         if isinstance(col_spec, slice):
             target_indices = list(range(n_cols)[col_spec])
+        elif isinstance(col_spec, bool):
+            raise SerifTypeError("Boolean values are not column indices")
         elif isinstance(col_spec, int):
-            target_indices = [col_spec]
+            if not (-n_cols <= col_spec < n_cols):
+                raise SerifIndexError(
+                    f"Column index {col_spec} out of range for table width {n_cols}"
+                )
+            target_indices = [col_spec % n_cols]
         elif isinstance(col_spec, str):
-            # Look up by name
-            idx = self._column_map.get(col_spec)
-            if idx is None:
-                idx = self._column_map.get(col_spec.lower())
-            if idx is None:
-                raise SerifKeyError(f"Column '{col_spec}' not found")
-            target_indices = [idx]
+            target_indices = [_resolve_column_key(self._storage, col_spec)]
         elif isinstance(col_spec, (tuple, list)):
             # Handle list of names/ints
             for c in col_spec:
                 if isinstance(c, str):
-                    idx = self._column_map.get(c)
-                    if idx is None:
-                        idx = self._column_map.get(c.lower())
-                    if idx is None:
-                        raise SerifKeyError(f"Column '{c}' not found")
-                    target_indices.append(idx)
+                    target_indices.append(_resolve_column_key(self._storage, c))
+                elif isinstance(c, bool):
+                    raise SerifTypeError("Boolean values are not column indices")
                 elif isinstance(c, int):
-                    target_indices.append(c)
+                    if not (-n_cols <= c < n_cols):
+                        raise SerifIndexError(
+                            f"Column index {c} out of range for table width {n_cols}"
+                        )
+                    target_indices.append(c % n_cols)
+                else:
+                    raise SerifTypeError(
+                        "Column selector lists may contain only names or "
+                        f"integer positions, not {type(c).__name__}"
+                    )
         else:
             raise SerifTypeError(f"Invalid column index type: {type(col_spec)}")
 
@@ -1026,6 +1143,64 @@ class Table(Vector):
 
         raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
 
+    def _validate_assignment_rows(self, row_spec):
+        """Validate every row coordinate before a multi-column write starts."""
+        nrows = len(self)
+
+        if isinstance(row_spec, bool):
+            raise SerifTypeError("Boolean scalar values are not row indices")
+        if isinstance(row_spec, int):
+            if not (-nrows <= row_spec < nrows):
+                raise SerifIndexError(
+                    f"Row index {row_spec} out of range for table length {nrows}"
+                )
+            return
+        if isinstance(row_spec, slice):
+            # Validate a zero step now, before any target column is rebuilt.
+            try:
+                row_spec.indices(nrows)
+            except ValueError as exc:
+                raise SerifValueError(str(exc)) from None
+            return
+        if isinstance(row_spec, Vector):
+            schema = row_spec.schema()
+            if schema.kind is bool:
+                if len(row_spec) != nrows:
+                    raise SerifValueError(
+                        f"Boolean mask length mismatch: {len(row_spec)} != {nrows}"
+                    )
+                return
+            if schema.kind is int and not schema.nullable:
+                indices = row_spec
+            else:
+                raise SerifTypeError(
+                    "Row selector vectors must be bool masks or non-nullable "
+                    "integer positions"
+                )
+        elif isinstance(row_spec, (list, tuple)):
+            if all(type(item) is bool for item in row_spec):
+                if len(row_spec) != nrows:
+                    raise SerifValueError(
+                        f"Boolean mask length mismatch: {len(row_spec)} != {nrows}"
+                    )
+                return
+            if not all(type(item) is int for item in row_spec):
+                raise SerifTypeError(
+                    "Row selector lists may contain only booleans or integer "
+                    "positions"
+                )
+            indices = row_spec
+        else:
+            raise SerifTypeError(
+                f"Invalid row selector type: {type(row_spec).__name__}"
+            )
+
+        for idx in indices:
+            if not (-nrows <= idx < nrows):
+                raise SerifIndexError(
+                    f"Row index {idx} out of range for table length {nrows}"
+                )
+
     def _write_column(self, col_idx, row_spec, value):
         """
         Land one column write, owner-addressed.
@@ -1051,7 +1226,6 @@ class Table(Vector):
         cols = list(self._storage)
         cols[col_idx] = new_col
         self._storage = TupleStorage.from_iterable(tuple(cols), nullable=False)
-        self._invalidate_fp()
 
     def batch(self):
         """
@@ -1252,6 +1426,22 @@ class Table(Vector):
             warnings.warn("\n".join(lines), UserWarning, stacklevel=2)
         
         return Table(tuple(result_cols))
+
+    def _table_reverse_scalar_operation(self, other, op_func):
+        """Apply ``other op column`` while retaining the table schema."""
+        return self._map_columns(lambda col: op_func(other, col))
+
+    def __neg__(self):
+        return self._map_columns(operator.neg)
+
+    def __pos__(self):
+        return self._map_columns(operator.pos)
+
+    def __abs__(self):
+        return self._map_columns(operator.abs)
+
+    def __invert__(self):
+        return self._map_columns(operator.invert)
     
     def __add__(self, other):
         return self._table_elementwise_operation(other, operator.add, '__add__', '+')
@@ -1273,6 +1463,33 @@ class Table(Vector):
     
     def __pow__(self, other):
         return self._table_elementwise_operation(other, operator.pow, '__pow__', '**')
+
+    def __radd__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.add)
+
+    def __rmul__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.mul)
+
+    def __rsub__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.sub)
+
+    def __rtruediv__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.truediv)
+
+    def __rfloordiv__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.floordiv)
+
+    def __rmod__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.mod)
+
+    def __rpow__(self, other):
+        return self._table_reverse_scalar_operation(other, operator.pow)
+
+    def bit_lshift(self, other):
+        return self._map_columns(lambda col: col.bit_lshift(other))
+
+    def bit_rshift(self, other):
+        return self._map_columns(lambda col: col.bit_rshift(other))
 
     @staticmethod
     def _validate_key_tuple_hashable(key_tuple, key_cols, row_idx):
@@ -2276,7 +2493,6 @@ class Table(Vector):
         object.__setattr__(t, '_dtype',         None)
         object.__setattr__(t, '_name',          None)
         object.__setattr__(t, '_wild',          False)
-        object.__setattr__(t, '_fp',            None)
         object.__setattr__(t, '_repr_rows',     None)
         object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
         object.__setattr__(t, '_column_map',    None)
@@ -2388,7 +2604,6 @@ class MaskedTable(Table):
         object.__setattr__(self, '_dtype',      None)
         object.__setattr__(self, '_name',       None)
         object.__setattr__(self, '_wild',       False)
-        object.__setattr__(self, '_fp',         None)
         object.__setattr__(self, '_repr_rows',  None)
         object.__setattr__(self, '_length',     n)
         object.__setattr__(self, '_column_map', source._column_map)

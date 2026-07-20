@@ -22,7 +22,12 @@ a            # 1, 2, 3
 b            # 99, 2, 3
 ```
 
-Serif never mutates storage in place: `__setitem__` materializes the data, applies the updates, and rebuilds a fresh storage object. Any other Vector still pointing at the old storage is untouched — copy-on-write by construction, no registry or identity tracking needed.
+Outside a `batch()` ownership scope, Serif never mutates storage in place:
+`__setitem__` materializes the data, applies the updates, and rebuilds a fresh
+storage object. Any other Vector still pointing at the old storage is untouched
+— copy-on-write by construction, with no registry or identity tracking needed.
+`batch()` first privatizes supported buffers, so its temporary in-place writes
+remain unobservable to every prior value.
 
 Plain name-binding is ordinary Python: `b = a` makes two names for one
 object, and a mutation through either name is visible through both,
@@ -32,12 +37,15 @@ each other; it does not (and should not) change what `=` means.
 ### When Copies Happen
 
 - **Mutation:** every mutation rebuilds the mutated Vector's storage; sharers keep the old immutable storage
-- **Table construction:** Table performs deep copy to prevent external aliasing
-- **Explicit operations:** Methods like `.copy()` always create new data
+- **Table construction:** Table creates private column shells that share immutable storage; this is an O(1) value snapshot per column
+- **`.copy()`:** creates an independent Vector shell and normally shares immutable storage; replacement values rebuild storage
+- **`batch()`:** privately copies writable buffers once on entry, then permits in-place writes only inside that ownership scope
 
-## Fingerprints
+## Deterministic fingerprints
 
-Fingerprints enable **O(1) change detection** without full data comparisons.
+`fingerprint()` returns a deterministic identity for a Vector or Table. It is
+suitable for dependency graphs, persistent caches, and ordinary change
+detection because it describes both the data and the analytical schema.
 
 ### Basic Usage
 
@@ -51,7 +59,7 @@ fp2 = v.fingerprint()
 assert fp1 != fp2  # Fingerprint changed
 ```
 
-### Use Cases
+### Use cases
 
 1. **Detect data changes without full comparisons**
    ```python
@@ -77,30 +85,28 @@ assert fp1 != fp2  # Fingerprint changed
            return self.cache
    ```
 
-3. **Track lineage in computational graphs**
-   ```python
-   def build_pipeline(data):
-       steps = []
-       
-       cleaned = data.clean()
-       steps.append(('clean', cleaned.fingerprint()))
-       
-       transformed = cleaned.transform()
-       steps.append(('transform', transformed.fingerprint()))
-       
-       return transformed, steps
-   ```
+### Contract
 
-### Implementation
+The 64-character, versioned BLAKE2b digest covers:
 
-Fingerprints use a **rolling hash**, computed lazily on first access and cached. Mutation invalidates the cache; the next `fingerprint()` call recomputes in O(n). Repeated access on unchanged data is O(1).
+- vector/table dimensions and names
+- dtype and nullability
+- categorical order and decimal scale/precision
+- canonically encoded Python values
 
-### Limitations
+The digest is deterministic across Python hash seeds and execution backends.
+It is recomputed in O(n) on every call; persistent identity favors certainty
+over metadata cache bookkeeping. Unknown object values raise with a conversion
+remedy rather than falling back to a potentially address-bearing `repr()`.
 
-- Fingerprints hash element **values** only — dtype is not part of the
-  hash, so `Vector([1])` and `Vector([1.0])` share a fingerprint
-  (`hash(1) == hash(1.0)`).
-- Fingerprints answer "did this data change?", not "are these equal?".
-  For comparison, remember `==` is **elementwise** (it returns a boolean
-  vector, with `None` where either side is null).
+Fingerprints answer "does this value and schema have the same identity?", not
+"are these equal?". For comparison, remember `==` is **elementwise** (it
+returns a boolean vector, with `None` where either side is null).
+
+- Names and schema are intentional parts of identity, so equal-looking values
+  with different analytical roles can have different fingerprints.
+- Supported values use canonical encodings; arbitrary objects must first be
+  converted to a supported Python type.
+- Fingerprinting is O(n), so callers should retain the returned digest at the
+  dependency-graph or cache layer when repeated checks are unnecessary.
 

@@ -36,7 +36,7 @@
 
 ## General Operations
 - **Copy-on-write:** Mutations rebuild the vector's storage with O(n) copy cost; other vectors sharing the old storage are unaffected
-- **Fingerprinting:** lazy O(n) on first access, cached (O(1)) until the next mutation invalidates it
+- **Fingerprinting:** O(n) on every call; deterministic schema-aware identity for persistent DAG/cache keys
 
 ## Rule of Thumb
 Vector handles **10K–1M rows** comfortably in pure Python and can extend that
@@ -47,6 +47,6 @@ distributed or out-of-core engine.
 ## Performance Profile
 - **Sweet spot:** Modeling-scale data (thousands to low millions of rows)
 - Optimized for **workflow velocity**, not raw compute throughput
-- Cached fingerprinting enables efficient change detection and caching
+- Deterministic fingerprinting supports reproducible dependency and cache keys
 - Optional accelerators operate behind the same Vector and Table semantics
 

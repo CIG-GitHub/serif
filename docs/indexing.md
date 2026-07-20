@@ -137,8 +137,11 @@ t[mask]['x', 'y']
 ### 2.3 Two-Axis Indexing
 
 The tuple form `t[rows, cols]` is supported for reading and writing.
-Rows are specified by integer or slice; columns by position, slice, or
-name. Either axis order works — the axis types disambiguate.
+For reads, rows are specified by integer or slice. For writes, boolean masks
+and integer-position collections are also valid row selectors. Columns use a
+position, slice, exact/sanitized name, or a collection of names/positions.
+Named column selectors may come first (`t['b', 5]`); ambiguous integer/slice
+pairs are row-first.
 
 ```python
 t[0, 0]              # a single cell (a Python scalar)
@@ -155,17 +158,29 @@ t[3, :] = None       # a whole row (promotes columns to nullable)
 t[:, 'b'] = 42       # a whole column
 t[0:2, 'a'] = 100    # a slice of a column
 t[1:3, 0:2] = 999    # a rectangular region
+t[t.a > 0, 'b'] = 0  # conditional owner-addressed write
 ```
 
-#### Masks stay on the single-axis form
+#### Mask reads compose; mask writes address the owner
 
-Boolean masks are not accepted inside the two-axis form:
+Two-axis mask **reads** are not accepted. Compose the ordinary row filter with
+a column selection:
 
 ```python
-t[mask, 'col']   # raises — write t[mask]['col'] or t['col'][mask]
+t[mask, 'col']   # read raises
+t[mask]['col']   # filtered column value
+t['col'][mask]   # equivalent filtered column value
 ```
 
-Masks filter rows via the single-axis form only.
+Two-axis mask **assignment** is the intentional exception because mutation must
+be owner-addressed:
+
+```python
+t[mask, 'col'] = value   # valid; writes through the Table
+t[mask]['col'] = value   # raises; the read-out column is frozen
+```
+
+The complete row and column selector is validated before any write lands.
 
 ## 3. Recommended Idioms
 

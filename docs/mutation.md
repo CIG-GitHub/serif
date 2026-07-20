@@ -47,6 +47,7 @@ t.v[0] = 5          # ✗ SerifTypeError — and the error contains the fix
 t['v'][0] = 5       # ✗ same path, string spelling
 v = t.v
 v[0] = 5            # ✗ the same operation, three lines apart
+t.v.alias('new')     # ✗ metadata is frozen too; use t.rename(...)
 ```
 
 ## Why: the two spellings are the same spelling
@@ -125,8 +126,8 @@ its own consistency.
 ## The payoff
 
 Because no operation anywhere can write into shared memory, every
-derived object is a true value: a fingerprint, once computed, describes
-frozen bytes ([aliasing.md](aliasing.md)); a filtered selection means
+derived object is a true value: its fingerprint deterministically describes
+its data and schema ([aliasing.md](aliasing.md)); a filtered selection means
 "the table as it was", permanently; and `copy()` is O(1) because sharing
 frozen storage is always safe. Table-owns-storage and copy-on-write
 coexist precisely because mutation is owner-addressed: the table may

@@ -3,12 +3,17 @@
 Names in Vector and Table are simple, non-magical metadata.
 
 ## Vector
-- `name` is optional  
-- math operations do not propagate names  
-- slicing does not preserve name  
-- copying preserves name  
+- `vector_name` is optional
+- math operations do not propagate names
+- structural selection (`copy`, slice, mask, sort) preserves the name
+- cast/fill/drop-null operations preserve the name
+- `.alias(name)` renames a standalone vector and returns it for chaining
 
 Names are human-facing, not structural.
+
+A table-owned column's name is frozen along with its values. Rename through
+the owner with `t.rename({'old': 'new'})`; use `t.col.copy().alias('new')` for
+an independent named Vector.
 
 ## Table
 - each column has its own name  
@@ -28,8 +33,9 @@ Names are human-facing, not structural.
 6. names matching `<base>__<digits>` get a trailing `_` — that shape is
    reserved for duplicate disambiguation
 7. collision with a Vector/Table method or property → trailing `_`
-   (a column named `name` is accessed as `.name_`, because `.name` is
-   a Vector property)
+   (for example, a column named `sum` is accessed as `.sum_`; a column named
+   `name` remains `.name` because vector/table names live at `.vector_name`
+   and `.table_name`)
 
 ### Duplicates
 
@@ -42,7 +48,8 @@ Sanitized names do not replace the actual names. `t._` shows every
 column's accessor alongside its original name.
 
 ## Practical consequences
-- weird user-provided column names are allowed  
-- dot-access provides ergonomic access without polluting data semantics  
-- users may explicitly rename columns if needed  
+- weird user-provided column names are allowed
+- dot-access provides ergonomic access without polluting data semantics
+- exact and sanitized names resolve identically in one- and two-axis access
+- users rename columns owner-first with `Table.rename()`
 

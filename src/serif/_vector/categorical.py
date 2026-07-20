@@ -44,7 +44,6 @@ class _Category(Vector):
         self._dtype = Schema(str, nullable)
         self._name = name
         self._wild = True
-        self._fp = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
         self._storage = _CategoryStorage(codes, categories)
 
@@ -240,7 +239,6 @@ class _Category(Vector):
         self._code_storage = new._code_storage
         self._dtype = new._dtype
         self._storage = _CategoryStorage(self._code_storage, self._categories)
-        self._invalidate_fp()
 
     # ------------------------------------------------------------------
     # Comparisons — category-order aware

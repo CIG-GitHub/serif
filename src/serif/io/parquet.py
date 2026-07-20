@@ -2036,7 +2036,6 @@ class _ParquetTable(_Table):
         object.__setattr__(self, '_dtype', None)
         object.__setattr__(self, '_name', None)
         object.__setattr__(self, '_wild', False)
-        object.__setattr__(self, '_fp', None)
         object.__setattr__(self, '_repr_rows', None)
         object.__setattr__(self, '_length', source.num_rows)
         object.__setattr__(self, '_column_map', metadata_table._column_map)
