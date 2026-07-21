@@ -1,9 +1,9 @@
-import warnings
 from collections.abc import Iterable
 
 from .vector import Vector
 from ._table import columns as _columns
 from ._table import lifting as _lifting
+from ._table import selection as _selection
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
 from ._vector import Schema
@@ -466,108 +466,7 @@ class Table(Vector):
         return Table(rows)
 
     def __getitem__(self, key):
-        key = self._check_duplicate(key)
-        
-        # Handle string indexing for column names
-        if isinstance(key, str):
-            return self._storage[
-                _columns.resolve_column_key(self._storage, key)
-            ]
-        
-        # Handle tuple of strings for multi-column selection
-        if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
-            # Reuse the single-column lookup above for each name so selection
-            # semantics stay identical (exact / sanitized / disambiguated /
-            # unnamed) and a missing name raises SerifKeyError instead of being
-            # silently dropped. Table() copies its inputs, so no aliasing.
-            return Table([self[col_name] for col_name in key])
-        
-        if isinstance(key, tuple):
-            if len(key) != len(self.shape):
-                raise SerifKeyError(f"Matrix indexing must provide an index in each dimension: {self.shape}")
-
-            # Reject 3+ dimensional indexing explicitly
-            if len(key) > 2:
-                raise SerifKeyError(
-                    f"Table only supports 2D indexing (row, column); "
-                    f"got {len(key)} indices."
-                )
-
-            # 2D indexing: [row_spec, col_spec]
-            # Support both [rows, cols] and [cols, rows] by checking types
-            row_spec, col_spec = key
-            
-            # Determine which is rows and which is columns
-            # Rows: int or slice
-            # Cols: int, slice, str, or tuple of strings
-            row_is_first = isinstance(row_spec, (int, slice))
-            
-            if not row_is_first:
-                # Swap if columns came first: [('a', 'b'), 1:3] -> [1:3, ('a', 'b')]
-                row_spec, col_spec = col_spec, row_spec
-            
-            # Now row_spec is guaranteed to be rows, col_spec is columns
-            
-            # Get the row-sliced table first
-            if isinstance(row_spec, slice):
-                row_sliced = self[row_spec]  # Returns Table
-            elif isinstance(row_spec, int):
-                # Single row -> return Row, then index into it
-                return self[row_spec][col_spec]
-            else:
-                raise SerifKeyError(f"Invalid row specifier: {type(row_spec)}")
-            
-            # Now select columns from the row-sliced table
-            if isinstance(col_spec, int):
-                # Single column by index
-                return row_sliced.cols(col_spec)
-            elif isinstance(col_spec, slice):
-                # Column slice by index
-                selected = row_sliced.cols()[col_spec]
-                return Table(selected)
-            elif isinstance(col_spec, str):
-                # Single column by name
-                return row_sliced[col_spec]
-            elif isinstance(col_spec, tuple) and all(isinstance(k, str) for k in col_spec):
-                # Multiple columns by name
-                return row_sliced[col_spec]
-            else:
-                raise SerifKeyError(f"Invalid column specifier: {type(col_spec)}")
-
-        if isinstance(key, int):
-            # Effectively a different input type (single not a list). Returning a value, not a vector.
-            return Row(self, key)
-
-        if isinstance(key, Vector) and key.schema().kind == bool:
-            # Nullable masks allowed: null entries exclude the row.
-            if len(self) != len(key):
-                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
-            if self._unlocked:
-                # batch() scope: column buffers are private and mutate in
-                # place, so a storage capture is not a snapshot here —
-                # gather eagerly, exactly as before.
-                return Table(tuple(x[key] for x in self._storage))
-            return MaskedTable(self, key)
-        if isinstance(key, list) and {type(e) for e in key} == {bool}:
-            if len(self) != len(key):
-                raise SerifValueError(f"Boolean mask length mismatch: {len(self)} != {len(key)}")
-            if self._unlocked:
-                return Table(tuple(x[key] for x in self._storage))
-            return MaskedTable(self, Vector(key))
-        if isinstance(key, slice):
-            return Table(tuple(x[key] for x in self._storage), name=self._name)
-
-        # NOT RECOMMENDED
-        if isinstance(key, Vector) and key.schema().kind == int and not key.schema().nullable:
-            if len(self) > 1000:
-                warnings.warn('Subscript indexing is sub-optimal for large vectors; prefer slices or boolean masks')
-            return Table(tuple(x[key] for x in self._storage))
-
-        # No silent fall-through: an unrecognized key must puke, not return None.
-        raise SerifTypeError(
-            f"Table indices must be column names (str), ints, slices, boolean "
-            f"masks, or non-nullable int vectors, not {type(key).__name__}"
-        )
+        return _selection.getitem(self, key)
 
     def __setitem__(self, key, value):
         """
