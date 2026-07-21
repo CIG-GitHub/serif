@@ -1,5 +1,6 @@
 from .vector import Vector
 from ._table import columns as _columns
+from ._table import grouping as _grouping
 from ._table import joins as _joins
 from ._table import lifting as _lifting
 from ._table import mutation as _mutation
@@ -10,13 +11,10 @@ from ._table import transpose as _transpose
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
 from ._vector import Schema
-from ._accel.api import _accel_take
-from ._accel.api import _accel_group
 
 
 from .errors import SerifValueError
 from .errors import SerifTypeError
-from .errors import SerifEmptyReductionError
 
 
 class Table(Vector):
@@ -598,216 +596,6 @@ class Table(Vector):
             expect_right_unique=expect_right_unique,
         )
 
-    @staticmethod
-    def _make_uniquifier():
-        """Return a uniquify(name) function that suffixes repeats: x, x2, x3..."""
-        used_names = set()
-
-        def uniquify(name):
-            if name not in used_names:
-                used_names.add(name)
-                return name
-            i = 2
-            while f"{name}{i}" in used_names:
-                i += 1
-            new = f"{name}{i}"
-            used_names.add(new)
-            return new
-
-        return uniquify
-
-    def _build_partition_index(self, groupby, *, track_row_keys=False,
-                               key_label="groupby key"):
-        """
-        Normalize groupby specs to resolved columns and bucket row indices
-        by key tuple. Shared by aggregate() and window().
-
-        Returns (groupby_cols, partition_index, row_keys) where row_keys is
-        a per-row key list when track_row_keys=True (window needs it to
-        broadcast group values back to rows), else None.
-        """
-        nrows = len(self)
-        if isinstance(groupby, (str, Vector)):
-            groupby = [groupby]
-        groupby = [self._resolve_column(col) for col in groupby]
-
-        for i, col in enumerate(groupby):
-            if len(col) != nrows:
-                raise SerifValueError(
-                    f"{key_label} at index {i} has length {len(col)}, "
-                    f"but table has {nrows} rows."
-                )
-
-        # Single-key fast path: bucket in C when the key column supports it
-        # (int64, no nulls). track_row_keys declines — window()'s per-row
-        # key list would rebuild the Python tuples anyway.
-        if len(groupby) == 1 and not track_row_keys:
-            fast = _accel_group(groupby[0]._storage)
-            if fast is not None:
-                return groupby, fast, None
-
-        partition_index = {}
-        pk_len = len(groupby)
-        over_data = [c._storage.to_tuple() for c in groupby]
-        row_keys = [None] * nrows if track_row_keys else None
-
-        for row_idx in range(nrows):
-            key = tuple(over_data[i][row_idx] for i in range(pk_len))
-            if row_keys is not None:
-                row_keys[row_idx] = key
-            bucket = partition_index.get(key)
-            if bucket is None:
-                partition_index[key] = [row_idx]
-            else:
-                bucket.append(row_idx)
-
-        return groupby, partition_index, row_keys
-
-    @staticmethod
-    def _make_group_slicer(source_col):
-        """
-        Return slicer(row_indices, name) -> the per-group slice of source_col.
-
-        Typed columns gather straight off the storage buffer through the
-        take accelerator; on decline (categorical, date/object backends)
-        the column is materialized ONCE — lazily, so the accelerated path
-        never pays for it — and each group rebuilds with the source's known
-        schema, no per-element re-inference. object/untyped sources fall
-        back to full inference, exactly as before.
-        """
-        schema = source_col.schema()
-        typed = schema is not None and schema.kind is not object
-        state = {}
-
-        def slicer(row_indices, name):
-            if typed:
-                fast = _accel_take(source_col._storage, row_indices)
-                if fast is not None:
-                    return source_col._clone(fast, name=name)
-            if 'data' not in state:
-                state['data'] = source_col._storage.to_tuple()
-            values = [state['data'][i] for i in row_indices]
-            if not typed:
-                return Vector(values, name=name)
-            return Vector._from_iterable_known_dtype(
-                values, Schema(schema.kind, schema.nullable), name=name)
-
-        return slicer
-
-    @staticmethod
-    def _reject_nonscalar(agg_name, value, detail, fn_name):
-        # aggregate()/window() are flat-only: every produced cell must be a
-        # scalar. A Vector coming back means either a lambda returned a
-        # column, or a method like .unique() produced a collection -- both
-        # are ambiguous here, so we puke loudly instead of silently nesting.
-        if isinstance(value, Vector):
-            raise SerifTypeError(
-                f"aggregations['{agg_name}']: {detail} returned a non-scalar "
-                f"(Vector) value. {fn_name}() is flat-only -- every cell must be "
-                f"a scalar. For a per-column block use t[cols].<method>."
-            )
-
-    def _apply_aggregations(self, aggregations, group_items, nrows,
-                            *, allow_blocks, fn_name):
-        """
-        Compute per-group scalar values for each aggregation spec.
-
-        Yields (output_name, values) pairs with one value per group, in
-        group_items order. Shared dispatch for aggregate() and window():
-        bound Vector methods slice the source column per group; bound block
-        methods fan out one output column per source column (aggregate only);
-        plain callables receive each group as a Table.
-        """
-        for agg_name, func in aggregations.items():
-            if hasattr(func, '__self__') and isinstance(func.__self__, Vector):
-                source = func.__self__
-                method_name = func.__name__
-                if len(source) != nrows:
-                    raise SerifValueError(
-                        f"aggregations['{agg_name}']: vector length {len(source)} "
-                        f"!= table length {nrows}"
-                    )
-
-                if source.ndims() == 2:
-                    if not allow_blocks:
-                        # Block (fan-out) aggregations are supported by
-                        # aggregate() but not yet by window(). Refuse rather
-                        # than silently index columns by row number.
-                        raise SerifTypeError(
-                            f"aggregations['{agg_name}']: block aggregations "
-                            f"(t[cols].<method>) are not supported in window() yet; "
-                            f"use a single-column aggregation or aggregate()."
-                        )
-                    # Block aggregation: declared width = source column count.
-                    # Apply the method to each selected column independently and
-                    # fan out to one output column per source column, named by
-                    # raw-prepending the dict key (the prefix) to each source
-                    # column's own name. Per-column application (rather than
-                    # assembling a row) means a mixed-type block never
-                    # materialises a heterogeneous Vector.
-                    sub_names = source.column_names()
-                    sub_cols = source.cols()
-                    width = len(sub_names)
-                    slicers = [Table._make_group_slicer(c) for c in sub_cols]
-                    fanned = [[] for _ in range(width)]
-                    for key, row_indices in group_items:
-                        for j in range(width):
-                            col_slice = slicers[j](row_indices, sub_names[j])
-                            try:
-                                v = getattr(col_slice, method_name)()
-                            except SerifEmptyReductionError as e:
-                                col_desc = sub_names[j] if sub_names[j] is not None else f"col{j}"
-                                Table._chain_empty_reduction(
-                                    e, agg_name,
-                                    f"block method '{method_name}', column '{col_desc}'",
-                                    key, fn_name)
-                            Table._reject_nonscalar(
-                                agg_name, v, f"block method '{method_name}'", fn_name)
-                            fanned[j].append(v)
-                    for j in range(width):
-                        base = sub_names[j] if sub_names[j] is not None else f"col{j}_"
-                        yield (f"{agg_name}{base}", fanned[j])
-                else:
-                    slicer = Table._make_group_slicer(source)
-                    out = []
-                    for key, row_indices in group_items:
-                        group_vec = slicer(row_indices, None)
-                        try:
-                            val = getattr(group_vec, method_name)()
-                        except SerifEmptyReductionError as e:
-                            Table._chain_empty_reduction(
-                                e, agg_name, f"'{method_name}'", key, fn_name)
-                        Table._reject_nonscalar(agg_name, val, f"'{method_name}'", fn_name)
-                        out.append(val)
-                    yield (agg_name, out)
-            elif callable(func):
-                # Callable receives the group as a Table, one slicer per
-                # column (each materializes its column at most once).
-                slicers = [(col, Table._make_group_slicer(col))
-                           for col in self._storage]
-                out = []
-                for key, row_indices in group_items:
-                    group_cols = [
-                        slicer(row_indices, col._name)
-                        for col, slicer in slicers
-                    ]
-                    try:
-                        val = func(Table(group_cols))
-                    except SerifEmptyReductionError as e:
-                        Table._chain_empty_reduction(e, agg_name, "callable", key, fn_name)
-                    Table._reject_nonscalar(agg_name, val, "callable", fn_name)
-                    out.append(val)
-                yield (agg_name, out)
-            else:
-                hint = (
-                    f" (got {type(func).__name__} {func!r}; did you call it by mistake?"
-                    f" Use t.col.sum not t.col.sum())"
-                    if not callable(func) else ""
-                )
-                raise SerifTypeError(
-                    f"aggregations['{agg_name}'] must be a bound Vector method or callable{hint}"
-                )
-
     def _bound_grouped_sums(self, groupby, aggregations, nrows):
         """Recognize the narrow Arrow hash-grouped sum fast path.
 
@@ -852,18 +640,6 @@ class Table(Vector):
             return None
         keys, columns = result
         return group_col, keys, list(zip(names, columns))
-
-    @staticmethod
-    def _chain_empty_reduction(e, agg_name, desc, key, fn_name):
-        """Re-raise a no-verdict error with the group's coordinates attached,
-        so the user can tell a data problem ("this group isn't supposed to be
-        empty") from a legitimate sparse group (qualify with a lambda)."""
-        where = f"group {key!r}" if key != () else "the whole table"
-        raise SerifEmptyReductionError(
-            f"{fn_name}() aggregation '{agg_name}' ({desc}) over {where}: {e} "
-            f"In an aggregation, qualify via a lambda, e.g. "
-            f"lambda g: g.<col>.all(on_empty=False)."
-        ) from e
 
     @staticmethod
     def _wrap_group_key_column(values, source_col, name):
@@ -932,7 +708,7 @@ class Table(Vector):
             fast = self._bound_grouped_sums(groupby, aggregations, len(self))
             if fast is not None:
                 group_col, keys, summed = fast
-                uniquify = Table._make_uniquifier()
+                uniquify = _grouping.make_uniquifier()
                 result_cols = [Table._wrap_group_key_column(
                     keys, group_col, uniquify(group_col._name))]
                 for agg_name, values in summed:
@@ -945,10 +721,13 @@ class Table(Vector):
             partition_index = {(): list(range(nrows))}
             groupby = []
         else:
-            groupby, partition_index, _ = self._build_partition_index(groupby)
+            groupby, partition_index, _ = _grouping.build_partition_index(
+                self,
+                groupby,
+            )
 
         group_items = list(partition_index.items())
-        uniquify = Table._make_uniquifier()
+        uniquify = _grouping.make_uniquifier()
 
         # Groupby key columns
         result_cols = []
@@ -961,9 +740,14 @@ class Table(Vector):
         # as the groupby keys — aggregate() never emits duplicate column
         # names, whatever the aggregation dict contains.
         if aggregations:
-            for out_name, out_values in self._apply_aggregations(
-                    aggregations, group_items, nrows,
-                    allow_blocks=True, fn_name='aggregate'):
+            for out_name, out_values in _grouping.apply_aggregations(
+                self,
+                aggregations,
+                group_items,
+                nrows,
+                allow_blocks=True,
+                function_name="aggregate",
+            ):
                 result_cols.append(Vector(out_values, name=uniquify(out_name)))
 
         return Table(result_cols)
@@ -995,10 +779,14 @@ class Table(Vector):
             )
         """
         nrows = len(self)
-        groupby, partition_index, row_keys = self._build_partition_index(
-            groupby, track_row_keys=True, key_label="Partition key")
+        groupby, partition_index, row_keys = _grouping.build_partition_index(
+            self,
+            groupby,
+            track_row_keys=True,
+            key_label="Partition key",
+        )
         group_items = list(partition_index.items())
-        uniquify = Table._make_uniquifier()
+        uniquify = _grouping.make_uniquifier()
 
         # Groupby key columns are copied straight through -- share storage via
         # _clone (Table() below copies on construction anyway) so the column
@@ -1010,9 +798,14 @@ class Table(Vector):
         # Aggregations: compute one value per group, then broadcast to rows
         if aggregations:
             keys_in_order = [key for key, _ in group_items]
-            for out_name, out_values in self._apply_aggregations(
-                    aggregations, group_items, nrows,
-                    allow_blocks=False, fn_name='window'):
+            for out_name, out_values in _grouping.apply_aggregations(
+                self,
+                aggregations,
+                group_items,
+                nrows,
+                allow_blocks=False,
+                function_name="window",
+            ):
                 group_map = dict(zip(keys_in_order, out_values))
                 expanded = [group_map[row_keys[i]] for i in range(nrows)]
                 result_cols.append(Vector(expanded, name=uniquify(out_name)))

@@ -1,7 +1,7 @@
 """
 Single-key bucketing over storage buffers.
 
-The pure loops (Table._build_partition_index and
+The pure loops (serif._table.grouping.build_partition_index and
 serif._table.joins._join_probe_pure) bucket row indices by key with one dict
 operation per row — plus a tuple allocation per row for the key itself. Here
 the same dict is built from buffer math: np.unique on the zero-copy int64

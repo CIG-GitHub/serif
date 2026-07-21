@@ -534,7 +534,8 @@ At the beginning of a later working session:
 
 Current position: PR 1 and PR 2 are complete, green, committed, and pushed.
 PR 3's five-commit plan is approved. PR 3, Commit 1, "Extract Table transpose
-algebra," is complete, green, committed, and pushed. PR 3, Commit 2, "Extract
-Table joins," has been implemented and is awaiting user inspection, user-run
-verification, and commit. Do not begin PR 3, Commit 3 until the user reports
-Commit 2 complete.
+algebra," and PR 3, Commit 2, "Extract Table joins," are complete, green,
+committed, and pushed; the user also reported no material join benchmark
+regression. PR 3, Commit 3, "Extract shared grouping machinery," has been
+implemented and is awaiting user inspection, user-run verification, and
+commit. Do not begin PR 3, Commit 4 until the user reports Commit 3 complete.
