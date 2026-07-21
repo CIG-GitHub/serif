@@ -9,8 +9,11 @@ from serif import Vector
 import serif._accel as accel
 import serif._execution as execution
 from serif._vector import operators as vector_ops
+from serif._vector import reductions as vector_reductions
 from serif._vector._arrow import operators as arrow_ops
 from serif._vector._numpy import operators as numpy_ops
+from serif._vector._numpy import reductions as numpy_reductions
+from serif._vector._python import reductions as python_reductions
 
 
 def test_declined_has_one_identity_and_is_not_none():
@@ -231,3 +234,87 @@ def test_invalid_division_raises_before_backend_dispatch(monkeypatch):
 
     with pytest.raises(ZeroDivisionError):
         Vector([1.0, 2.0]) / 0.0
+
+
+def test_reduction_none_is_a_completed_backend_result(monkeypatch):
+    calls = []
+
+    def numpy_none(storage):
+        calls.append('numpy')
+        return None
+
+    def unexpected_python(storage):
+        calls.append('python')
+        raise AssertionError('successful None fell through')
+
+    monkeypatch.setattr(numpy_reductions, 'max_', numpy_none)
+    monkeypatch.setattr(python_reductions, 'max_', unexpected_python)
+
+    assert Vector([1, 2]).max() is None
+    assert calls == ['numpy']
+
+
+def test_reduction_decline_reaches_mandatory_python_path(monkeypatch):
+    calls = []
+
+    def decline_numpy(storage):
+        calls.append('numpy')
+        return execution.DECLINED
+
+    def accept_python(storage):
+        calls.append('python')
+        return 1.5
+
+    monkeypatch.setattr(numpy_reductions, 'mean', decline_numpy)
+    monkeypatch.setattr(python_reductions, 'mean', accept_python)
+
+    assert Vector([1, 2]).mean() == 1.5
+    assert calls == ['numpy', 'python']
+
+
+def test_reduction_backend_defects_propagate(monkeypatch):
+    def broken_numpy(storage):
+        raise RuntimeError('reduction backend defect')
+
+    monkeypatch.setattr(numpy_reductions, 'sum_', broken_numpy)
+
+    with pytest.raises(RuntimeError, match='reduction backend defect'):
+        Vector([1, 2]).sum()
+
+
+def test_python_only_reductions_skip_optional_dispatch(monkeypatch):
+    def unexpected_numpy():
+        raise AssertionError('count reached optional dispatch')
+
+    monkeypatch.setattr(
+        vector_reductions,
+        '_numpy_reductions',
+        unexpected_numpy,
+    )
+    vector = Vector([True, None, False])
+    assert vector.first() is True
+    assert vector.last() is False
+    assert vector.all() is False
+    assert vector.any() is True
+    assert vector.count() == 2
+
+
+def test_reduction_layers_do_not_own_public_classes():
+    for module in (
+        vector_reductions,
+        numpy_reductions,
+        python_reductions,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_disabled_numpy_reductions_decline(monkeypatch):
+    storage = Vector([1, 2])._storage
+    monkeypatch.setattr(numpy_reductions, '_USE_NUMPY', False)
+
+    assert numpy_reductions.max_(storage) is execution.DECLINED
+    assert numpy_reductions.min_(storage) is execution.DECLINED
+    assert numpy_reductions.sum_(storage) is execution.DECLINED
+    assert numpy_reductions.mean(storage) is execution.DECLINED
+    assert numpy_reductions.stdev(storage) is execution.DECLINED

@@ -1,8 +1,8 @@
 """Remaining legacy optional-accelerator call-throughs.
 
-Vector operators dispatch from their semantic module. This boundary preserves
-the established per-call ``None`` decline behavior for selection, grouping,
-joins, and reductions until those semantic families migrate.
+Vector operators and reductions dispatch from their semantic modules. This
+boundary preserves the established per-call ``None`` decline behavior for
+selection, grouping, and joins until those semantic families migrate.
 """
 
 
@@ -109,16 +109,3 @@ def _accel_join_probe(left_storage, right_storage,
     return fast
 
 
-def _accel_reduce(storage, op, **kwargs):
-    """Try a numpy-accelerated reduction. Returns (True, value) when the
-    fast path produced the answer, (False, None) on decline — the caller
-    runs the pure path, whose behavior is the specification. None is a
-    legitimate value (max of all-null), hence the flag."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return False, None
-    from . import reduce as _reduce
-    result = getattr(_reduce, op)(storage, **kwargs)
-    if result is _accel.DECLINED:
-        return False, None
-    return True, result
