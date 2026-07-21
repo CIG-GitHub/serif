@@ -1,4 +1,5 @@
 from .vector import Vector
+from ._table import aggregation as _aggregation
 from ._table import columns as _columns
 from ._table import grouping as _grouping
 from ._table import joins as _joins
@@ -10,7 +11,6 @@ from ._table import sort as _sort
 from ._table import transpose as _transpose
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
-from ._vector import Schema
 
 
 from .errors import SerifValueError
@@ -596,61 +596,6 @@ class Table(Vector):
             expect_right_unique=expect_right_unique,
         )
 
-    def _bound_grouped_sums(self, groupby, aggregations, nrows):
-        """Recognize the narrow Arrow hash-grouped sum fast path.
-
-        Return ``(group_column, keys, [(name, values), ...])`` or None to
-        decline. Validation errors that the ordinary path would raise before
-        doing work are raised here with the same text.
-        """
-        if not aggregations:
-            return None
-        specs = [groupby] if isinstance(groupby, (str, Vector)) else groupby
-        if specs is None or len(specs) != 1:
-            return None
-        group_col = self._resolve_column(specs[0])
-        if len(group_col) != nrows:
-            raise SerifValueError(
-                f"groupby key at index 0 has length {len(group_col)}, "
-                f"but table has {nrows} rows."
-            )
-
-        names = []
-        sources = []
-        for agg_name, func in aggregations.items():
-            if not (hasattr(func, '__self__')
-                    and isinstance(func.__self__, Vector)
-                    and func.__name__ == 'sum'):
-                return None
-            source = func.__self__
-            if len(source) != nrows:
-                raise SerifValueError(
-                    f"aggregations['{agg_name}']: vector length {len(source)} "
-                    f"!= table length {nrows}"
-                )
-            if source.ndims() != 1:
-                return None
-            names.append(agg_name)
-            sources.append(source)
-
-        from ._accel.arrow import grouped_sums
-        result = grouped_sums(
-            group_col._storage, [source._storage for source in sources])
-        if result is None:
-            return None
-        keys, columns = result
-        return group_col, keys, list(zip(names, columns))
-
-    @staticmethod
-    def _wrap_group_key_column(values, source_col, name):
-        """Wrap groupby key values with the source column's known schema;
-        object/untyped sources fall back to inference."""
-        schema = source_col.schema()
-        if schema is None or schema.kind is object:
-            return Vector(values, name=name)
-        return Vector._from_iterable_known_dtype(
-            values, Schema(schema.kind, schema.nullable), name=name)
-
     def aggregate(self, groupby=None, aggregations=None):
         """
         Group rows by partition key(s) and compute aggregations.
@@ -694,63 +639,11 @@ class Table(Vector):
             )
             t.aggregate(aggregations={"grand_total": t.sales.sum})  # whole table
         """
-        nrows = len(self)
-
-        # Allow passing the aggregations dict as the first positional arg
-        if isinstance(groupby, dict):
-            aggregations = groupby
-            groupby = None
-
-        if aggregations is None:
-            aggregations = {}
-
-        if groupby is not None:
-            fast = self._bound_grouped_sums(groupby, aggregations, len(self))
-            if fast is not None:
-                group_col, keys, summed = fast
-                uniquify = _grouping.make_uniquifier()
-                result_cols = [Table._wrap_group_key_column(
-                    keys, group_col, uniquify(group_col._name))]
-                for agg_name, values in summed:
-                    result_cols.append(Vector(
-                        values, name=uniquify(agg_name)))
-                return Table(result_cols)
-
-        if groupby is None:
-            # Treat the entire table as one group
-            partition_index = {(): list(range(nrows))}
-            groupby = []
-        else:
-            groupby, partition_index, _ = _grouping.build_partition_index(
-                self,
-                groupby,
-            )
-
-        group_items = list(partition_index.items())
-        uniquify = _grouping.make_uniquifier()
-
-        # Groupby key columns
-        result_cols = []
-        for idx, col in enumerate(groupby):
-            values = [key[idx] for key, _ in group_items]
-            result_cols.append(Table._wrap_group_key_column(
-                values, col, name=uniquify(col._name or "key")))
-
-        # Aggregations. Every output name goes through the same uniquifier
-        # as the groupby keys — aggregate() never emits duplicate column
-        # names, whatever the aggregation dict contains.
-        if aggregations:
-            for out_name, out_values in _grouping.apply_aggregations(
-                self,
-                aggregations,
-                group_items,
-                nrows,
-                allow_blocks=True,
-                function_name="aggregate",
-            ):
-                result_cols.append(Vector(out_values, name=uniquify(out_name)))
-
-        return Table(result_cols)
+        return _aggregation.aggregate(
+            self,
+            groupby=groupby,
+            aggregations=aggregations,
+        )
 
     def window(self, groupby, aggregations=None):
         """
