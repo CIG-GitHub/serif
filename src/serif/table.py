@@ -3,6 +3,7 @@ import warnings
 from collections.abc import Iterable
 
 from .vector import Vector
+from ._table import columns as _columns
 from ._vector import Schema
 from ._vector.transforms import _null_sort_flag
 from ._accel.api import _accel_take
@@ -12,9 +13,6 @@ from ._accel.api import _accel_group
 from ._accel.api import _accel_join_probe
 from ._accel.api import _take
 
-from .naming import _sanitize_user_name
-from .naming import _disambiguate
-from .naming import _reserved_collision
 from ._vector.storage import TupleStorage, ArrayStorage
 
 from .errors import SerifKeyError
@@ -22,74 +20,6 @@ from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
 from .errors import SerifEmptyReductionError
-
-
-def _missing_col_error(name, context="Table"):
-    return SerifKeyError(f"Column '{name}' not found in {context}")
-
-
-def _resolve_column_key(columns, key):
-    """
-    Resolve a string key to a column INDEX over any sequence of columns —
-    Table's single string-lookup rule, shared by the eager path (which
-    indexes into live storage) and the deferred path (which resolves
-    against captured snapshots without gathering).
-
-    Exact name match first, then sanitized (case-insensitive) match using
-    the same _disambiguate rule as _build_column_map, so any key visible
-    in the column map (or repr) resolves here too. Unnamed columns match
-    their col{idx}_ spelling. Raises SerifKeyError when nothing matches.
-    """
-    for idx, col in enumerate(columns):
-        if col._name == key:
-            return idx
-
-    key_lower = key.lower()
-    for idx, col in enumerate(columns):
-        if col._name is not None:
-            base = _sanitize_user_name(col._name)
-            # If sanitization returns None, match system name
-            if base is None:
-                if f'col{idx}_' == key_lower:
-                    return idx
-            elif base == key_lower:
-                return idx
-            elif _disambiguate(base, idx) == key_lower:
-                return idx
-        else:
-            # Unnamed columns: match col{idx}_ pattern
-            if f'col{idx}_' == key_lower:
-                return idx
-
-    raise _missing_col_error(key)
-
-
-def _parse_indexed_attr(attr):
-    """
-    Parse attribute name for indexed column access pattern.
-    
-    Returns (base_name, column_index) if attr matches 'name__N' pattern,
-    otherwise returns (attr, None).
-    
-    Examples:
-        'total' → ('total', None)
-        'total__5' → ('total', 5)
-        'total__abc' → ('total__abc', None)
-        '__5' → error (no base name)
-    """
-    base, sep, suffix = attr.rpartition('__')
-    
-    # If sep is empty, no '__' found → regular attribute
-    # If suffix isn't all digits → regular attribute
-    # If base is empty → error (e.g., '__5')
-    if sep and suffix.isdigit():
-        if not base:
-            raise AttributeError(f"Invalid indexed accessor '{attr}': missing base name")
-        # re-sanitize for method collisions
-        return (_sanitize_user_name(base), int(suffix))
-    
-    return (attr, None)
-
 
 def _resolve_binary_name(left_name, right_name):
     """
@@ -247,8 +177,8 @@ class Row(Vector):
              return self._raw_cols[key][self._index]
         
         if type(key) is str:
-             col_idx = _resolve_column_key(self._columns, key)
-             return self._raw_cols[col_idx][self._index]
+            col_idx = _columns.resolve_column_key(self._columns, key)
+            return self._raw_cols[col_idx][self._index]
              
         # Fallback to standard vector slicing/masking
         return super().__getitem__(key)
@@ -430,70 +360,16 @@ class Table(Vector):
         This is computed once during table initialization and used by
         Row for O(1) attribute lookups during iteration.
         """
-        column_map = {}
-        seen = {}
-        for idx, col in enumerate(self._storage):
-            if col._name is not None:
-                # Reserved-method collision: `t.<name>` will resolve to the
-                # method, not this column. Warn once per name so the user
-                # knows the column moved to `.<name>_` / `t['<name>']`.
-                collision = _reserved_collision(col._name)
-                if collision is not None and collision not in self._warned_collisions:
-                    self._warned_collisions.add(collision)
-                    warnings.warn(
-                        f"Column '{col._name}' collides with the reserved "
-                        f"method/attribute '{collision}': dot access "
-                        f"'t.{collision}' returns the method, not this column. "
-                        f"Use 't.{collision}_' or 't[{col._name!r}]' to get the "
-                        f"column, or rename it.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                base = _sanitize_user_name(col._name)
-                if base is None:
-                    sanitized = f'col{idx}_'
-                elif base in seen:
-                    # Warn only if ambiguity involves a wild column
-                    other = seen[base]
-                    if col._wild or other._wild:
-                        warnings.warn(
-                            f"Duplicate column name '{base}' "
-                            f"(from '{other._name}' and '{col._name}') detected. "
-                            "Dot access will be disambiguated with indexed suffixes.",
-                            UserWarning,
-                            stacklevel=2
-                        )
-                    
-                    sanitized = _disambiguate(base, idx)
-                else:
-                    sanitized = base
-                    seen[base] = col
-            else:
-                sanitized = f'col{idx}_'
-
-            column_map[sanitized] = idx
-            col._mark_tame()
-            # Ownership freezes: a vector read out of a table cannot mutate
-            # the table. (Skipped mid-batch()-scope, where a map rebuild —
-            # e.g. after an alias() — must not re-freeze thawed columns.)
-            if not self._unlocked:
-                col._frozen = True
-        return column_map
+        return _columns.build_column_map(self)
     
     def __dir__(self):
         """Return list of available attributes including sanitized column names."""
-        # Use object.__dir__ to get instance attributes, then add column names
-        base_attrs = object.__dir__(self)
-        return set(list(self._build_column_map().keys()) + base_attrs)
+        return _columns.attribute_names(self)
     
     def cols(self, key=None):
         """Access columns positionally: cols() → tuple of all columns,
         cols(i) → single column, cols(slice) → tuple of columns."""
-        if isinstance(key, int):
-            return self._storage[key]
-        if isinstance(key, slice):
-            return self._storage.to_tuple()[key]
-        return self._storage.to_tuple()
+        return _columns.columns(self, key)
 
     def column_names(self):
         """Return list of column names (original names, not sanitized).
@@ -509,11 +385,11 @@ class Table(Vector):
         >>> t.column_names()
         ['x', 'y']
         """
-        return [col._name for col in self._storage]
+        return _columns.column_names(self)
 
     def _schema_columns(self):
         """Internal metadata-only column path used by ``t._``."""
-        return self.cols()
+        return _columns.schema_columns(self)
 
     def to_dict(self):
         """Serialize table to a column-oriented dict of plain Python lists.
@@ -534,28 +410,7 @@ class Table(Vector):
         >>> t.to_dict()
         {'x': [1, 2], 'y': [3, 4]}
         """
-        result = {}
-        positions = {}
-        for i, col in enumerate(self._storage):
-            # Unnamed columns use the same col{i}_ spelling as attribute
-            # access, so the dict key round-trips through t.col0_ etc.
-            key = col._name if col._name is not None else f"col{i}_"
-            try:
-                previous = positions.get(key)
-            except TypeError:
-                raise SerifTypeError(
-                    f"Cannot export column {i} to dict: column name {key!r} "
-                    "is not hashable. Rename the column first."
-                ) from None
-            if previous is not None:
-                raise SerifValueError(
-                    f"to_dict() requires unique export keys; columns "
-                    f"{previous} and {i} both map to {key!r}. Rename one of "
-                    "the columns or export the columns as ordered pairs."
-                )
-            positions[key] = i
-            result[key] = list(col._storage)
-        return result
+        return _columns.to_dict(self)
 
     # ------------------------------------------------------------------
     # Vector-surface conformance
@@ -641,60 +496,11 @@ class Table(Vector):
 
     def __getattr__(self, attr):
         """Access columns by sanitized attribute name using pre-computed column map."""
-        # Check if any column has been renamed and rebuild map if needed
-        if any(col._wild for col in self._storage or []):
-            self._column_map = self._build_column_map()
-
-        # Parse for indexed accessor pattern (e.g., 'total__5')
-        base_name, col_idx = _parse_indexed_attr(attr)
-        
-        if col_idx is not None:
-            # Indexed access: validate column index and name match
-            if col_idx < 0 or col_idx >= len(self._storage):
-                raise AttributeError(
-                    f"Column index {col_idx} out of range (table has {len(self._storage)} columns)"
-                )
-            
-            # Get the actual column at that index
-            col = self._storage[col_idx]
-            
-            # Validate: does this column's sanitized name match base_name?
-            # (base_name comes from _parse_indexed_attr already sanitized.)
-            sanitized = _sanitize_user_name(col._name)
-
-            if sanitized != base_name:
-                raise AttributeError(
-                    f"Column {col_idx} is '{col._name}' (sanitizes to '{sanitized}'), not '{base_name}'"
-                )
-            
-            return col
-
-        # col<N>_ accessor for unnamed columns (e.g. col5_). Only claim the
-        # attribute when <N> is all digits; anything else (e.g. a real column
-        # 'cols' → 'cols_', or 'column_names' → 'column_names_') must fall
-        # through to the regular name lookup below.
-        if attr.startswith('col') and attr.endswith('_'):
-            middle = attr[3:-1]  # Extract between 'col' and '_'
-            if middle.isdigit():
-                idx = int(middle)
-                if 0 <= idx < len(self._storage):
-                    return self._storage[idx]
-                raise AttributeError(f"Column index {idx} out of range")
-
-        # Regular access: look up by sanitized name. Explicit None checks —
-        # a column at index 0 is a valid (falsy) lookup result.
-        col_idx_lookup = self._column_map.get(attr)
-        if col_idx_lookup is None:
-            col_idx_lookup = self._column_map.get(attr.lower())
-        if col_idx_lookup is not None:
-            return self._storage[col_idx_lookup]
-
-        # Fall back to parent class attributes (e.g., .T for transpose)
-        try:
-            return super().__getattribute__(attr)
-        except AttributeError:
-            # Attribute not found - raise AttributeError for Pythonic behavior
-            raise AttributeError(f"{self.__class__.__name__!s} object has no attribute '{attr}'")
+        return _columns.get_attribute(
+            self,
+            attr,
+            super().__getattribute__,
+        )
 
     def _resolve_column(self, spec):
         """
@@ -717,14 +523,7 @@ class Table(Vector):
         SerifTypeError
             If spec is neither str nor Vector
         """
-        if isinstance(spec, str):
-            return self[spec]
-        elif isinstance(spec, Vector):
-            return spec
-        else:
-            raise SerifTypeError(
-                f"Column specification must be string or Vector, got {type(spec).__name__}"
-            )
+        return _columns.resolve_column(self, spec)
 
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
@@ -745,26 +544,12 @@ class Table(Vector):
         
         # After initialization, check if setting an existing column
         if self._column_map is not None:
-            # Parse for indexed accessor pattern (e.g., 'total__5')
-            base_name, col_idx_indexed = _parse_indexed_attr(attr)
+            col_idx_indexed = _columns.resolve_indexed_attribute(
+                self._storage,
+                attr,
+            )
             
             if col_idx_indexed is not None:
-                # Indexed assignment: validate column index and name match
-                if col_idx_indexed < 0 or col_idx_indexed >= len(self._storage):
-                    raise AttributeError(
-                        f"Column index {col_idx_indexed} out of range (table has {len(self._storage)} columns)"
-                    )
-                
-                # Validate: does this column's sanitized name match base_name?
-                # (base_name comes from _parse_indexed_attr already sanitized.)
-                sanitized = _sanitize_user_name(self._storage[col_idx_indexed]._name)
-
-                if sanitized != base_name:
-                    raise AttributeError(
-                        f"Column {col_idx_indexed} is '{self._storage[col_idx_indexed]._name}' "
-                        f"(sanitizes to '{sanitized}'), not '{base_name}'"
-                    )
-                
                 # Replace the column at validated index
                 if not isinstance(value, Vector):
                     value = Vector(value)
@@ -788,9 +573,7 @@ class Table(Vector):
             
             # Regular column lookup by name. Explicit None checks — a column
             # at index 0 is a valid (falsy) lookup result.
-            col_idx = self._column_map.get(attr)
-            if col_idx is None:
-                col_idx = self._column_map.get(attr.lower())
+            col_idx = _columns.mapped_column_index(self._column_map, attr)
             if col_idx is not None:
                 # Replace the column in _storage
                 if not isinstance(value, Vector):
@@ -837,31 +620,7 @@ class Table(Vector):
         {'a': 'b', 'b': 'c'} does not cascade. Raises SerifKeyError for a
         missing name, an ambiguous name, or an out-of-range index.
         """
-        cols  = [col.copy() for col in self._storage]
-        names = [c._name for c in cols]
-        for key, new_name in mapping.items():
-            # bool is an int subclass — reject so True/False can't act as index 1/0.
-            if isinstance(key, bool):
-                raise SerifTypeError(
-                    f"rename key must be a column name (str) or index (int), not bool: {key!r}"
-                )
-            if isinstance(key, int):
-                if not (0 <= key < len(cols)):
-                    raise SerifKeyError(
-                        f"Column index {key} out of range (table has {len(cols)} columns)"
-                    )
-                cols[key]._name = new_name
-                continue
-            matches = [i for i, nm in enumerate(names) if nm == key]
-            if not matches:
-                raise _missing_col_error(key)
-            if len(matches) > 1:
-                raise SerifKeyError(
-                    f"Column name '{key}' is ambiguous ({len(matches)} columns share it); "
-                    f"rename by position instead, e.g. rename({{{matches[0]}: {new_name!r}}})."
-                )
-            cols[matches[0]]._name = new_name
-        return Table._from_columns_nocopy(cols)
+        return _columns.rename(self, mapping)
 
     def drop(self, *names):
         """Return a NEW Table without the named column(s).
@@ -871,18 +630,7 @@ class Table(Vector):
         list/tuple: `t.drop('a')`, `t.drop('a', 'b')`, `t.drop(['a', 'b'])`.
         Raises SerifKeyError if any name is not a column.
         """
-        # Accept a single list/tuple as well as varargs.
-        if len(names) == 1 and isinstance(names[0], (list, tuple)):
-            names = tuple(names[0])
-
-        existing = [col._name for col in self._storage]
-        for n in names:
-            if n not in existing:
-                raise _missing_col_error(n)
-
-        drop_set = set(names)
-        kept = [col for col in self._storage if col._name not in drop_set]
-        return Table(kept)  # constructor copies columns → no aliasing
+        return _columns.drop(self, *names)
 
     @property
     def T(self):
@@ -901,7 +649,9 @@ class Table(Vector):
         
         # Handle string indexing for column names
         if isinstance(key, str):
-            return self._storage[_resolve_column_key(self._storage, key)]
+            return self._storage[
+                _columns.resolve_column_key(self._storage, key)
+            ]
         
         # Handle tuple of strings for multi-column selection
         if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
@@ -1051,12 +801,16 @@ class Table(Vector):
                 )
             target_indices = [col_spec % n_cols]
         elif isinstance(col_spec, str):
-            target_indices = [_resolve_column_key(self._storage, col_spec)]
+            target_indices = [
+                _columns.resolve_column_key(self._storage, col_spec)
+            ]
         elif isinstance(col_spec, (tuple, list)):
             # Handle list of names/ints
             for c in col_spec:
                 if isinstance(c, str):
-                    target_indices.append(_resolve_column_key(self._storage, c))
+                    target_indices.append(
+                        _columns.resolve_column_key(self._storage, c)
+                    )
                 elif isinstance(c, bool):
                     raise SerifTypeError("Boolean values are not column indices")
                 elif isinstance(c, int):
@@ -1302,62 +1056,7 @@ class Table(Vector):
     def __rshift__(self, other):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
         """
-        if self._dtype is not None and self._dtype.kind in (bool, int) and isinstance(other, int):
-            warnings.warn("The behavior of >> and << have been overridden. Use .bit_lshift()/.bit_rshift() to shift bits.")
-
-        # Dict syntax: {name: values, ...}
-        if isinstance(other, dict):
-            # Convert dict to named Vectors
-            named_cols = []
-            for col_name, values in other.items():
-                # Convert to Vector if needed
-                if isinstance(values, Vector):
-                    col = values.copy()  # Copy to prevent aliasing
-                elif isinstance(values, Iterable) and not isinstance(values, (str, bytes, bytearray)):
-                    col = Vector(values)
-                else:
-                    # Reject scalars - user must be explicit
-                    raise SerifValueError(
-                        f"Column '{col_name}' value must be iterable (list, Vector, etc.), not scalar. "
-                        f"Use Vector.filled({values!r}, {len(self)}) for scalar broadcast."
-                    )
-                
-                # Validate length
-                if self._storage and len(col) != self._length:
-                    raise SerifValueError(
-                        f"Column '{col_name}' has length {len(col)}, expected {self._length}"
-                    )
-                
-                # Set name
-                col._name = col_name
-
-                if _sanitize_user_name(col_name) in self._column_map:
-                    warnings.warn(f"Adding column with name '{col_name}' which already exists in the table. Consider renaming to avoid confusion.", UserWarning, stacklevel=2)
-                named_cols.append(col)
-            
-            # Return new table with appended columns
-            return Table(tuple(self._storage) + tuple(named_cols))
-
-        if isinstance(other, Table):
-            if self._dtype is not None and not self._dtype.nullable and other.schema() is not None and not other.schema().nullable and self._dtype.kind != other.schema().kind:
-                raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
-            # complicated typesafety rules here - what if a whole bunch of things.
-            return Vector(self.cols() + other.cols(),
-                dtype=self._dtype)
-        if isinstance(other, Vector):
-            # Adding a column to a table - tables can have mixed-type columns
-            return Vector(self.cols() + (other,),
-                dtype=self._dtype)
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            # Convert iterable to Vector and add as column (let Vector infer dtype)
-            return Vector(self.cols() + (Vector(other),),
-                dtype=self._dtype)
-        elif len(self) == 0:
-            # `not self` would trip Vector.__bool__'s ambiguity guard and
-            # mask the intended error below.
-            return Vector((other,),
-                dtype=self._dtype)
-        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.filled(value, length).")
+        return _columns.compose(self, other)
 
 
     def __lshift__(self, other):
@@ -1541,7 +1240,7 @@ class Table(Vector):
             try:
                 return table._resolve_column(col_spec)
             except (SerifKeyError, ValueError):
-                raise _missing_col_error(
+                raise _columns.missing_column_error(
                     col_spec if isinstance(col_spec, str) else "column",
                     context=f"{side_name} table"
                 )
@@ -2484,19 +2183,7 @@ class Table(Vector):
         Used by read_parquet to skip the O(n*cols) copy that Table.__init__
         normally performs for aliasing safety.
         """
-        t = object.__new__(cls)
-        # Mirror every attribute that Table.__setattr__ guards
-        object.__setattr__(t, '_dtype',         None)
-        object.__setattr__(t, '_name',          None)
-        object.__setattr__(t, '_wild',          False)
-        object.__setattr__(t, '_repr_rows',     None)
-        object.__setattr__(t, '_length',        len(columns[0]) if columns else 0)
-        object.__setattr__(t, '_column_map',    None)
-        object.__setattr__(t, '_warned_collisions', set())
-        object.__setattr__(t, '_storage',
-            TupleStorage.from_iterable(tuple(columns), nullable=False))
-        object.__setattr__(t, '_column_map',    t._build_column_map())
-        return t
+        return _columns.from_columns_nocopy(cls, columns)
 
     @property
     def _(self):
@@ -2696,7 +2383,7 @@ class MaskedTable(Table):
         if self._mat is None and self._snapshot_names_current():
             if isinstance(key, str):
                 return self._gather_column(
-                    _resolve_column_key(self._captured, key))
+                    _columns.resolve_column_key(self._captured, key))
             if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
                 # Multi-column selection: gather only the named columns.
                 # Table() copies each (O(1) share), same as the eager path.
