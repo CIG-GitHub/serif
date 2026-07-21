@@ -1,7 +1,6 @@
 from .vector import Vector
 from ._table import aggregation as _aggregation
 from ._table import columns as _columns
-from ._table import grouping as _grouping
 from ._table import joins as _joins
 from ._table import lifting as _lifting
 from ._table import mutation as _mutation
@@ -9,6 +8,7 @@ from ._table import rows as _rows
 from ._table import selection as _selection
 from ._table import sort as _sort
 from ._table import transpose as _transpose
+from ._table import window as _window
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
 
@@ -671,39 +671,11 @@ class Table(Vector):
                 }
             )
         """
-        nrows = len(self)
-        groupby, partition_index, row_keys = _grouping.build_partition_index(
+        return _window.window(
             self,
-            groupby,
-            track_row_keys=True,
-            key_label="Partition key",
+            groupby=groupby,
+            aggregations=aggregations,
         )
-        group_items = list(partition_index.items())
-        uniquify = _grouping.make_uniquifier()
-
-        # Groupby key columns are copied straight through -- share storage via
-        # _clone (Table() below copies on construction anyway) so the column
-        # keeps its backend and subclass (a _Category stays categorical).
-        result_cols = []
-        for col in groupby:
-            result_cols.append(col._clone(col._storage, name=uniquify(col._name or "key")))
-
-        # Aggregations: compute one value per group, then broadcast to rows
-        if aggregations:
-            keys_in_order = [key for key, _ in group_items]
-            for out_name, out_values in _grouping.apply_aggregations(
-                self,
-                aggregations,
-                group_items,
-                nrows,
-                allow_blocks=False,
-                function_name="window",
-            ):
-                group_map = dict(zip(keys_in_order, out_values))
-                expanded = [group_map[row_keys[i]] for i in range(nrows)]
-                result_cols.append(Vector(expanded, name=uniquify(out_name)))
-
-        return Table(result_cols)
 
     def sort_by(self, by, reverse=False, na_last=True):
         """
