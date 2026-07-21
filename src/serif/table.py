@@ -2,6 +2,7 @@ from .vector import Vector
 from ._table import columns as _columns
 from ._table import lifting as _lifting
 from ._table import mutation as _mutation
+from ._table import rows as _rows
 from ._table import selection as _selection
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
@@ -228,34 +229,11 @@ class Table(Vector):
 
     def dropna(self):
         """Return rows having no null cells (complete-case filtering)."""
-        keep = Vector(
-            all(col[row_idx] is not None for col in self._storage)
-            for row_idx in range(len(self))
-        )
-        return Table(tuple(col[keep] for col in self._storage), name=self._name)
+        return _rows.dropna(self)
 
     def unique(self):
         """Return the first occurrence of each distinct row, in source order."""
-        seen_hashable = set()
-        seen_rows = []
-        keep = []
-        for row_idx in range(len(self)):
-            row = tuple(col[row_idx] for col in self._storage)
-            try:
-                duplicate = row in seen_hashable
-            except TypeError:
-                duplicate = row in seen_rows
-            if duplicate:
-                continue
-            try:
-                seen_hashable.add(row)
-            except TypeError:
-                seen_rows.append(row)
-            keep.append(row_idx)
-        return Table(
-            tuple(col._clone(_take(col._storage, keep)) for col in self._storage),
-            name=self._name,
-        )
+        return _rows.unique(self)
 
     def __getattr__(self, attr):
         """Access columns by sanitized attribute name using pre-computed column map."""
@@ -453,13 +431,7 @@ class Table(Vector):
     def __lshift__(self, other):
         """ The << operator behavior has been overridden to attempt to concatenate (append) the new array to the end of the first
         """
-        if isinstance(other, Table):
-            if len(self.cols()) != len(other.cols()):
-                raise SerifValueError(f"Column count mismatch: {len(self.cols())} != {len(other.cols())}")
-            return Table(tuple(x << y for x, y in zip(self.cols(), other.cols(), strict=True)))
-        if len(self.cols()) != len(other):
-            raise SerifValueError(f"Column count mismatch: {len(self.cols())} != {len(other)}")
-        return Table(tuple(x << y for x, y in zip(self.cols(), other, strict=True)))
+        return _rows.concatenate(self, other)
 
     def _table_elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
         """
