@@ -317,6 +317,83 @@ scalar algebra.
 - Preserve laziness outside `batch()`, eager behavior inside `batch()`, and all
   snapshot/value-semantics guarantees.
 
+## PR 3 ordered commit plan
+
+PR 3 extracts the distinct Table algebra that cannot be derived by recursive
+Vector lifting. It preserves the existing transpose, join, aggregation, and
+window semantics and the existing accelerator call-throughs. It does not
+redesign backend dispatch, add Table reduction behavior, or add new join,
+aggregation, or window features.
+
+### Commit 1: Extract Table transpose algebra
+
+- Record this approved PR 3 commit plan and current handoff position.
+- Add `_table/transpose.py` and move axis-transposition orchestration there.
+- Traverse structural columns explicitly rather than relying on public Table
+  row iteration.
+- Leave `Table.T` as a thin delegate.
+- Preserve value orientation, shape, current Vector construction and dtype
+  inference, unnamed result columns, empty behavior, deferred-table
+  materialization, and the plain-Table result type.
+- Strengthen characterization coverage for transposed values and heterogeneous
+  rows while retaining deferred/eager equivalence coverage.
+
+### Commit 2: Extract Table joins
+
+- Add `_table/joins.py`.
+- Move join-key normalization and validation, runtime hashability checks, pure
+  row probing, cardinality enforcement, padded column gathering, result-schema
+  wrapping, and the shared join orchestrator.
+- Leave `inner_join()`, `left_join()`, and `full_join()` on `Table` as thin
+  delegates with their existing signatures and documentation.
+- Preserve validation and raise order, exact diagnostics, row and match order,
+  many-to-many fan-out, unmatched-row placement, and the current empty-result
+  shape.
+- Preserve identity-based right-key removal, nullable widening, names, column
+  subclasses, storage backends, and computed or external join keys.
+- Keep `_accel_join_probe`, `_accel_group`, and `_accel_take_pad` as unchanged
+  implementation details; update only internal source comments that identify
+  the pure semantic authority.
+
+### Commit 3: Extract shared grouping machinery
+
+- Add `_table/grouping.py` as the neutral dependency shared by aggregation and
+  windowing.
+- Move partition-index construction, first-appearance ordering, optional
+  per-row keys, group slicing, output-name uniquification, aggregation-spec
+  evaluation, scalar enforcement, and contextual empty-reduction errors.
+- Preserve bound one-dimensional Vector methods, aggregate-only bound block
+  fan-out, and callables that receive each group as a Table.
+- Preserve length validation, exact errors, raw block-name prefixing,
+  schema-aware slice reconstruction, and accelerator decline/fallback behavior.
+- Route the still-inline `aggregate()` and `window()` orchestration through the
+  shared functions so neither final public-operation module owns the other's
+  common grouping semantics.
+
+### Commit 4: Extract Table aggregation
+
+- Add `_table/aggregation.py`.
+- Move `aggregate()` orchestration, grouped-sum fast-path recognition, and
+  group-key result wrapping.
+- Leave `Table.aggregate()` as a thin delegate.
+- Preserve the positional aggregation-dict overload, whole-table grouping,
+  groupby-only results, first-appearance group order, block fan-out, flat-only
+  result cells, and name uniquification across keys and outputs.
+- Preserve group-key schemas and the existing Arrow grouped-sum call and pure
+  fallback without redesigning dispatch.
+
+### Commit 5: Extract Table windowing
+
+- Add `_table/window.py`.
+- Move `window()` orchestration and reuse `_table/grouping.py` for partitioning
+  and aggregation evaluation.
+- Leave `Table.window()` as a thin delegate.
+- Preserve source row order and count, key-column cloning and subclasses,
+  per-group broadcast, output-name uniquification, callable behavior,
+  empty-table behavior, and the current rejection of block window
+  aggregations.
+- Remove the PR 3 imports that are no longer owned by `table.py`.
+
 ## PR 1 non-goals
 
 PR 1 must not:
@@ -454,8 +531,8 @@ At the beginning of a later working session:
 6. Implement one approved commit item, then stop for user inspection, tests,
    and Git work.
 
-Current position: PR 1 is complete. `Vector` lives in `serif/vector.py`,
-`_vector/base.py` is gone, and the user reported the extracted commits green,
-committed, and pushed. PR 2's eight-commit plan is approved, but no PR 2 runtime
-work has started. The next implementation item is PR 2, Commit 1: extract
-column traversal and naming coordination into `_table/columns.py`.
+Current position: PR 1 and PR 2 are complete, green, committed, and pushed.
+PR 3's five-commit plan is approved. PR 3, Commit 1, "Extract Table transpose
+algebra," has been implemented together with this durable plan update and is
+awaiting user inspection, user-run verification, and commit. Do not begin PR 3,
+Commit 2 until the user reports Commit 1 complete.

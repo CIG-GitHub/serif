@@ -5,6 +5,7 @@ from ._table import mutation as _mutation
 from ._table import rows as _rows
 from ._table import selection as _selection
 from ._table import sort as _sort
+from ._table import transpose as _transpose
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
 from ._vector import Schema
@@ -295,15 +296,7 @@ class Table(Vector):
 
     @property
     def T(self):
-        # Transpose 2D table: columns become rows. Tables are always 2-D
-        # (docs/invariants.md #2 forbids nesting).
-        num_rows = self._length
-        num_cols = len(self._storage)
-        rows = []
-        for row_idx in range(num_rows):
-            row = Vector(tuple(col[row_idx] for col in self._storage))
-            rows.append(row)
-        return Table(rows)
+        return _transpose.transpose(self)
 
     def __getitem__(self, key):
         return _selection.getitem(self, key)
