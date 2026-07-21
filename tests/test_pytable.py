@@ -129,6 +129,30 @@ class TestTranspose:
         # After transpose, we get rows as vectors
         # Original: 3 rows × 2 columns → Transposed: 2 rows × 3 columns
         assert transposed.shape == (2, 3)
+        assert [list(column) for column in transposed.cols()] == [
+            [1, 4],
+            [2, 5],
+            [3, 6],
+        ]
+
+    def test_transpose_heterogeneous_rows(self):
+        table = Table({'number': [1, 2], 'label': ['a', 'b']})
+
+        with pytest.warns(
+            UserWarning,
+            match=(
+                r"Degrading column<int> to column<object> due to "
+                r"incompatible value of type str"
+            ),
+        ):
+            transposed = table.T
+
+        assert transposed.shape == (2, 2)
+        assert transposed.column_names() == [None, None]
+        assert [list(column) for column in transposed.cols()] == [
+            [1, 'a'],
+            [2, 'b'],
+        ]
 
 
 class TestTableOperations:

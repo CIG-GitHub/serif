@@ -1,9 +1,9 @@
 """
 Vectorized single-key join probe.
 
-The pure matcher (Table._join_probe_pure) hash-indexes the right side and
-walks the left side row by row — a tuple allocation and a dict lookup per
-row. Here the whole match runs on buffers: stable-argsort the right keys
+The pure matcher (serif._table.joins._join_probe_pure) hash-indexes the right
+side and walks the left side row by row — a tuple allocation and a dict lookup
+per row. Here the whole match runs on buffers: stable-argsort the right keys
 once, binary-search every left key against the sorted run
 (np.searchsorted), and expand fan-out matches with the same ragged
 repeat/cumsum arithmetic the string gather uses. Cardinality checks ride
