@@ -4,16 +4,15 @@ from ._table import lifting as _lifting
 from ._table import mutation as _mutation
 from ._table import rows as _rows
 from ._table import selection as _selection
+from ._table import sort as _sort
 from ._table.row import Row
 from ._table.row import iter_rows as _iter_rows
 from ._vector import Schema
-from ._vector.transforms import _null_sort_flag
 from ._accel.api import _accel_take
 from ._accel.api import _accel_take_pad
 from ._accel.api import _accel_popcount
 from ._accel.api import _accel_group
 from ._accel.api import _accel_join_probe
-from ._accel.api import _take
 
 from ._vector.storage import TupleStorage
 
@@ -1433,7 +1432,7 @@ class Table(Vector):
         -----
         - Sorting is stable.
         - The table is not modified in place; a new Table is returned.
-        
+
         Examples
         --------
         >>> t.sort_by(t.name)  # ascending
@@ -1442,74 +1441,7 @@ class Table(Vector):
         >>> t.sort_by((t.name, t.age), reverse=True)  # both descending
         >>> t.sort_by(t.score, na_last=False)  # None values first
         """
-        # --- 1. Normalize `by` into a list of specs ---
-        if isinstance(by, (str, Vector)):
-            keys = [by]
-        elif isinstance(by, (list, tuple)):
-            if not by:
-                raise SerifValueError("sort_by() requires at least one sort key")
-            keys = list(by)
-        else:
-            raise SerifTypeError(
-                f"sort_by() expects a Vector, column name, or sequence of these; "
-                f"got {type(by).__name__}"
-            )
-
-        # --- 2. Normalize `reverse` to list[bool] ---
-        if isinstance(reverse, bool):
-            rev_flags = [reverse] * len(keys)
-        elif isinstance(reverse, (list, tuple)):
-            if len(reverse) != len(keys):
-                raise SerifValueError(
-                    f"reverse has length {len(reverse)}, but sort keys have length {len(keys)}"
-                )
-            rev_flags = [bool(x) for x in reverse]
-        else:
-            raise SerifTypeError(
-                f"reverse must be bool or sequence[bool], got {type(reverse).__name__}"
-            )
-
-        # --- 3. Resolve all keys to Vector columns from this table ---
-        resolved = []
-        nrows = len(self)
-
-        for spec in keys:
-            col = self._resolve_column(spec)
-            if len(col) != nrows:
-                raise SerifValueError(
-                    f"Sort key has length {len(col)}, but table has {nrows} rows"
-                )
-            resolved.append(col)
-
-        # --- 4. Edge case: empty table ---
-        if nrows == 0:
-            # Preserve columns / names but with no rows
-            new_cols = [Vector([], name=col._name) for col in self._storage]
-            return Table(new_cols)
-
-        # --- 5. Build sorted row index using stable multi-key sort ---
-        indices = list(range(nrows))
-
-        # Stable sort: apply keys from last to first
-        for col, rev in reversed(list(zip(resolved, rev_flags))):
-            data = col._storage.to_tuple()
-
-            def key_fn(i, data=data, rev=rev, na_last=na_last):
-                v = data[i]
-                # Compare on (flag, value): the shared null-flag rule keeps
-                # nulls last/first under BOTH sort directions; `v` is only
-                # compared among non-None values.
-                return (_null_sort_flag(v is None, rev, na_last), v)
-
-            indices.sort(key=key_fn, reverse=rev)
-
-        # --- 6. Rebuild columns in sorted order ---
-        # Permute through the storage protocol: preserves each column's
-        # backend AND subclass (a _Category stays categorical, an int column
-        # keeps ArrayStorage) with zero re-inference. The columns are freshly
-        # built, so the nocopy assembly is safe.
-        new_cols = [col._clone(_take(col._storage, indices)) for col in self._storage]
-        return Table._from_columns_nocopy(new_cols)
+        return _sort.sort_by(self, by, reverse=reverse, na_last=na_last)
 
     def to_parquet(self, path: str) -> None:
         """Write this Table to a Parquet file. See serif.write_parquet for details."""
