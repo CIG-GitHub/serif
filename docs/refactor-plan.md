@@ -441,6 +441,8 @@ aggregation, or window features.
 ### Commit 2: Extract Table joins
 
 - Add `_table/joins.py`.
+- Remove stale resume-checklist references to repository files that do not
+  exist.
 - Move join-key normalization and validation, runtime hashability checks, pure
   row probing, cardinality enforcement, padded column gathering, result-schema
   wrapping, and the shared join orchestrator.
@@ -523,16 +525,16 @@ PR 1 is complete only when:
 
 At the beginning of a later working session:
 
-1. Read `AGENTS.md`.
-2. Read `docs/table-is-a-vector.md`.
-3. Read this file completely.
-4. Ask the user which commit was last completed if the status below is stale.
-5. Inspect only the next approved commit's scope.
-6. Implement one approved commit item, then stop for user inspection, tests,
+1. Read `docs/table-is-a-vector.md`.
+2. Read this file completely.
+3. Ask the user which commit was last completed if the status below is stale.
+4. Inspect only the next approved commit's scope.
+5. Implement one approved commit item, then stop for user inspection, tests,
    and Git work.
 
 Current position: PR 1 and PR 2 are complete, green, committed, and pushed.
 PR 3's five-commit plan is approved. PR 3, Commit 1, "Extract Table transpose
-algebra," has been implemented together with this durable plan update and is
-awaiting user inspection, user-run verification, and commit. Do not begin PR 3,
-Commit 2 until the user reports Commit 1 complete.
+algebra," is complete, green, committed, and pushed. PR 3, Commit 2, "Extract
+Table joins," has been implemented and is awaiting user inspection, user-run
+verification, and commit. Do not begin PR 3, Commit 3 until the user reports
+Commit 2 complete.

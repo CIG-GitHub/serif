@@ -1,11 +1,12 @@
 """
 Single-key bucketing over storage buffers.
 
-The pure loops (Table._build_partition_index, Table._join_impl step 2)
-bucket row indices by key with one dict operation per row — plus a tuple
-allocation per row for the key itself. Here the same dict is built from
-buffer math: np.unique on the zero-copy int64 view yields the distinct
-keys, their first occurrences, and a per-row code; a stable argsort of
+The pure loops (Table._build_partition_index and
+serif._table.joins._join_probe_pure) bucket row indices by key with one dict
+operation per row — plus a tuple allocation per row for the key itself. Here
+the same dict is built from buffer math: np.unique on the zero-copy int64
+view yields the distinct keys, their first occurrences, and a per-row code; a
+stable argsort of
 the codes groups the row indices in C. Only the final wrap — one dict
 entry per DISTINCT key — runs in Python; the buckets themselves stay
 numpy arrays all the way into the downstream gathers.
