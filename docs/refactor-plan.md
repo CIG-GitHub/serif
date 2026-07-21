@@ -239,6 +239,106 @@ direction. Split storage implementations or make dtype a package only where a
 concrete maintenance benefit remains. This cleanup is optional in scope: file
 splits should not happen merely because they appeared in an early tree.
 
+## PR 1 non-goals
+
+PR 1 must not:
+
+- change public semantics;
+- add or change Table reduction behavior;
+- change `Table(Vector)`;
+- redesign backend selection or fallback;
+- split storage or dtype modules;
+- reorganize Table implementations;
+- add Matrix, Tensor, or fingerprint APIs;
+- change public names, exceptions, warnings, null behavior, or result types;
+- edit unrelated documentation.
+
+The existing pure and accelerated paths must continue to produce the same
+Serif values, schemas, names, storage preservation, warnings, and errors.
+
+## PR 1 ordered commit plan
+
+Each item is a separate user-reviewed commit. Codex implements only one
+approved item at a time, then stops for inspection and user-run verification.
+The user owns staging, commits, branches, pushes, and pull requests.
+
+### Commit 1: Record the algebra and refactor plan
+
+- Add `docs/table-is-a-vector.md`.
+- Add this plan.
+- Make no runtime changes.
+
+Status: completed.
+
+### Commit 2: Isolate the existing accelerator entry points
+
+- Move the current `_accel_*` call-through helpers out of `_vector/base.py`
+  into one private accelerator-facing module.
+- Update current callers, including Table callers.
+- Preserve the exact availability checks, call order, decline behavior, and
+  pure fallbacks.
+- Do not introduce the future generic dispatcher.
+
+Purpose: remove accidental ownership of Table and accelerator coordination
+from the Vector class module before extracting semantic operations.
+
+### Commit 3: Extract Vector reductions
+
+- Move reduction semantics and their private helpers to
+  `_vector/reductions.py`.
+- Leave the public reduction methods on `Vector` as thin delegates.
+- Preserve empty-reduction, null-skipping, scalar-type, and floating-point
+  conformance behavior.
+- Do not add Table reduction behavior.
+
+### Commit 4: Extract Vector operators
+
+- Move arithmetic, comparison, logical, bitwise, unary, reverse-operation,
+  operand-validation, and result-schema logic to `_vector/operators.py`.
+- Leave dunder methods and named bit-shift methods on `Vector` as thin
+  delegates.
+- Preserve Python scalar semantics, shape rules, Kleene logic, name derivation,
+  promotion, and exception types.
+
+### Commit 5: Extract Vector transforms and element API
+
+- Move casts, null transforms, type tests, stable uniqueness, sorting, and
+  related helpers to `_vector/transforms.py`.
+- Move scalar-method proxy machinery and the explicit per-dtype element API to
+  `_vector/element_api.py` where doing so does not create a circular import.
+- Retain `numeric.py`, `string.py`, `dates.py`, and `categorical.py` as homes
+  for actual dtype-specific behavior.
+- Leave public methods on `Vector` as thin delegates.
+
+### Commit 6: Extract Vector selection and mutation
+
+- Move selector parsing, scalar/slice/mask/take reads, and selection planning
+  to `_vector/selection.py`.
+- Move assignment planning, copy-on-write rebuilding, mutability enforcement,
+  and assignment application to `_vector/mutation.py`.
+- Share selector normalization where appropriate without merging read and
+  write semantics.
+- Preserve the rule that all validation completes before observable mutation.
+
+### Commit 7: Extract Vector construction
+
+- Move collection and inference, target-class selection, storage selection,
+  cloning, known-dtype construction, copying, and filled construction to
+  `_vector/construction.py`.
+- Keep dtype inference and promotion in the existing dtype module.
+- Keep physical storage implementations in the existing storage module.
+- Preserve subtype, categorical, nullable, name, and storage-selection rules.
+
+### Commit 8: Move the concrete Vector class to `serif/vector.py`
+
+- Move the now-thin concrete `Vector` definition from `_vector/base.py` to
+  `serif/vector.py`.
+- Update internal imports and public exports.
+- Remove `_vector/base.py`; do not leave a second Vector definition behind.
+- Preserve `from serif import Vector` and all documented behavior.
+- Treat compatibility for private imports from `serif._vector.base` as out of
+  scope unless an actual supported consumer is identified before this commit.
+
 ## PR 2 ordered commit plan
 
 PR 2 decomposes Table lifting and row-aware structure without touching
@@ -393,106 +493,6 @@ aggregation, or window features.
   empty-table behavior, and the current rejection of block window
   aggregations.
 - Remove the PR 3 imports that are no longer owned by `table.py`.
-
-## PR 1 non-goals
-
-PR 1 must not:
-
-- change public semantics;
-- add or change Table reduction behavior;
-- change `Table(Vector)`;
-- redesign backend selection or fallback;
-- split storage or dtype modules;
-- reorganize Table implementations;
-- add Matrix, Tensor, or fingerprint APIs;
-- change public names, exceptions, warnings, null behavior, or result types;
-- edit unrelated documentation.
-
-The existing pure and accelerated paths must continue to produce the same
-Serif values, schemas, names, storage preservation, warnings, and errors.
-
-## PR 1 ordered commit plan
-
-Each item is a separate user-reviewed commit. Codex implements only one
-approved item at a time, then stops for inspection and user-run verification.
-The user owns staging, commits, branches, pushes, and pull requests.
-
-### Commit 1: Record the algebra and refactor plan
-
-- Add `docs/table-is-a-vector.md`.
-- Add this plan.
-- Make no runtime changes.
-
-Status: completed.
-
-### Commit 2: Isolate the existing accelerator entry points
-
-- Move the current `_accel_*` call-through helpers out of `_vector/base.py`
-  into one private accelerator-facing module.
-- Update current callers, including Table callers.
-- Preserve the exact availability checks, call order, decline behavior, and
-  pure fallbacks.
-- Do not introduce the future generic dispatcher.
-
-Purpose: remove accidental ownership of Table and accelerator coordination
-from the Vector class module before extracting semantic operations.
-
-### Commit 3: Extract Vector reductions
-
-- Move reduction semantics and their private helpers to
-  `_vector/reductions.py`.
-- Leave the public reduction methods on `Vector` as thin delegates.
-- Preserve empty-reduction, null-skipping, scalar-type, and floating-point
-  conformance behavior.
-- Do not add Table reduction behavior.
-
-### Commit 4: Extract Vector operators
-
-- Move arithmetic, comparison, logical, bitwise, unary, reverse-operation,
-  operand-validation, and result-schema logic to `_vector/operators.py`.
-- Leave dunder methods and named bit-shift methods on `Vector` as thin
-  delegates.
-- Preserve Python scalar semantics, shape rules, Kleene logic, name derivation,
-  promotion, and exception types.
-
-### Commit 5: Extract Vector transforms and element API
-
-- Move casts, null transforms, type tests, stable uniqueness, sorting, and
-  related helpers to `_vector/transforms.py`.
-- Move scalar-method proxy machinery and the explicit per-dtype element API to
-  `_vector/element_api.py` where doing so does not create a circular import.
-- Retain `numeric.py`, `string.py`, `dates.py`, and `categorical.py` as homes
-  for actual dtype-specific behavior.
-- Leave public methods on `Vector` as thin delegates.
-
-### Commit 6: Extract Vector selection and mutation
-
-- Move selector parsing, scalar/slice/mask/take reads, and selection planning
-  to `_vector/selection.py`.
-- Move assignment planning, copy-on-write rebuilding, mutability enforcement,
-  and assignment application to `_vector/mutation.py`.
-- Share selector normalization where appropriate without merging read and
-  write semantics.
-- Preserve the rule that all validation completes before observable mutation.
-
-### Commit 7: Extract Vector construction
-
-- Move collection and inference, target-class selection, storage selection,
-  cloning, known-dtype construction, copying, and filled construction to
-  `_vector/construction.py`.
-- Keep dtype inference and promotion in the existing dtype module.
-- Keep physical storage implementations in the existing storage module.
-- Preserve subtype, categorical, nullable, name, and storage-selection rules.
-
-### Commit 8: Move the concrete Vector class to `serif/vector.py`
-
-- Move the now-thin concrete `Vector` definition from `_vector/base.py` to
-  `serif/vector.py`.
-- Update internal imports and public exports.
-- Remove `_vector/base.py`; do not leave a second Vector definition behind.
-- Preserve `from serif import Vector` and all documented behavior.
-- Treat compatibility for private imports from `serif._vector.base` as out of
-  scope unless an actual supported consumer is identified before this commit.
 
 ## Verification protocol
 
