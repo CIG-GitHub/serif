@@ -17,8 +17,7 @@ def _table_class():
 
 
 def _masked_table_class():
-    # MaskedTable remains in table.py until deferred coordination is extracted.
-    from ..table import MaskedTable
+    from .deferred import MaskedTable
     return MaskedTable
 
 
