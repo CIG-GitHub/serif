@@ -226,18 +226,19 @@ policy remains explicit beside each semantic operation rather than hidden in
 a registry or service-object framework.
 
 Migrate one kernel family at a time: operators, reductions, mask/take, then
-grouping, joining, and Arrow string kernels. If the Vector and Table physical
-migrations cannot remain reviewable together, split this phase into sequential
-Vector-execution and Table-execution pull requests rather than mixing either
-one into PR 2 or PR 3.
+grouping, joining, and grouped aggregation. PR 4 combines the Vector and Table
+execution migrations in one pull request, but each family remains a separate
+user-reviewed commit. Shared Arrow string work moves with the operation family
+that owns its semantics: comparison with Vector operators, bucketing with
+Table grouping, and probing with Table joins.
 
 ### PR 5: Reorganize physical foundations and clean up
 
-Finish any Table execution migration split out of PR 4, remove the superseded
-`_accel` layout after all callers have moved, and enforce the final import
-direction. Split storage implementations or make dtype a package only where a
-concrete maintenance benefit remains. This cleanup is optional in scope: file
-splits should not happen merely because they appeared in an early tree.
+Enforce the final import direction and consider further physical-foundation
+cleanup only where a concrete maintenance benefit remains. Split storage
+implementations or make dtype a package only when actual ownership pressure
+justifies it. File splits must not happen merely because they appeared in an
+early tree.
 
 ## PR 1 non-goals
 
@@ -496,6 +497,332 @@ aggregation, or window features.
   aggregations.
 - Remove the PR 3 imports that are no longer owned by `table.py`.
 
+## PR 4 ordered commit plan
+
+PR 4 introduces one explicit execution contract and migrates Vector and Table
+physical implementations one operation family at a time. It is structural:
+existing public behavior remains authoritative, and any semantic change needs
+separate proposal, tests, and approval. `serif/vector.py` and `serif/table.py`
+retain class identity, state, invariants, metadata, API shape, and thin public
+method shells.
+
+Dependencies must flow as follows:
+
+```text
+public Vector/Table classes
+        -> semantic operation modules
+        -> explicit per-operation backend selection
+        -> useful _python, _numpy, or _arrow physical modules
+        -> Serif storage
+
+Table semantic modules
+        -> Vector semantic primitives for shared filter/take work
+```
+
+Semantic modules own validation, dtype and null rules, exceptions, dispatch
+order, capability decisions, and public-result wrapping. Physical modules do
+not import `Vector` or `Table`, do not construct public results, and return
+Serif storage, canonical Python values, or the unique `DECLINED` sentinel.
+`None` is never decline. Optional-backend defects raise; dispatch must not
+catch broad exceptions and disguise them as unsupported cases. The `_python`
+implementation is the semantic authority and guaranteed final path.
+
+Each item below is a separate user-reviewed commit. Codex implements only one
+approved item at a time, then stops for inspection and user-run verification.
+The user owns staging, commits, branches, pushes, and pull requests.
+
+### Commit 0: Record the combined PR 4 execution plan
+
+- Correct the stale handoff: PR 3 is complete, green, committed, and pushed.
+- Record this approved combined Vector-and-Table PR 4 plan.
+- Make no runtime or test changes.
+
+### Commit 1: Define the execution contract
+
+Files:
+
+- add `src/serif/_execution.py`;
+- update `src/serif/_accel/__init__.py` and `_accel/arrow.py` during the
+  transition;
+- add `tests/test_execution_dispatch.py`.
+
+Work:
+
+- Define the unique `DECLINED` identity and centralize optional-library
+  availability imports without introducing a dispatcher, registry, or service
+  object.
+- Temporarily re-export the same sentinel from `_accel` so there is one
+  identity while families migrate.
+- Preserve zero-dependency imports and the existing private backend switches
+  used by conformance tests until their families move.
+- Pin that `DECLINED is not None`, execution imports no public class, and
+  unavailable libraries decline normally.
+
+Focused verification:
+
+```cmd
+python -m pytest tests -q -k "execution_dispatch or accel or structural_refactor"
+```
+
+### Commit 2: Route Vector operators through deterministic backends
+
+Files:
+
+- update `_vector/operators.py`;
+- add `_vector/_python/operators.py`;
+- add `_vector/_numpy/operators.py` and `_vector/_numpy/storage.py`;
+- add `_vector/_arrow/operators.py` and `_vector/_arrow/storage.py`;
+- add only the required backend-package `__init__.py` files;
+- update `_accel/api.py`, `_accel/__init__.py`, and `_accel/arrow.py`;
+- remove `_accel/ops.py`;
+- update `tests/test_execution_dispatch.py`, `test_accel_arrow.py`,
+  `test_accel_arrow_arith.py`, `test_accel_arrow_div.py`,
+  `test_accel_logical.py`, `test_accel_ops.py`, and
+  `test_accel_string_compare.py`.
+
+Work:
+
+- Keep operand normalization, shape validation, schema promotion,
+  nullability, exception translation, warning emission, dispatch, and result
+  wrapping in `_vector/operators.py`.
+- Move canonical loops and storage-level unary work to `_python/operators.py`.
+- Move NumPy arithmetic, comparison, Kleene logic, and inversion to
+  `_numpy/operators.py`.
+- Move checked Arrow integer arithmetic, checked true division, and string
+  comparison to `_arrow/operators.py`.
+- Optional kernels return Serif storage or `DECLINED`, never `Vector`, NumPy
+  arrays/scalars, or Arrow arrays/scalars.
+- Dispatch deterministically: Arrow then NumPy then Python for supported true
+  division; NumPy then Arrow then Python for supported add/subtract/multiply;
+  NumPy then Python for floor-division/modulo; NumPy then Arrow then Python for
+  comparisons; NumPy then Python for Kleene logic and inversion. Do not expand
+  the currently accelerated reverse, bitwise, power, or unary surface.
+- Perform length and invalid-operation validation before acceleration.
+  Executing zero divisors raise before a backend call; zero under a null lane
+  remains non-executing. Physical integer overflow may decline so Python can
+  preserve bigint semantics.
+
+Invariants:
+
+- Preserve exact promotion, nullable schemas, names, wild-name tracking,
+  storage normalization, Python scalar types, exception text and order,
+  Kleene truth tables, string-subclass behavior, and Table lifting.
+- Preserve the null-comparison warning text and stack level and all Table
+  naming-warning behavior.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_arrow.py tests\test_accel_arrow_arith.py tests\test_accel_arrow_div.py tests\test_accel_logical.py tests\test_accel_ops.py tests\test_accel_string_compare.py tests\test_arithmetic_edges.py tests\test_null_semantics.py tests\test_table_arithmetic_naming.py tests\test_type_promotion.py -q
+```
+
+### Commit 3: Route Vector reductions through deterministic backends
+
+Files:
+
+- update `_vector/reductions.py`;
+- add `_vector/_python/reductions.py` and `_vector/_numpy/reductions.py`;
+- update `_accel/api.py` and `_accel/__init__.py`;
+- remove `_accel/reduce.py`;
+- update `tests/test_execution_dispatch.py` and `test_accel_reduce.py`.
+
+Work:
+
+- Keep rank lifting, empty-case rules, `on_empty` validation, dispatch, and
+  scalar-result ownership in `_vector/reductions.py`.
+- Move canonical reductions to `_python/reductions.py` and existing buffer
+  reductions plus the integer-residue proof to `_numpy/reductions.py`.
+- Dispatch NumPy then Python for max, min, sum, mean, and stdev. Keep first,
+  last, all, any, and count on Python only.
+- Replace the `(ok, value)` adapter with direct identity comparison against
+  `DECLINED`. A returned `None` is a successful reduction result.
+
+Invariants:
+
+- Preserve empty/all-null results, the exact integer zero sum identity,
+  arbitrary-precision integer sums, float `math.fsum` authority, NaN min/max
+  ordering behavior, stdev conventions, Python scalar types, and all/no-verdict
+  errors.
+- Rank-two reductions still lift through columns before scalar dispatch.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_reduce.py tests\test_null_semantics.py tests\test_pyvector_math.py tests\test_table_vector_surface.py -q
+```
+
+### Commit 4: Route Vector selection and gathers through deterministic backends
+
+Files:
+
+- update `_vector/selection.py` and `_vector/transforms.py`;
+- add `_vector/_python/selection.py` and `_vector/_numpy/selection.py`;
+- update `_table/rows.py`, `_table/sort.py`, `_table/grouping.py`,
+  `_table/joins.py`, and `_table/deferred.py`;
+- update `io/parquet.py`;
+- update `_accel/api.py` and `_accel/__init__.py`;
+- remove `_accel/mask.py`;
+- update `tests/test_execution_dispatch.py`, `test_accel_mask.py`,
+  `test_accel_take.py`, `test_accel_group.py`, `test_deferred_mask.py`,
+  `test_pyvector_indexing.py`, and `test_structural_refactor.py`.
+
+Work:
+
+- Keep selector recognition, type/length validation, nullable-mask rules,
+  warnings, dispatch, and public wrapping in `_vector/selection.py`.
+- Move pure filter/take/padded-take/popcount work to `_python/selection.py` and
+  the existing NumPy gather implementation to `_numpy/selection.py`.
+- Route Table sorting, row uniqueness, group slicing, join padding, deferred
+  popcount, and Parquet filtering through narrow Vector semantic primitives.
+- Dispatch filter NumPy then Python, take NumPy then `storage.take()`, and
+  popcount NumPy then Python. Preserve the current caller-owned pure wrapping
+  for padded joins.
+- Keep slice and warned integer-subscript reads on their existing Python paths.
+
+Invariants:
+
+- Nullable mask nulls exclude rows; all validation precedes gathering.
+- Preserve names, schemas, storage types, subclasses, stable Table sort,
+  categorical behavior, deferred snapshots, join padding/widening, Parquet
+  filtering, and the exact two large positional-index warning messages.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_mask.py tests\test_accel_take.py tests\test_accel_group.py tests\test_deferred_mask.py tests\test_pyvector_indexing.py tests\test_table_sort.py tests\test_structural_refactor.py -q
+```
+
+```cmd
+python -m pytest tests\test_accel_arrow_grouped_sum.py tests\test_accel_string_group.py tests\test_accel_string_join.py tests\test_accel_unique_join.py tests\test_aggregate_window.py tests\test_joins.py tests\test_parquet.py tests\test_parquet_deferred.py -q
+```
+
+### Commit 5: Route Table grouping through deterministic backends
+
+Files:
+
+- update `_table/grouping.py`;
+- add `_table/_python/grouping.py`, `_table/_numpy/grouping.py`, and
+  `_table/_arrow/grouping.py`, plus only their required package files;
+- update `_accel/api.py` and `_accel/arrow.py`;
+- remove `_accel/group.py`;
+- update `tests/test_execution_dispatch.py`, `test_accel_group.py`,
+  `test_accel_string_group.py`, `test_accel_take.py`,
+  `test_aggregate_blocks.py`, `test_aggregate_ordered_pick.py`,
+  `test_aggregate_sort_order.py`, and `test_aggregate_window.py`.
+
+Work:
+
+- Keep group-key resolution, length validation, first-appearance ordering,
+  row-key requirements, aggregation slicing, scalar enforcement, empty-error
+  context, and dispatch in `_table/grouping.py`.
+- Move canonical bucketing to `_python/grouping.py`, dense int64 bucketing to
+  `_numpy/grouping.py`, and Arrow string encoding/bucketing to
+  `_arrow/grouping.py`.
+- Dispatch supported single keys deterministically through the useful numeric
+  or string backend and then Python. Multi-key, nullable, float, object,
+  categorical, and window row-key cases retain the canonical Python path where
+  required by current semantics.
+- Normalize backend keys and row-index buckets to Python values before they
+  return to the semantic module; no NumPy arrays or Arrow objects cross the
+  boundary.
+
+Invariants:
+
+- Preserve first-appearance group order, ascending row order within groups,
+  None/NaN key behavior, hashability failures, slice schemas/subclasses,
+  bound-method and callable behavior, block fan-out, exact errors, and
+  aggregate/window warning behavior.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_group.py tests\test_accel_string_group.py tests\test_accel_take.py tests\test_aggregate_blocks.py tests\test_aggregate_ordered_pick.py tests\test_aggregate_sort_order.py tests\test_aggregate_window.py -q
+```
+
+### Commit 6: Route Table joins through deterministic backends
+
+Files:
+
+- update `_table/joins.py`;
+- add `_table/_python/joins.py`, `_table/_numpy/joins.py`, and
+  `_table/_arrow/joins.py`;
+- update `_accel/api.py` and `_accel/arrow.py`;
+- remove `_accel/join.py`;
+- update `tests/test_execution_dispatch.py`, `test_accel_group.py`,
+  `test_accel_string_group.py`, `test_accel_string_join.py`,
+  `test_accel_unique_join.py`, `test_joins.py`, `test_semantic_fixes.py`, and
+  `test_structural_refactor.py`.
+
+Work:
+
+- Keep key normalization, dtype/length/hashability validation, cardinality
+  diagnostics, dispatch, padded gathering, nullable widening, right-key
+  removal, schema/name ownership, and result wrapping in `_table/joins.py`.
+- Move the canonical right-index/probe program to `_python/joins.py`, dense and
+  sorted int64 probes to `_numpy/joins.py`, and shared-dictionary string probes
+  to `_arrow/joins.py`.
+- Preserve the effective cascade: dense int probe, string hash probe, sorted
+  int probe, sorted string probe, then Python, with inapplicable capabilities
+  returning `DECLINED`.
+- Cardinality violations return a diagnostic outcome for the semantic layer to
+  raise; they are not decline. Unexpected backend exceptions propagate.
+- Normalize take indices and duplicate keys to Python values before returning
+  from physical modules.
+
+Invariants:
+
+- Preserve validation and raise order, exact diagnostics, match and row order,
+  many-to-many fan-out, unmatched placement, empty-result shape,
+  identity-based right-key removal, nullable widening, names, schemas,
+  subclasses, storage, and computed/external keys.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_group.py tests\test_accel_string_group.py tests\test_accel_string_join.py tests\test_accel_unique_join.py tests\test_joins.py tests\test_semantic_fixes.py tests\test_structural_refactor.py -q
+```
+
+### Commit 7: Route grouped aggregation through Arrow and retire `_accel`
+
+Files:
+
+- update `_table/aggregation.py`;
+- add `_table/_arrow/aggregation.py`;
+- update `tests/test_execution_dispatch.py`,
+  `test_accel_arrow_grouped_sum.py`, `test_aggregate_blocks.py`,
+  `test_aggregate_ordered_pick.py`, `test_aggregate_sort_order.py`,
+  `test_aggregate_window.py`, and `test_structural_refactor.py`;
+- remove the remaining `_accel/api.py`, `_accel/arrow.py`,
+  `_accel/__init__.py`, and the superseded `_accel` package after verifying
+  that no caller remains.
+
+Work:
+
+- Keep grouped-sum recognition, source/key validation, deterministic Arrow
+  selection, name uniquification, key-schema preservation, result wrapping,
+  and ordinary grouped fallback in `_table/aggregation.py`.
+- Move only the useful Arrow grouped-sum physical implementation to
+  `_table/_arrow/aggregation.py`; do not create Python or NumPy aggregation
+  mirrors because existing grouping plus Vector reductions are the canonical
+  path.
+- Return Python keys and value columns or `DECLINED`, never Arrow objects.
+- Preserve exact integer residue reconstruction and decline the whole physical
+  operation when any group cannot be proven exact.
+- Remove all legacy `_accel` imports and assert the final dependency direction.
+
+Invariants:
+
+- Preserve recognized-bound-sum scope, first-appearance group order, all-null
+  sum identity, integer exactness, accepted float reduction-order tolerance,
+  positional overloads, block/callable behavior, flat-only results, schemas,
+  names, and warnings.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_execution_dispatch.py tests\test_accel_arrow_grouped_sum.py tests\test_aggregate_blocks.py tests\test_aggregate_ordered_pick.py tests\test_aggregate_sort_order.py tests\test_aggregate_window.py tests\test_structural_refactor.py -q
+```
+
 ## Verification protocol
 
 No source item is complete until the user has run the relevant tests and
@@ -521,6 +848,23 @@ PR 1 is complete only when:
 - public Vector methods are thin delegates;
 - no intended behavior or backend policy changed.
 
+PR 4 is complete only when:
+
+- every focused command and the full local suite pass without an unexpected
+  warnings summary;
+- CI passes in pure Python, NumPy-only, Arrow-only, and combined environments;
+- backend choice and decline behavior are deterministic and directly tested;
+- `None` is never used as decline;
+- physical modules return only Serif storage, canonical Python values, or
+  `DECLINED`, and import neither `Vector` nor `Table`;
+- public result construction and all semantic validation remain in semantic
+  modules;
+- pure Python remains the guaranteed final path;
+- the superseded `_accel` package is gone and no empty backend mirrors were
+  introduced;
+- no public semantics, warnings, exceptions, construction, mutation, dtype
+  rules, or unrelated Table algebra changed.
+
 ## Resume instructions
 
 At the beginning of a later working session:
@@ -532,12 +876,10 @@ At the beginning of a later working session:
 5. Implement one approved commit item, then stop for user inspection, tests,
    and Git work.
 
-Current position: PR 1 and PR 2 are complete, green, committed, and pushed.
-PR 3's five-commit plan is approved. PR 3, Commit 1, "Extract Table transpose
-algebra," PR 3, Commit 2, "Extract Table joins," and PR 3, Commit 3, "Extract
-shared grouping machinery," are complete, green, committed, and pushed; the
-user also reported no material join benchmark regression. PR 3, Commit 4,
-"Extract Table aggregation," is complete, green, committed, and pushed. PR 3,
-Commit 5, "Extract Table windowing," has been implemented and is awaiting user
-inspection, user-run verification, and commit. Do not begin PR 4 until the user
-reports PR 3, Commit 5 complete and approves the next PR plan.
+Current position: PR 1, PR 2, and PR 3 are complete, green, committed, and
+pushed; the user also reported no material join benchmark regression during
+PR 3. The combined eight-item PR 4 plan (documentation-only Commit 0 followed
+by implementation Commits 1 through 7) is approved. PR 4, Commit 0, "Record
+the combined PR 4 execution plan," has been implemented and is awaiting user
+inspection and commit. Do not begin PR 4, Commit 1 until the user reports
+Commit 0 complete and explicitly says to proceed.
