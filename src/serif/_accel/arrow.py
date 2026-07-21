@@ -57,19 +57,14 @@ from __future__ import annotations
 
 import operator as _op
 
-try:
-    import pyarrow as _pa
-    import pyarrow.compute as _pc
-except ImportError:            # pyarrow not installed — every call declines
-    _pa = None
-    _pc = None
-
 import array as _pyarray
 
+from .._execution import _load_arrow
 from . import _np
 from .._vector.nullable import BitMask
 from .._vector.storage import ArrayStorage, BoolStorage, StringStorage
 
+_pa, _pc = _load_arrow()
 _USE_ARROW = _pa is not None
 
 _I32_MAX = 2**31 - 1

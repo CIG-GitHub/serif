@@ -42,16 +42,13 @@ _USE_NUMPY here and _USE_ARROW in arrow.py are private switches for
 tests/benchmarks, not API.
 """
 
-try:
-    import numpy as _np
-except ImportError:            # numpy not installed — every call declines
-    _np = None
+from .._execution import DECLINED
+from .._execution import _load_numpy
+
+
+_np = _load_numpy()
 
 _USE_NUMPY = _np is not None
-
-# Sentinel for "the accelerator declined" — distinct from None, which is a
-# legitimate reduction RESULT (max of an all-null column is None).
-DECLINED = object()
 
 # array.array typecode → numpy dtype name, for the two accelerated kinds.
 NP_DTYPES = {'q': 'int64', 'd': 'float64'}
