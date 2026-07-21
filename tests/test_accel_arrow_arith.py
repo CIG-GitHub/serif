@@ -1,6 +1,6 @@
 """
 Conformance tests for the OPTIONAL arrow-accelerated checked integer
-arithmetic (serif._accel.arrow.binop_ints).
+arithmetic (serif._vector._arrow.operators.binop_ints).
 
 The guarantee under test — python in → python out, backend-independent:
 `v <op> other` on int columns must return IDENTICAL vectors whether the
@@ -30,9 +30,10 @@ np = pytest.importorskip("numpy")
 pa = pytest.importorskip("pyarrow")
 
 from serif import Vector
-import serif._accel as accel
-from serif._accel import arrow as bridge
-from serif._accel.ops import binop_storage
+from serif._execution import DECLINED
+from serif._vector._arrow import operators as bridge
+from serif._vector._numpy import operators as numpy_ops
+from serif._vector._numpy.operators import binop_storage
 from serif._vector.storage import ArrayStorage, TupleStorage
 
 
@@ -50,12 +51,12 @@ def _pure(fn):
 
 
 def _all_pure(fn):
-    saved_np = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved_np = numpy_ops._USE_NUMPY
+    numpy_ops._USE_NUMPY = False
     try:
         return _pure(fn)
     finally:
-        accel._USE_NUMPY = saved_np
+        numpy_ops._USE_NUMPY = saved_np
 
 
 def _assert_identical(pure_v, fast_v):
@@ -91,7 +92,12 @@ def test_add_rescues_bounds_decline():
     # overflow, but the actual PAIRS sum to 0. numpy declines; arrow runs.
     a = Vector([2**62, -(2**62), None])
     b = Vector([-(2**62), 2**62, 5])
-    assert binop_storage(a._storage, b._storage, operator.add, int) is None
+    assert binop_storage(
+        a._storage,
+        b._storage,
+        operator.add,
+        int,
+    ) is DECLINED
     fast = _conform(lambda: a + b)
     assert list(fast) == [0, 0, None]
     assert type(fast._storage) is ArrayStorage   # stayed in the buffer world
@@ -101,7 +107,12 @@ def test_sub_rescues_bounds_decline():
     # lo_a - hi_b crosses the floor, but the actual pairs never do.
     a = Vector([-(2**62) - 10, 0])
     b = Vector([-5, 2**62])
-    assert binop_storage(a._storage, b._storage, operator.sub, int) is None
+    assert binop_storage(
+        a._storage,
+        b._storage,
+        operator.sub,
+        int,
+    ) is DECLINED
     fast = _conform(lambda: a - b)
     assert list(fast) == [-(2**62) - 5, -(2**62)]
 
@@ -111,7 +122,12 @@ def test_mul_rescues_bounds_decline():
     # pairs are 2**36 each.
     a = Vector([2**35, 2])
     b = Vector([2, 2**35])
-    assert binop_storage(a._storage, b._storage, operator.mul, int) is None
+    assert binop_storage(
+        a._storage,
+        b._storage,
+        operator.mul,
+        int,
+    ) is DECLINED
     fast = _conform(lambda: a * b)
     assert list(fast) == [2**36, 2**36]
 
@@ -122,7 +138,12 @@ def test_huge_value_under_null_never_computes():
     # nor arrow ever computes it. Exact declining beats predicted.
     a = Vector([None, 5])
     b = Vector([2**63 - 1, 3])
-    assert binop_storage(a._storage, b._storage, operator.add, int) is None
+    assert binop_storage(
+        a._storage,
+        b._storage,
+        operator.add,
+        int,
+    ) is DECLINED
     fast = _conform(lambda: a + b)
     assert list(fast) == [None, 8]
 
@@ -166,13 +187,23 @@ def test_plain_arithmetic_conforms():
 
 def test_bool_scalar_stays_pure_and_conforms():
     v = Vector([1, 2])
-    assert bridge.binop_ints(v._storage, True, operator.add, int) is None
+    assert bridge.binop_ints(
+        v._storage,
+        True,
+        operator.add,
+        int,
+    ) is DECLINED
     _conform(lambda: v + True)   # Python semantics: 1 + True == 2
 
 
 def test_float_lanes_are_not_arrows_business():
     v = Vector([1, 2, None])
-    assert bridge.binop_ints(v._storage, 2.5, operator.add, float) is None
+    assert bridge.binop_ints(
+        v._storage,
+        2.5,
+        operator.add,
+        float,
+    ) is DECLINED
     _conform(lambda: v + 2.5)    # numpy's tier, unchanged
 
 
@@ -186,11 +217,11 @@ def test_numpy_off_arrow_still_accelerates(monkeypatch):
 
     def spy(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(bridge, 'binop_ints', spy)
-    monkeypatch.setattr(accel, '_USE_NUMPY', False)
+    monkeypatch.setattr(numpy_ops, '_USE_NUMPY', False)
 
     a = Vector([1, -2, None, 4])
     b = Vector([10, 20, 30, None])

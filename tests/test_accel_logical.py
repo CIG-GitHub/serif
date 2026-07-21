@@ -30,7 +30,7 @@ np = pytest.importorskip("numpy")
 
 from serif import Table, Vector
 from serif.errors import SerifValueError
-import serif._accel as accel
+from serif._vector._numpy import operators as numpy_ops
 from serif._vector.storage import BoolStorage
 
 
@@ -39,12 +39,12 @@ from serif._vector.storage import BoolStorage
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved = numpy_ops._USE_NUMPY
+    numpy_ops._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        numpy_ops._USE_NUMPY = saved
 
 
 def _assert_identical(pure_v, fast_v):

@@ -1,13 +1,13 @@
 """
 Conformance tests for the OPTIONAL arrow-accelerated true division
-(serif._accel.arrow.div_floats).
+(serif._vector._arrow.operators.div_floats).
 
 The guarantee under test — python in → python out, backend-independent:
 `v / other` must return IDENTICAL vectors whether the arrow backend
 runs or not, including raising the same ZeroDivisionError when a zero
 divisor actually divides.
 
-Unlike the int-arithmetic tier this one runs BEFORE numpy (base.py):
+Unlike the int-arithmetic tier this one runs BEFORE numpy (operators.py):
 numpy's division must neutralize null-lane divisors (a copy) and scan
 for zeros (a pass); arrow's divide_checked skips null lanes and raises
 on real zeros, so the preparation work disappears. The load-bearing
@@ -29,8 +29,9 @@ np = pytest.importorskip("numpy")
 pa = pytest.importorskip("pyarrow")
 
 from serif import Vector
-import serif._accel as accel
-from serif._accel import arrow as bridge
+from serif._execution import DECLINED
+from serif._vector._arrow import operators as bridge
+from serif._vector._numpy import operators as numpy_ops
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +48,12 @@ def _pure(fn):
 
 
 def _all_pure(fn):
-    saved_np = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved_np = numpy_ops._USE_NUMPY
+    numpy_ops._USE_NUMPY = False
     try:
         return _pure(fn)
     finally:
-        accel._USE_NUMPY = saved_np
+        numpy_ops._USE_NUMPY = saved_np
 
 
 def _assert_identical(pure_v, fast_v):
@@ -158,7 +159,7 @@ def test_zero_sentinel_under_null_stays_accelerated():
     b = Vector([2.0, None, 4.0])
     fast_st = bridge.div_floats(a._storage, b._storage,
                                 operator.truediv, float)
-    assert fast_st is not None
+    assert fast_st is not DECLINED
     assert list(fast_st) == [0.5, None, None]
 
     fast = _conform(lambda: a / b)
@@ -176,7 +177,7 @@ def test_int_int_declines_everywhere():
     a = Vector([1, 2, None])
     b = Vector([4, 8, 2])
     assert bridge.div_floats(a._storage, b._storage,
-                             operator.truediv, float) is None
+                             operator.truediv, float) is DECLINED
     _conform(lambda: a / b)
     _conform(lambda: a / 4)
 
@@ -189,13 +190,23 @@ def test_floordiv_and_mod_are_not_divisions_here():
     a = Vector([7.5, -7.5, None])
     b = Vector([2.0, 2.0, 2.0])
     for op in (operator.floordiv, operator.mod):
-        assert bridge.div_floats(a._storage, b._storage, op, float) is None
+        assert bridge.div_floats(
+            a._storage,
+            b._storage,
+            op,
+            float,
+        ) is DECLINED
         _conform(lambda op=op: op(a, b))         # numpy's tier, unchanged
 
 
 def test_bool_scalar_declines_conform():
     v = Vector([1.0, 2.0])
-    assert bridge.div_floats(v._storage, True, operator.truediv, float) is None
+    assert bridge.div_floats(
+        v._storage,
+        True,
+        operator.truediv,
+        float,
+    ) is DECLINED
     _conform(lambda: v / True)
 
 
@@ -215,11 +226,11 @@ def test_numpy_off_arrow_still_accelerates(monkeypatch):
 
     def spy(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(bridge, 'div_floats', spy)
-    monkeypatch.setattr(accel, '_USE_NUMPY', False)
+    monkeypatch.setattr(numpy_ops, '_USE_NUMPY', False)
 
     a = Vector([1.5, None, -6.0])
     b = Vector([0.5, 2.0, None])

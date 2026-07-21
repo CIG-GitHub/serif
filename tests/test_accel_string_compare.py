@@ -29,7 +29,8 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 
 from serif import Vector
-from serif._accel import arrow as bridge
+from serif._execution import DECLINED
+from serif._vector._arrow import operators as bridge
 from serif._vector.storage import BoolStorage, StringStorage
 
 
@@ -135,7 +136,11 @@ def test_str_subclass_scalar_declines():
     class Loud(str):
         pass
     v = Vector(['apple', 'banana'])
-    assert bridge.compare_strings(v._storage, Loud('apple'), operator.eq) is None
+    assert bridge.compare_strings(
+        v._storage,
+        Loud('apple'),
+        operator.eq,
+    ) is DECLINED
     _conform(v, operator.eq, Loud('apple'))   # pure both sides, still identical
 
 
@@ -234,7 +239,11 @@ def test_vector_vector_mixed_kind_declines():
     # not a StringStorage).
     v = Vector(['apple', 'banana', None])
     w = Vector([1, 2, 3])
-    assert bridge.compare_strings(v._storage, w._storage, operator.eq) is None
+    assert bridge.compare_strings(
+        v._storage,
+        w._storage,
+        operator.eq,
+    ) is DECLINED
     _conform(v, operator.eq, w)
     _conform(v, operator.ne, w)
     with pytest.raises(TypeError):

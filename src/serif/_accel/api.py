@@ -1,14 +1,9 @@
-"""Existing optional-accelerator call-throughs.
+"""Remaining legacy optional-accelerator call-throughs.
 
-This module is the private boundary between Serif's semantic operations and
-the current NumPy/PyArrow helpers. It preserves the existing per-call decline
-and fallback behavior; it is not the generic execution dispatcher planned for
-the later backend refactor.
+Vector operators dispatch from their semantic module. This boundary preserves
+the established per-call ``None`` decline behavior for selection, grouping,
+joins, and reductions until those semantic families migrate.
 """
-
-import operator
-
-from .._vector.dtype import Schema
 
 
 def _accel_filter(storage, mask):
@@ -127,89 +122,3 @@ def _accel_reduce(storage, op, **kwargs):
     if result is _accel.DECLINED:
         return False, None
     return True, result
-
-
-def _accel_binop(storage, rhs, op_func, result_dtype):
-    """Accelerated elementwise arithmetic; None = decline. The schema is
-    already resolved before this call — the accelerator computes values,
-    never semantics. Returns a Vector or None.
-
-    Ordering: TRUE DIVISION tries arrow first — its checked kernel skips
-    null lanes natively, so the numpy tier's neutralize-divisors copy
-    and zero-scan never run (identical results, fewer passes). Everything
-    else runs numpy first; int lanes its overflow bounds pass declined
-    (it must over-predict) get arrow's CHECKED kernels, which decline
-    only on actual overflow (serif/_accel/arrow.py)."""
-    from .. import _accel
-    fast = None
-    if op_func is operator.truediv:
-        from .arrow import div_floats
-        fast = div_floats(storage, rhs, op_func, result_dtype.kind)
-    if fast is None and _accel._USE_NUMPY:
-        from .ops import binop_storage
-        fast = binop_storage(storage, rhs, op_func, result_dtype.kind)
-    if fast is None:
-        from .arrow import binop_ints
-        fast = binop_ints(storage, rhs, op_func, result_dtype.kind)
-    if fast is None:
-        return None
-    from ..vector import Vector
-    result = Vector._from_storage(fast, result_dtype)
-    result._wild = True   # match the pure constructors' name-tracking flag
-    return result
-
-
-def _accel_compare(storage, rhs, op_func, nullable):
-    """Accelerated elementwise comparison; None = decline to the pure
-    path, whose behavior is the specification. Both backends get a try
-    (see serif/_accel/__init__.py): numpy for fixed-width lanes, then
-    arrow for the string content numpy cannot see."""
-    from .. import _accel
-    fast = None
-    if _accel._USE_NUMPY:
-        from .ops import compare_storage
-        fast = compare_storage(storage, rhs, op_func)
-    if fast is None:
-        from .arrow import compare_strings
-        fast = compare_strings(storage, rhs, op_func)
-    if fast is None:
-        return None
-    from ..vector import Vector
-    result = Vector._from_storage(fast, Schema(bool, nullable))
-    result._wild = True
-    return result
-
-
-def _accel_logical(storage, rhs, op_name):
-    """Numpy-accelerated Kleene &/|/^; None = decline to the pure zip,
-    whose behavior is the specification. Nullability is post-hoc like the
-    pure path's `any(v is None)` — the mask-None convention makes the two
-    agree exactly."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .ops import logical_storage
-    fast = logical_storage(storage, rhs, op_name)
-    if fast is None:
-        return None
-    from ..vector import Vector
-    result = Vector._from_storage(fast, Schema(bool, fast._mask is not None))
-    result._wild = True
-    return result
-
-
-def _accel_invert(storage, nullable):
-    """Numpy-accelerated Kleene NOT; None = decline. nullable is the
-    schema-carried flag — __invert__ preserves the input schema rather
-    than recomputing it post-hoc."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .ops import invert_storage
-    fast = invert_storage(storage)
-    if fast is None:
-        return None
-    from ..vector import Vector
-    result = Vector._from_storage(fast, Schema(bool, nullable))
-    result._wild = True
-    return result

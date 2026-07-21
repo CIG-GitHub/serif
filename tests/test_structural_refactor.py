@@ -27,6 +27,29 @@ def test_vector_public_module_is_canonical():
     assert Vector.__module__ == 'serif.vector'
 
 
+def test_vector_operator_backends_do_not_own_public_classes():
+    from serif._vector import operators as semantic_ops
+    from serif._vector._arrow import operators as arrow_ops
+    from serif._vector._numpy import operators as numpy_ops
+    from serif._vector._python import operators as python_ops
+
+    for module in (semantic_ops, arrow_ops, numpy_ops, python_ops):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_legacy_accel_api_no_longer_dispatches_vector_operators():
+    from serif._accel import api
+
+    for name in (
+        '_accel_binop',
+        '_accel_compare',
+        '_accel_invert',
+        '_accel_logical',
+    ):
+        assert not hasattr(api, name)
+
+
 # ---------------------------------------------------------------------------
 # Table.sort_by preserves column backends and subclasses
 # ---------------------------------------------------------------------------

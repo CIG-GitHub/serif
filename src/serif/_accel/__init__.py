@@ -29,14 +29,12 @@ proven by the pyarrow reader (serif/io/_arrow.py):
     layout (validity bitmap, offsets, UTF-8 buffer), so pyarrow wraps it
     with zero copies. The storage layout being arrow-shaped keeps paying.
 
-Modules: api (the current semantic-layer call-through boundary), mask (row
-gathering — filter, take, padded take), reduce
-(sum/mean/stdev/min/max), ops (elementwise), group (single-key
-bucketing for partitions), join (vectorized single-key join probe),
-arrow (the pyarrow backend: zero-copy wrap/unwrap between storage
-buffers and arrow arrays, the string-content kernels that run over
-them, and checked int64 arithmetic that detects overflow where the
-numpy tier's bounds pass must predict it).
+Modules: api (the remaining Table and reduction call-through boundary),
+mask (row gathering — filter, take, padded take), reduce
+(sum/mean/stdev/min/max), group (single-key bucketing for partitions),
+join (vectorized single-key join probe), and arrow (the remaining Table
+Arrow kernels). Vector operator implementations live beside their semantic
+module under serif/_vector/_python, _numpy, and _arrow.
 
 _USE_NUMPY here and _USE_ARROW in arrow.py are private switches for
 tests/benchmarks, not API.
@@ -44,34 +42,11 @@ tests/benchmarks, not API.
 
 from .._execution import DECLINED
 from .._execution import _load_numpy
+from .._vector._numpy.storage import NP_DTYPES
+from .._vector._numpy.storage import valid_bits
+from .._vector._numpy.storage import valid_values
 
 
 _np = _load_numpy()
 
 _USE_NUMPY = _np is not None
-
-# array.array typecode → numpy dtype name, for the two accelerated kinds.
-NP_DTYPES = {'q': 'int64', 'd': 'float64'}
-
-
-def valid_bits(mask, n):
-    """BitMask → np bool array, True where VALID (BitMask is LSB-first
-    packed with 1=valid — exactly np.unpackbits(bitorder='little'))."""
-    bits = _np.frombuffer(mask._buf, dtype=_np.uint8)
-    return _np.unpackbits(bits, count=n, bitorder='little').view(_np.bool_)
-
-
-def valid_values(storage):
-    """ArrayStorage → np view of its buffer, compressed to valid lanes.
-
-    Select, don't multiply: masked lanes are EXCLUDED by boolean compress,
-    never neutralized by arithmetic — inf·0 and nan·0 are nan, so any
-    multiply-by-mask scheme corrupts float columns. Returns None to decline
-    (unsupported typecode)."""
-    np_dtype = NP_DTYPES.get(storage._data.typecode)
-    if np_dtype is None:
-        return None
-    vals = _np.frombuffer(storage._data, dtype=np_dtype)  # zero-copy view
-    if storage._mask is not None:
-        vals = vals[valid_bits(storage._mask, len(vals))]
-    return vals
