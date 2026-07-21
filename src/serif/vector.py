@@ -339,10 +339,6 @@ class Vector():
     def _bitwise_kind_error(self, op_symbol):
         return _operators.bitwise_kind_error(self, op_symbol)
 
-    def _tablewise_bitwise(self, other, op_dunder):
-        """Per-column recursion for &, |, ^ using each column's dtype."""
-        return _operators.tablewise_bitwise(self, other, op_dunder)
-
     def __and__(self, other):
         return _operators.bit_and(self, other)
 

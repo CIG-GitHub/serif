@@ -1,9 +1,9 @@
-import operator
 import warnings
 from collections.abc import Iterable
 
 from .vector import Vector
 from ._table import columns as _columns
+from ._table import lifting as _lifting
 from ._vector import Schema
 from ._vector.transforms import _null_sort_flag
 from ._accel.api import _accel_take
@@ -20,30 +20,6 @@ from .errors import SerifValueError
 from .errors import SerifTypeError
 from .errors import SerifIndexError
 from .errors import SerifEmptyReductionError
-
-def _resolve_binary_name(left_name, right_name):
-    """
-    Apply left-biased naming rules for binary operations between columns.
-    
-    Rules:
-    - If right is None or matches left: keep left (even if left is None)
-    - If left is None but right is not: drop to None, return warning info
-    - If both named but different: drop to None, return warning info
-    
-    Returns:
-        tuple: (result_name, warning_case)
-               warning_case is None, "mismatch", or "right-named-left-unnamed"
-    """
-    if right_name is None or right_name == left_name:
-        # Keep left name (including if left is None)
-        return (left_name, None)
-    
-    if left_name is None:
-        # Case B: left unnamed, right named
-        return (None, "right-named-left-unnamed")
-    
-    # Case A: both named but different
-    return (None, "mismatch")
 
 
 class Row(Vector):
@@ -423,17 +399,7 @@ class Table(Vector):
         available on tables too.  The result must still be a structurally
         complete Table, with the source column names restored explicitly.
         """
-        result = []
-        for source in self._storage:
-            derived = fn(source)
-            if not isinstance(derived, Vector) or derived.ndims() != 1:
-                raise SerifTypeError(
-                    "Table column operation must produce one Vector per column"
-                )
-            derived._name = source._name
-            derived._wild = False
-            result.append(derived)
-        return Table(result, name=self._name)
+        return _lifting.map_columns(self, fn)
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
@@ -445,23 +411,23 @@ class Table(Vector):
 
     def cast(self, target_type):
         """Cast every column to *target_type*, preserving table structure."""
-        return self._map_columns(lambda col: col.cast(target_type))
+        return _lifting.cast(self, target_type)
 
     def to_object(self):
         """Return a table whose columns all use object dtype."""
-        return self._map_columns(lambda col: col.to_object())
+        return _lifting.to_object(self)
 
     def fillna(self, value):
         """Fill null cells in every column with *value*."""
-        return self._map_columns(lambda col: col.fillna(value))
+        return _lifting.fillna(self, value)
 
     def is_na(self):
         """Return a same-shaped bool Table marking null cells."""
-        return self._map_columns(lambda col: col.is_na())
+        return _lifting.is_na(self)
 
     def is_type(self, types):
         """Return a same-shaped bool Table applying ``isinstance`` per cell."""
-        return self._map_columns(lambda col: col.is_type(types))
+        return _lifting.is_type(self, types)
 
     def dropna(self):
         """Return rows having no null cells (complete-case filtering)."""
@@ -1034,24 +1000,31 @@ class Table(Vector):
         Table arithmetic broadcasts. Column names are preserved from the
         left side, matching _table_elementwise_operation.
         """
-        other = self._check_duplicate(other)
-        if isinstance(other, Table):
-            if len(self.cols()) != len(other.cols()):
-                raise SerifValueError(
-                    f"Column count mismatch: {len(self.cols())} != {len(other.cols())}"
-                )
-            result_cols = [
-                lcol._elementwise_compare(rcol, op)
-                for lcol, rcol in zip(self.cols(), other.cols(), strict=True)
-            ]
-        else:
-            result_cols = [
-                col._elementwise_compare(other, op) for col in self.cols()
-            ]
-        for orig_col, result_col in zip(self.cols(), result_cols):
-            result_col._name = orig_col._name
-            result_col._wild = False
-        return Table(result_cols)
+        return _lifting.compare(self, other, op)
+
+    def _lift_comparison_from(self, left, op):
+        """Lift ``left op self`` for a nested right-hand operand."""
+        return _lifting.compare_from(self, left, op)
+
+    def _lift_operation_from(
+        self,
+        left,
+        op_func,
+        op_name,
+        op_symbol,
+    ):
+        """Lift ``left op self`` for a nested right-hand operand."""
+        return _lifting.operation_from(
+            self,
+            left,
+            op_func,
+            op_name,
+            op_symbol,
+        )
+
+    def _lift_logical_from(self, left, kleene_func):
+        """Lift a logical operation from a scalar Vector into this Table."""
+        return _lifting.logical_from(self, left, kleene_func)
 
     def __rshift__(self, other):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
@@ -1077,114 +1050,100 @@ class Table(Vector):
         Rules:
         - Table + scalar: preserve all column names
         - Table + Table: left-biased naming with warnings for mismatches
-        """        
-        # Scalar operation: preserve all column names
-        if not isinstance(other, Table):
-            result_cols = tuple(
-                op_func(col, other) for col in self.cols()
-            )
-            # Restore original column names
-            for orig_col, result_col in zip(self.cols(), result_cols):
-                result_col._name = orig_col._name
-                result_col._wild = orig_col._wild
-            return Table(result_cols)
-        
-        # Table + Table: left-biased naming with warnings
-        if len(self.cols()) != len(other.cols()):
-            raise SerifValueError(f"Table width mismatch: {len(self.cols())} != {len(other.cols())}")
-        
-        result_cols = []
-        warnings_to_emit = []
-        
-        for idx, (left_col, right_col) in enumerate(zip(self.cols(), other.cols())):
-            result_col = op_func(left_col, right_col)
-            
-            # Apply naming rules
-            result_name, warning_case = _resolve_binary_name(left_col._name, right_col._name)
-            result_col._name = result_name
-            result_col._wild = False  # Result is tame (part of new table structure)
-            
-            # Track warnings
-            if warning_case is not None:
-                warnings_to_emit.append((idx, left_col._name, right_col._name, warning_case))
-            
-            result_cols.append(result_col)
-        
-        # Emit consolidated warning if needed
-        if warnings_to_emit:
-            lines = [f"Table operation ({op_symbol}) produced unusual column naming in {len(warnings_to_emit)} column(s):"]
-            for idx, left_name, right_name, case in warnings_to_emit:
-                if case == "mismatch":
-                    lines.append(f"  idx {idx}: left={repr(left_name)} right={repr(right_name)} → dropped")
-                else:  # right-named-left-unnamed
-                    lines.append(f"  idx {idx}: left=None right={repr(right_name)} → kept None (left-biased)")
-            warnings.warn("\n".join(lines), UserWarning, stacklevel=2)
-        
-        return Table(tuple(result_cols))
+        """
+        return _lifting.binary_operation(
+            self,
+            other,
+            op_func,
+            op_name,
+            op_symbol,
+        )
 
     def _table_reverse_scalar_operation(self, other, op_func):
         """Apply ``other op column`` while retaining the table schema."""
-        return self._map_columns(lambda col: op_func(other, col))
+        return _lifting.reverse_scalar_operation(self, other, op_func)
 
     def __neg__(self):
-        return self._map_columns(operator.neg)
+        return _lifting.neg(self)
 
     def __pos__(self):
-        return self._map_columns(operator.pos)
+        return _lifting.pos(self)
 
     def __abs__(self):
-        return self._map_columns(operator.abs)
+        return _lifting.abs(self)
 
     def __invert__(self):
-        return self._map_columns(operator.invert)
+        return _lifting.invert(self)
+
+    def _tablewise_bitwise(self, other, op_dunder):
+        """Lift a bitwise/logical operation through the Table columns."""
+        return _lifting.bitwise(self, other, op_dunder)
+
+    def __and__(self, other):
+        return _lifting.bit_and(self, other)
+
+    def __or__(self, other):
+        return _lifting.bit_or(self, other)
+
+    def __xor__(self, other):
+        return _lifting.bit_xor(self, other)
+
+    def __rand__(self, other):
+        return _lifting.rbit_and(self, other)
+
+    def __ror__(self, other):
+        return _lifting.rbit_or(self, other)
+
+    def __rxor__(self, other):
+        return _lifting.rbit_xor(self, other)
     
     def __add__(self, other):
-        return self._table_elementwise_operation(other, operator.add, '__add__', '+')
+        return _lifting.add(self, other)
     
     def __sub__(self, other):
-        return self._table_elementwise_operation(other, operator.sub, '__sub__', '-')
+        return _lifting.sub(self, other)
     
     def __mul__(self, other):
-        return self._table_elementwise_operation(other, operator.mul, '__mul__', '*')
+        return _lifting.mul(self, other)
     
     def __truediv__(self, other):
-        return self._table_elementwise_operation(other, operator.truediv, '__truediv__', '/')
+        return _lifting.truediv(self, other)
     
     def __floordiv__(self, other):
-        return self._table_elementwise_operation(other, operator.floordiv, '__floordiv__', '//')
+        return _lifting.floordiv(self, other)
     
     def __mod__(self, other):
-        return self._table_elementwise_operation(other, operator.mod, '__mod__', '%')
+        return _lifting.mod(self, other)
     
     def __pow__(self, other):
-        return self._table_elementwise_operation(other, operator.pow, '__pow__', '**')
+        return _lifting.pow(self, other)
 
     def __radd__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.add)
+        return _lifting.radd(self, other)
 
     def __rmul__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.mul)
+        return _lifting.rmul(self, other)
 
     def __rsub__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.sub)
+        return _lifting.rsub(self, other)
 
     def __rtruediv__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.truediv)
+        return _lifting.rtruediv(self, other)
 
     def __rfloordiv__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.floordiv)
+        return _lifting.rfloordiv(self, other)
 
     def __rmod__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.mod)
+        return _lifting.rmod(self, other)
 
     def __rpow__(self, other):
-        return self._table_reverse_scalar_operation(other, operator.pow)
+        return _lifting.rpow(self, other)
 
     def bit_lshift(self, other):
-        return self._map_columns(lambda col: col.bit_lshift(other))
+        return _lifting.bit_lshift(self, other)
 
     def bit_rshift(self, other):
-        return self._map_columns(lambda col: col.bit_rshift(other))
+        return _lifting.bit_rshift(self, other)
 
     @staticmethod
     def _validate_key_tuple_hashable(key_tuple, key_cols, row_idx):
