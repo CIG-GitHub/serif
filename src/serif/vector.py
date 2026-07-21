@@ -339,10 +339,6 @@ class Vector():
     def _bitwise_kind_error(self, op_symbol):
         return _operators.bitwise_kind_error(self, op_symbol)
 
-    def _tablewise_bitwise(self, other, op_dunder):
-        """Per-column recursion for &, |, ^ using each column's dtype."""
-        return _operators.tablewise_bitwise(self, other, op_dunder)
-
     def __and__(self, other):
         return _operators.bit_and(self, other)
 
@@ -671,28 +667,8 @@ class Vector():
     def __rshift__(self, other):
         """ The >> operator behavior has been overridden to add the column(s) of other to self
         """
-        if self._dtype is not None and self._dtype.kind in (bool, int) and isinstance(other, int):
-            warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
-
-        if type(other).__name__ == 'Table':
-            return Vector((self,) + other.cols())
-        if isinstance(other, Vector):
-            return Vector((self,) + (other,))
-        if isinstance(other, dict):
-            cols = [self]
-            for k, v in other.items():
-                if not isinstance(v, Vector):
-                    v = Vector(v)
-                cols.append(v.alias(k) if v._name != k else v)
-            return Vector(cols)
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return Vector([self, Vector(tuple(x for x in other))])
-        elif len(self) == 0:
-            # `not self` would trip Vector.__bool__'s ambiguity guard and
-            # mask the intended error below.
-            return Vector((other,),
-                dtype=self._dtype)
-        raise SerifTypeError("Cannot add a column of constant values. Try using Vector.filled(value, length).")
+        from ._table import columns as _table_columns
+        return _table_columns.compose_vector(self, other)
 
     def __rlshift__(self, other):
         """ The << operator behavior has been overridden to attempt to concatenate (append)

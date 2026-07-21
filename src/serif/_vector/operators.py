@@ -126,19 +126,8 @@ def elementwise_compare(vector, other, op):
     other = vector._check_duplicate(other)
     Vector = _vector_class()
 
-    # Table on the left: lift recursively over columns.
-    if vector.ndims() == 2:
-        return vector.copy(tuple(
-            col._elementwise_compare(other, op)
-            for col in vector.cols()
-        ))
-
-    # Table on the right: lift recursively over its columns.
-    if isinstance(other, Vector) and other.ndims() == 2:
-        return other.copy(tuple(
-            vector._elementwise_compare(col, op)
-            for col in other.cols()
-        ))
+    if isinstance(other, Vector) and other.ndims() > 1:
+        return other._lift_comparison_from(vector, op)
 
     # Element-wise: unknown in, unknown out (docs/null-semantics.md).
     if isinstance(other, Vector):
@@ -230,16 +219,8 @@ def logical_elementwise(vector, other, kleene_func):
     other = vector._check_duplicate(other)
     Vector = _vector_class()
 
-    if vector.ndims() == 2:
-        return vector.copy(tuple(
-            col._logical_elementwise(other, kleene_func)
-            for col in vector.cols()
-        ))
-    if isinstance(other, Vector) and other.ndims() == 2:
-        return other.copy(tuple(
-            vector._logical_elementwise(col, kleene_func)
-            for col in other.cols()
-        ))
+    if isinstance(other, Vector) and other.ndims() > 1:
+        return other._lift_logical_from(vector, kleene_func)
 
     op_name = _KLEENE_OP_NAMES.get(kleene_func)
     if isinstance(other, Iterable) and not isinstance(
@@ -281,20 +262,7 @@ def bitwise_kind_error(vector, op_symbol):
     )
 
 
-def tablewise_bitwise(vector, other, op_dunder):
-    """Lift &, |, or ^ over columns using each column's dtype dispatch."""
-    other = vector._check_duplicate(other)
-    result_cols = [getattr(col, op_dunder)(other) for col in vector.cols()]
-    for original, result in zip(vector.cols(), result_cols):
-        result._name = original._name
-        result._wild = False
-    from ..table import Table
-    return Table(result_cols)
-
-
 def bit_and(vector, other):
-    if vector.ndims() == 2:
-        return vector._tablewise_bitwise(other, '__and__')
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
         return vector._elementwise_operation(
@@ -309,8 +277,6 @@ def bit_and(vector, other):
 
 
 def bit_or(vector, other):
-    if vector.ndims() == 2:
-        return vector._tablewise_bitwise(other, '__or__')
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
         return vector._elementwise_operation(
@@ -325,8 +291,6 @@ def bit_or(vector, other):
 
 
 def bit_xor(vector, other):
-    if vector.ndims() == 2:
-        return vector._tablewise_bitwise(other, '__xor__')
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
         return vector._elementwise_operation(
@@ -345,17 +309,13 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
     other = vector._check_duplicate(other)
     Vector = _vector_class()
 
-    if vector.ndims() == 2:
-        return vector.copy(tuple(
-            col._elementwise_operation(other, op_func, op_name, op_symbol)
-            for col in vector.cols()
-        ))
-
-    if isinstance(other, Vector) and other.ndims() == 2:
-        return other.copy(tuple(
-            vector._elementwise_operation(col, op_func, op_name, op_symbol)
-            for col in other.cols()
-        ))
+    if isinstance(other, Vector) and other.ndims() > 1:
+        return other._lift_operation_from(
+            vector,
+            op_func,
+            op_name,
+            op_symbol,
+        )
 
     if isinstance(other, Vector):
         if len(vector) != len(other):

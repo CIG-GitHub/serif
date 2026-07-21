@@ -2012,7 +2012,7 @@ class _ParquetSource:
 
 
 from ..table import Table as _Table
-from ..table import _resolve_column_key as _resolve_table_column
+from .._table.columns import resolve_column_key as _resolve_table_column
 
 
 class _ParquetTable(_Table):

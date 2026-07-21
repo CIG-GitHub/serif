@@ -170,18 +170,152 @@ selection, mutation, row views, naming coordination, sorting, row-wise
 Extract transpose, joins, aggregation, and windowing. Keep their orchestration
 separate from the Vector kernels they use.
 
-### PR 4: Introduce execution dispatch
+### PR 4: Introduce backend directories and execution dispatch
 
-Implement the backend contract above and migrate kernel families one at a
-time: reductions, operators, mask/take, grouping and joining, then Arrow string
-kernels.
+Keep `serif/vector.py` as the concrete public class: it owns identity, state,
+invariants, and thin public method shells. It must not become an abstract type
+or absorb backend policy.
+
+Operation-facing modules such as `_vector/operators.py` and
+`_vector/reductions.py` own semantic validation, dtype and null rules,
+exceptions, deterministic backend selection, and public-result wrapping.
+Physical implementations live below them, organized by execution mechanism:
+
+```text
+_vector/
+    operators.py
+    reductions.py
+    selection.py
+
+    _python/
+        operators.py
+        reductions.py
+        selection.py
+
+    _numpy/
+        operators.py
+        reductions.py
+        selection.py
+
+    _arrow/
+        operators.py
+        reductions.py
+        selection.py
+```
+
+Only create backend files for operation families that actually have a useful
+physical implementation. Construction, mutation, dtype rules, and other
+semantic-only modules do not need empty backend mirrors.
+
+The call shape is:
+
+```text
+public Vector method
+        -> semantic operation module
+        -> optional Arrow or NumPy physical kernel
+        -> mandatory pure-Python implementation
+        -> canonical Serif result wrapping
+```
+
+`_python` is the semantic authority and guaranteed final path, not an equal
+peer named `default`. Arrow and NumPy receive already-validated inputs and
+return Serif storage, canonical Python scalars, or `DECLINED`; they never
+construct `Vector` or `Table`. A small shared execution layer may own the
+unique `DECLINED` identity and optional-library availability, but dispatch
+policy remains explicit beside each semantic operation rather than hidden in
+a registry or service-object framework.
+
+Migrate one kernel family at a time: operators, reductions, mask/take, then
+grouping, joining, and Arrow string kernels. If the Vector and Table physical
+migrations cannot remain reviewable together, split this phase into sequential
+Vector-execution and Table-execution pull requests rather than mixing either
+one into PR 2 or PR 3.
 
 ### PR 5: Reorganize physical foundations and clean up
 
-Split storage implementations where useful, decide whether dtype rules merit a
-package, remove temporary compatibility paths, and enforce the final import
-direction. This PR is optional in scope: file splits that no longer provide a
-clear benefit should not happen merely because they appeared in an early tree.
+Finish any Table execution migration split out of PR 4, remove the superseded
+`_accel` layout after all callers have moved, and enforce the final import
+direction. Split storage implementations or make dtype a package only where a
+concrete maintenance benefit remains. This cleanup is optional in scope: file
+splits should not happen merely because they appeared in an early tree.
+
+## PR 2 ordered commit plan
+
+PR 2 decomposes Table lifting and row-aware structure without touching
+transpose, joins, aggregation, windowing, or backend dispatch. Table remains a
+Vector: Table modules coordinate the outer column structure and invoke the
+ordinary Vector operations on each column; they do not implement a second
+scalar algebra.
+
+### Commit 1: Extract column traversal and naming coordination
+
+- Add the `_table` package and `_table/columns.py`.
+- Establish one explicit internal column traversal that never relies on public
+  Table row iteration.
+- Extract column lookup, sanitized/indexed attribute resolution, column maps,
+  column metadata, `to_dict()`, rename/drop coordination, and column
+  composition.
+- Leave public Table methods as thin delegates and preserve warnings, frozen
+  ownership, names, and lookup errors.
+
+### Commit 2: Extract recursive lifting
+
+- Add `_table/lifting.py`.
+- Extract pointwise transforms, comparisons, arithmetic, reverse arithmetic,
+  unary operations, logical/bitwise operations, and name coordination.
+- The module may pair, broadcast, traverse, and rebuild columns, but actual
+  scalar operations must run through Vector semantics.
+- Preserve Table-to-Table width checks, left-biased naming, consolidated
+  warnings, result types, and reverse-operation direction.
+- Leave reductions on the inherited Vector path; do not create alternate Table
+  reduction implementations.
+
+### Commit 3: Extract row views
+
+- Add `_table/row.py`.
+- Move the `Row` view and Table row iteration coordination out of `table.py`.
+- Preserve row reuse, indexed and attribute lookup, repr, shape, read-only
+  behavior, and public Table iteration semantics.
+
+### Commit 4: Extract Table selection
+
+- Add `_table/selection.py`.
+- Move string and multi-column lookup, row and cell reads, slices, masks,
+  integer takes, and two-dimensional selection planning.
+- Preserve exact selector precedence, exceptions, warnings, laziness, names,
+  and result types.
+
+### Commit 5: Extract Table mutation
+
+- Add `_table/mutation.py`.
+- Move column replacement, owner-addressed assignment planning and validation,
+  write application, and the batch scope.
+- Preserve validate-before-write atomicity, swap-on-write snapshots, frozen
+  ownership, batch thaw/refreeze behavior, and partial writes on exceptions
+  inside a batch.
+
+### Commit 6: Extract row-aware transforms and composition
+
+- Add `_table/rows.py`.
+- Move row-wise `dropna()`, stable row-wise `unique()`, and row concatenation.
+- Express each result as one shared row selection or permutation applied to
+  every column.
+
+### Commit 7: Extract Table sorting
+
+- Add `_table/sort.py`.
+- Move `sort_by()` planning and coordinated column permutation.
+- Preserve stable ordering, multi-key and mixed-direction rules, null
+  placement, categorical ordering, column subclasses, schemas, and storage
+  preservation.
+
+### Commit 8: Extract deferred-mask coordination
+
+- Add `_table/deferred.py`.
+- Move `MaskedTable`, snapshot ownership, lazy column gathering, mask
+  composition, name freshness, and materialization coordination.
+- Preserve laziness outside `batch()`, eager behavior inside `batch()`, and all
+  snapshot/value-semantics guarantees.
 
 ## PR 1 non-goals
 
@@ -212,7 +346,7 @@ The user owns staging, commits, branches, pushes, and pull requests.
 - Add this plan.
 - Make no runtime changes.
 
-Status: drafted; awaiting user inspection and commit.
+Status: completed.
 
 ### Commit 2: Isolate the existing accelerator entry points
 
@@ -320,4 +454,8 @@ At the beginning of a later working session:
 6. Implement one approved commit item, then stop for user inspection, tests,
    and Git work.
 
-Current position: PR 1, Commit 1 drafted. No runtime refactor has started.
+Current position: PR 1 is complete. `Vector` lives in `serif/vector.py`,
+`_vector/base.py` is gone, and the user reported the extracted commits green,
+committed, and pushed. PR 2's eight-commit plan is approved, but no PR 2 runtime
+work has started. The next implementation item is PR 2, Commit 1: extract
+column traversal and naming coordination into `_table/columns.py`.
