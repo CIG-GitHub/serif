@@ -370,6 +370,19 @@ def test_join_key_wrong_length_right():
 		left.inner_join(right, left_on=left.id, right_on=wrong_length_key)
 
 
+def test_join_unhashable_object_key_keeps_context():
+	left_key = Vector([[1]], name='key').to_object()
+	right_key = Vector([[1]], name='key').to_object()
+	left = Table([left_key])
+	right = Table([right_key])
+
+	with pytest.raises(
+		SerifTypeError,
+		match="Join key value in 'key' at row 0 is not hashable: list",
+	):
+		left.inner_join(right, 'key', 'key')
+
+
 def test_join_multi_key_computed():
 	"""Test multi-key join with mix of columns and computed values"""
 	left = Table({

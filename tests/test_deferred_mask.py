@@ -24,7 +24,8 @@ import pytest
 from serif import Table, Vector
 from serif.table import MaskedTable
 from serif.errors import SerifKeyError, SerifTypeError, SerifValueError
-import serif._accel as accel
+from serif._vector import selection as vector_selection
+from serif._vector._numpy import selection as numpy_selection
 
 
 # ---------------------------------------------------------------------------
@@ -77,12 +78,12 @@ def tier(request):
     """Run each test on the ambient tier (numpy when installed) AND with
     the accelerator forced off — deferral is independent of the tier."""
     if request.param == 'pure':
-        saved = accel._USE_NUMPY
-        accel._USE_NUMPY = False
+        saved = numpy_selection._USE_NUMPY
+        numpy_selection._USE_NUMPY = False
         try:
             yield 'pure'
         finally:
-            accel._USE_NUMPY = saved
+            numpy_selection._USE_NUMPY = saved
     else:
         yield 'ambient'
 
@@ -602,11 +603,9 @@ def test_rename_on_deferred_table_is_owner_addressed(tier):
 
 def test_popcount_conformance():
     pytest.importorskip("numpy")
-    from serif._accel.api import _accel_popcount
     for values in ([True, False, True], [True, None, False, True],
                    [None, None], [], [False, False]):
         mask = Vector(values, dtype=None) if values else Vector([True])[0:0]
-        fast = _accel_popcount(mask._storage)
+        fast = vector_selection.popcount(mask._storage)
         pure = sum(1 for v in mask._storage if v)
-        if fast is not None:
-            assert fast == pure
+        assert fast == pure

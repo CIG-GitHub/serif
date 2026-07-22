@@ -1,6 +1,6 @@
 """
-Conformance tests for the OPTIONAL arrow-accelerated string-key join
-probe (serif._accel.arrow.join_probe_strings).
+Conformance tests for the OPTIONAL Arrow string-key join probes under
+serif._table._arrow.joins.
 
 The guarantee under test — accelerators widen transport, never
 semantics: every string-keyed join must return IDENTICAL results with
@@ -18,17 +18,18 @@ the regression guard.
 
 Like the string bucketing, the probe is a two-backend composition
 (arrow encodes, numpy probes), so this suite skips unless BOTH are
-installed; _pure() toggles only the arrow switch.
+installed; _pure() toggles the Arrow join switch.
 """
 
 import pytest
 
-np = pytest.importorskip("numpy")
-pa = pytest.importorskip("pyarrow")
+pytest.importorskip("numpy")
+pytest.importorskip("pyarrow")
 
 from serif import Table, Vector
+from serif._execution import DECLINED
+from serif._table._arrow import joins as join_mod
 from serif.errors import SerifValueError
-from serif._accel import arrow as bridge
 
 
 # ---------------------------------------------------------------------------
@@ -36,12 +37,12 @@ from serif._accel import arrow as bridge
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = bridge._USE_ARROW
-    bridge._USE_ARROW = False
+    saved = join_mod._USE_ARROW
+    join_mod._USE_ARROW = False
     try:
         return fn()
     finally:
-        bridge._USE_ARROW = saved
+        join_mod._USE_ARROW = saved
 
 
 def _assert_identical(pure_v, fast_v):
@@ -179,9 +180,9 @@ def test_nullable_keys_decline_and_conform():
     # the pure matcher, None-matches-None included.
     left = Table({'k': ['a', None, 'b'], 'x': [1, 2, 3]})
     right = Table({'k': [None, 'b'], 'y': [10, 20]})
-    assert bridge.join_probe_strings(
+    assert join_mod.probe_strings(
         left.cols(0)._storage, right.cols(0)._storage,
-        False, False, True, False) is None
+        False, False, True, False) is DECLINED
 
     def run():
         return left.left_join(right, 'k', 'k')
@@ -193,9 +194,25 @@ def test_nullable_keys_decline_and_conform():
 def test_mixed_key_kinds_decline():
     left = Table({'k': ['a', 'b'], 'x': [1, 2]})
     right = Table({'k': [1, 2], 'y': [10, 20]})
-    assert bridge.join_probe_strings(
+    assert join_mod.probe_strings(
         left.cols(0)._storage, right.cols(0)._storage,
-        False, False, True, False) is None
+        False, False, True, False) is DECLINED
+
+
+def test_string_probe_returns_python_outcome():
+    left = Table({'key': ['b', 'a']})
+    right = Table({'key': ['a', 'b']})
+
+    result = join_mod.probe_strings(
+        left.key._storage,
+        right.key._storage,
+        False,
+        True,
+        False,
+        False,
+    )
+    assert result == ('ok', [0, 1], [1, 0])
+    assert all(type(index) is int for take in result[1:] for index in take)
 
 
 # ---------------------------------------------------------------------------
@@ -204,16 +221,16 @@ def test_mixed_key_kinds_decline():
 
 def test_string_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
     calls = []
-    orig = bridge.join_probe_strings
+    orig = join_mod.probe_strings
 
     def spy(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
-    monkeypatch.setattr(bridge, 'join_probe_strings', spy)
-    monkeypatch.setattr(bridge, 'join_probe_strings_hash',
-                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(join_mod, 'probe_strings', spy)
+    monkeypatch.setattr(join_mod, 'probe_strings_hash',
+                        lambda *args, **kwargs: DECLINED)
 
     left = Table({'k': ['a', 'b', 'c'], 'x': [1.0, 2.0, 3.0]})
     right = Table({'k': ['b', 'c'], 'y': ['u', 'v']})

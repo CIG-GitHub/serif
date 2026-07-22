@@ -1,7 +1,7 @@
 """Row-aware Table transforms and composition."""
 
-from .._accel.api import _take
 from ..errors import SerifValueError
+from .._vector.selection import take_storage
 from ..vector import Vector
 from .columns import iter_columns
 
@@ -48,7 +48,7 @@ def unique(table):
         keep.append(row_index)
     return Table(
         tuple(
-            column._clone(_take(column._storage, keep))
+            column._clone(take_storage(column._storage, keep))
             for column in columns
         ),
         name=table._name,

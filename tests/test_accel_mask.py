@@ -20,7 +20,8 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from serif import Table, Vector
-import serif._accel as accel
+from serif._execution import DECLINED
+from serif._vector._numpy import selection as mask_mod
 from serif._vector.storage import ArrayStorage, BoolStorage
 
 
@@ -29,12 +30,12 @@ from serif._vector.storage import ArrayStorage, BoolStorage
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved = mask_mod._USE_NUMPY
+    mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        mask_mod._USE_NUMPY = saved
 
 
 def _assert_identical(pure_v, fast_v):
@@ -150,13 +151,12 @@ def test_table_mask_conforms():
 # ---------------------------------------------------------------------------
 
 def test_fast_path_engages_for_supported_storage(monkeypatch):
-    from serif._accel import mask as mask_mod
     calls = []
     orig = mask_mod.filter_storage
 
     def spy(storage, mask):
         result = orig(storage, mask)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(mask_mod, 'filter_storage', spy)

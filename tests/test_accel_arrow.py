@@ -1,8 +1,7 @@
 """
-Tests for the OPTIONAL pyarrow bridge (serif._accel.arrow).
+Tests for the OPTIONAL Vector pyarrow storage bridge.
 
-Commit-1 plumbing only: nothing user-facing routes through the bridge
-yet, so these tests exercise it at the storage level — round-trip
+These tests exercise the physical storage boundary directly — round-trip
 identity (wrap a StringStorage, read identical values back through
 arrow; unwrap an arrow bool array, read identical values back through
 BoolStorage), zero-copy-ness (the arrow array's buffers ARE serif's
@@ -16,7 +15,8 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 import pyarrow.compute as pc
 
-from serif._accel import arrow as bridge
+from serif._execution import DECLINED
+from serif._vector._arrow import storage as bridge
 from serif._vector.nullable import BitMask
 from serif._vector.storage import BoolStorage, StringStorage
 
@@ -62,17 +62,17 @@ def test_string_array_validity_is_the_bitmask_buffer():
 
 
 def test_string_array_declines_empty():
-    assert bridge.string_array(StringStorage.from_iterable([])) is None
+    assert bridge.string_array(StringStorage.from_iterable([])) is DECLINED
 
 
 def test_string_array_declines_non_string_storage():
-    assert bridge.string_array(BoolStorage.from_iterable([True])) is None
+    assert bridge.string_array(BoolStorage.from_iterable([True])) is DECLINED
 
 
 def test_string_array_declines_when_switched_off(monkeypatch):
     s = StringStorage.from_iterable(['a'])
     monkeypatch.setattr(bridge, '_USE_ARROW', False)
-    assert bridge.string_array(s) is None
+    assert bridge.string_array(s) is DECLINED
 
 
 def test_string_array_declines_offsets_past_int32(monkeypatch):
@@ -83,9 +83,9 @@ def test_string_array_declines_offsets_past_int32(monkeypatch):
     # about its buffer), so lower the ceiling instead and probe both sides.
     monkeypatch.setattr(bridge, '_I32_MAX', 3)
     over = StringStorage.from_iterable(['ab', 'cd'])   # last offset 4 > 3
-    assert bridge.string_array(over) is None
+    assert bridge.string_array(over) is DECLINED
     at = StringStorage.from_iterable(['ab', 'c'])      # last offset 3 == 3
-    assert bridge.string_array(at) is not None
+    assert bridge.string_array(at) is not DECLINED
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def test_bool_storage_empty():
 def test_bool_storage_declines_sliced_array():
     arr = pa.array([True, False, None, True]).slice(1)
     assert arr.offset != 0          # the premise of the decline
-    assert bridge.bool_storage(arr) is None
+    assert bridge.bool_storage(arr) is DECLINED
 
 
 # ---------------------------------------------------------------------------

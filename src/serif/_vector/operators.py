@@ -1,19 +1,15 @@
-"""Vector pointwise operator semantics."""
+"""Vector pointwise operator semantics and deterministic dispatch."""
 
 import operator
 import warnings
 from collections.abc import Iterable
 
-from .._accel.api import _accel_binop
-from .._accel.api import _accel_compare
-from .._accel.api import _accel_invert
-from .._accel.api import _accel_logical
+from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from ._python import operators as _python_ops
 from .dtype import Schema
 from .dtype import infer_dtype
-from .storage import ArrayStorage
-from .storage import TupleStorage
 
 
 def _vector_class():
@@ -75,13 +71,17 @@ def _kleene_xor(x, y):
     return bool(x) != bool(y)
 
 
-# Accelerator dispatch: only these functions have a vectorized twin. Anything
-# else passed to logical_elementwise declines to the pure zip.
 _KLEENE_OP_NAMES = {
     _kleene_and: 'and',
     _kleene_or: 'or',
     _kleene_xor: 'xor',
 }
+
+_FORWARD_DIVISION_OPS = (
+    operator.truediv,
+    operator.floordiv,
+    operator.mod,
+)
 
 
 def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
@@ -122,6 +122,91 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
     return Schema(result_kind, lhs_schema.nullable)
 
 
+def _wrap_storage(storage, schema):
+    """Wrap backend storage with the same metadata as the pure constructor."""
+    Vector = _vector_class()
+    result = Vector._from_storage(storage, schema)
+    result._wild = True
+    return result
+
+
+def _dispatch_compare(storage, rhs, op_func):
+    """Try fixed-width comparison, then string comparison."""
+    from ._numpy import operators as numpy_ops
+
+    result = numpy_ops.compare_storage(storage, rhs, op_func)
+    if result is not DECLINED:
+        return result
+
+    from ._arrow import operators as arrow_ops
+
+    return arrow_ops.compare_strings(storage, rhs, op_func)
+
+
+def _dispatch_logical(storage, rhs, op_name):
+    from ._numpy import operators as numpy_ops
+
+    return numpy_ops.logical_storage(storage, rhs, op_name)
+
+
+def _dispatch_invert(storage):
+    from ._numpy import operators as numpy_ops
+
+    return numpy_ops.invert_storage(storage)
+
+
+def _dispatch_binary(storage, rhs, op_func, result_kind):
+    """Run operator backends in their explicit, stable priority order."""
+    if op_func is operator.truediv:
+        from ._arrow import operators as arrow_ops
+
+        result = arrow_ops.div_floats(
+            storage,
+            rhs,
+            op_func,
+            result_kind,
+        )
+        if result is not DECLINED:
+            return result
+
+    from ._numpy import operators as numpy_ops
+
+    result = numpy_ops.binop_storage(
+        storage,
+        rhs,
+        op_func,
+        result_kind,
+    )
+    if result is not DECLINED:
+        return result
+
+    from ._arrow import operators as arrow_ops
+
+    return arrow_ops.binop_ints(storage, rhs, op_func, result_kind)
+
+
+def _validate_forward_division(left, right, op_func):
+    """Raise Python's division error before an optional backend runs."""
+    if op_func not in _FORWARD_DIVISION_OPS:
+        return
+    Vector = _vector_class()
+    if isinstance(right, Vector):
+        pairs = zip(left, right, strict=True)
+        for left_value, right_value in pairs:
+            if (
+                left_value is not None
+                and right_value is not None
+                and right_value == 0
+            ):
+                op_func(left_value, right_value)
+        return
+    if right is None or right != 0:
+        return
+    for left_value in left:
+        if left_value is not None:
+            op_func(left_value, right)
+
+
 def elementwise_compare(vector, other, op):
     other = vector._check_duplicate(other)
     Vector = _vector_class()
@@ -140,14 +225,11 @@ def elementwise_compare(vector, other, op):
             (vector._dtype.nullable if vector._dtype is not None else True)
             or (other_schema.nullable if other_schema is not None else True)
         )
-        fast = _accel_compare(vector._storage, other._storage, op, nullable)
-        if fast is not None:
-            return fast
+        fast = _dispatch_compare(vector._storage, other._storage, op)
+        if fast is not DECLINED:
+            return _wrap_storage(fast, Schema(bool, nullable))
         return Vector._from_iterable_known_dtype(
-            (
-                None if (x is None or y is None) else bool(op(x, y))
-                for x, y in zip(vector, other, strict=True)
-            ),
+            _python_ops.compare_vector(vector, other, op),
             Schema(bool, nullable),
         )
 
@@ -159,10 +241,7 @@ def elementwise_compare(vector, other, op):
             raise SerifValueError(
                 f"Length mismatch: {len(vector)} != {len(other)}"
             )
-        values = [
-            None if (x is None or y is None) else bool(op(x, y))
-            for x, y in zip(vector, other, strict=True)
-        ]
+        values = _python_ops.compare_vector(vector, other, op)
         return Vector._from_iterable_known_dtype(
             values,
             Schema(bool, any(value is None for value in values)),
@@ -178,14 +257,11 @@ def elementwise_compare(vector, other, op):
         (vector._dtype.nullable if vector._dtype is not None else True)
         or other is None
     )
-    fast = _accel_compare(vector._storage, other, op, nullable)
-    if fast is not None:
-        return fast
+    fast = _dispatch_compare(vector._storage, other, op)
+    if fast is not DECLINED:
+        return _wrap_storage(fast, Schema(bool, nullable))
     return Vector._from_iterable_known_dtype(
-        (
-            None if (x is None or other is None) else bool(op(x, other))
-            for x in vector
-        ),
+        _python_ops.compare_scalar(vector._storage, other, op),
         Schema(bool, nullable),
     )
 
@@ -232,19 +308,30 @@ def logical_elementwise(vector, other, kleene_func):
                 f"Length mismatch: {len(vector)} != {len(other)}"
             )
         if op_name is not None and isinstance(other, Vector):
-            fast = _accel_logical(vector._storage, other._storage, op_name)
-            if fast is not None:
-                return fast
-        values = [
-            kleene_func(x, y)
-            for x, y in zip(vector, other, strict=True)
-        ]
+            fast = _dispatch_logical(
+                vector._storage,
+                other._storage,
+                op_name,
+            )
+            if fast is not DECLINED:
+                return _wrap_storage(
+                    fast,
+                    Schema(bool, fast._mask is not None),
+                )
+        values = _python_ops.logical_vector(vector, other, kleene_func)
     else:
         if op_name is not None and (other is None or type(other) is bool):
-            fast = _accel_logical(vector._storage, other, op_name)
-            if fast is not None:
-                return fast
-        values = [kleene_func(x, other) for x in vector]
+            fast = _dispatch_logical(vector._storage, other, op_name)
+            if fast is not DECLINED:
+                return _wrap_storage(
+                    fast,
+                    Schema(bool, fast._mask is not None),
+                )
+        values = _python_ops.logical_scalar(
+            vector._storage,
+            other,
+            kleene_func,
+        )
     return Vector._from_iterable_known_dtype(
         values,
         Schema(bool, any(value is None for value in values)),
@@ -324,18 +411,20 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
             )
         result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
         if result_dtype is not None:
-            fast = _accel_binop(
+            _validate_forward_division(vector, other, op_func)
+            fast = _dispatch_binary(
                 vector._storage,
                 other._storage,
                 op_func,
-                result_dtype,
+                result_dtype.kind,
             )
-            if fast is not None:
-                return fast
+            if fast is not DECLINED:
+                return _wrap_storage(fast, result_dtype)
         try:
-            result_values = tuple(
-                None if (x is None or y is None) else op_func(x, y)
-                for x, y in zip(vector, other, strict=True)
+            result_values = _python_ops.binary_vector(
+                vector,
+                other,
+                op_func,
             )
         except TypeError:
             lhs = (
@@ -366,9 +455,10 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
                 f"Length mismatch: {len(vector)} != {len(other)}"
             )
         try:
-            result_values = tuple(
-                None if (x is None or y is None) else op_func(x, y)
-                for x, y in zip(vector, other, strict=True)
+            result_values = _python_ops.binary_vector(
+                vector,
+                other,
+                op_func,
             )
         except TypeError:
             lhs = (
@@ -385,18 +475,20 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
 
     result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
     if result_dtype is not None:
-        fast = _accel_binop(
+        _validate_forward_division(vector, other, op_func)
+        fast = _dispatch_binary(
             vector._storage,
             other,
             op_func,
-            result_dtype,
+            result_dtype.kind,
         )
-        if fast is not None:
-            return fast
+        if fast is not DECLINED:
+            return _wrap_storage(fast, result_dtype)
     try:
-        result_values = tuple(
-            None if x is None else op_func(x, other)
-            for x in vector._storage
+        result_values = _python_ops.binary_scalar(
+            vector._storage,
+            other,
+            op_func,
         )
         if result_dtype is None:
             result_dtype = infer_dtype(result_values)
@@ -415,21 +507,9 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
 
 def unary_operation(vector, op_func, op_name):
     """Apply a unary operation to every non-null element."""
-    storage = vector._storage
-    if isinstance(storage, ArrayStorage):
-        from array import array as _array
-        typecode = storage._data.typecode
-        new_data = _array(
-            typecode,
-            (op_func(storage._data[i]) for i in range(len(storage._data))),
-        )
-        new_storage = ArrayStorage(new_data, storage._mask)
-    else:
-        new_storage = TupleStorage(tuple(
-            None if value is None else op_func(value)
-            for value in storage
-        ))
-    return vector._clone(new_storage)
+    return vector._clone(
+        _python_ops.unary_storage(vector._storage, op_func)
+    )
 
 
 def add(vector, other):
@@ -459,12 +539,15 @@ def abs(vector):
 def invert(vector):
     # Boolean inversion is Kleene logical NOT: NOT unknown is unknown.
     if vector._dtype and vector._dtype.kind is bool:
-        fast = _accel_invert(vector._storage, vector._dtype.nullable)
-        if fast is not None:
-            return fast
+        fast = _dispatch_invert(vector._storage)
+        if fast is not DECLINED:
+            return _wrap_storage(
+                fast,
+                Schema(bool, vector._dtype.nullable),
+            )
         Vector = _vector_class()
         return Vector._from_iterable_known_dtype(
-            (None if value is None else (not value) for value in vector),
+            _python_ops.invert_bool(vector),
             Schema(bool, vector._dtype.nullable),
         )
     return vector._unary_operation(operator.invert, '__invert__')

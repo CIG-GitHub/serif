@@ -1,7 +1,7 @@
 """
-Conformance tests for the OPTIONAL numpy accelerators behind joins and
-partitions: group.group_indices (single-key bucketing) and
-mask.take_pad_storage (gather with -1 → null pad lanes).
+Conformance tests for the OPTIONAL numpy implementations behind joins and
+partitions: _table._numpy.grouping.group_indices (single-key bucketing) and
+_vector._numpy.selection.take_pad_storage (gather with -1 → null pad lanes).
 
 The guarantee under test — accelerators widen transport, never semantics:
 every join and aggregate must return IDENTICAL results with numpy on or
@@ -18,11 +18,15 @@ from datetime import date
 
 import pytest
 
-np = pytest.importorskip("numpy")
+pytest.importorskip("numpy")
 
 from serif import Table, Vector
+from serif._execution import DECLINED
+from serif._table._arrow import joins as arrow_join_mod
+from serif._table._numpy import grouping as group_mod
+from serif._table._numpy import joins as join_mod
+from serif._vector._numpy import selection as mask_mod
 from serif.errors import SerifValueError
-import serif._accel as accel
 
 
 # ---------------------------------------------------------------------------
@@ -30,12 +34,18 @@ import serif._accel as accel
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved_grouping = group_mod._USE_NUMPY
+    saved_join = join_mod._USE_NUMPY
+    saved_selection = mask_mod._USE_NUMPY
+    group_mod._USE_NUMPY = False
+    join_mod._USE_NUMPY = False
+    mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        group_mod._USE_NUMPY = saved_grouping
+        join_mod._USE_NUMPY = saved_join
+        mask_mod._USE_NUMPY = saved_selection
 
 
 def _assert_same_value(p, f, where):
@@ -87,22 +97,29 @@ def _pure_partition(vals):
     [7],
 ], ids=["dupes", "single_key", "negatives", "all_unique_desc", "one_row"])
 def test_group_indices_matches_pure_dict(vals):
-    from serif._accel.group import group_indices
-    fast = group_indices(Vector(vals)._storage)
+    fast = group_mod.group_indices(Vector(vals)._storage)
     pure = _pure_partition(vals)
-    assert fast is not None
-    # Buckets are numpy intp arrays (transport — pinned so it doesn't
-    # silently regress to lists); contents must match the pure dict.
-    assert all(isinstance(b, np.ndarray) for b in fast.values())
-    assert {k: list(b) for k, b in fast.items()} == pure
+    assert fast is not DECLINED
+    assert fast == pure
+    assert all(type(bucket) is list for bucket in fast.values())
+    assert all(
+        type(index) is int
+        for bucket in fast.values()
+        for index in bucket
+    )
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
 
 
 def test_group_indices_declines_unsupported():
-    from serif._accel.group import group_indices
-    assert group_indices(Vector([1.5, 2.5])._storage) is None    # float: NaN semantics
-    assert group_indices(Vector([1, None, 2])._storage) is None  # nullable
-    assert group_indices(Vector(['a', 'b'])._storage) is None    # strings
+    assert group_mod.group_indices(
+        Vector([1.5, 2.5])._storage
+    ) is DECLINED  # float: NaN semantics
+    assert group_mod.group_indices(
+        Vector([1, None, 2])._storage
+    ) is DECLINED  # nullable
+    assert group_mod.group_indices(
+        Vector(['a', 'b'])._storage
+    ) is DECLINED  # strings
 
 
 # ---------------------------------------------------------------------------
@@ -128,10 +145,9 @@ VECTORS = [
     [3, 2, 1, 0],        # no pads: plain take passthrough
 ], ids=["mixed_pads", "all_pads", "no_pads"])
 def test_take_pad_conformance(vf, indices):
-    from serif._accel.mask import take_pad_storage
     storage = vf()._storage
-    fast = take_pad_storage(storage, indices)
-    assert fast is not None
+    fast = mask_mod.take_pad_storage(storage, indices)
+    assert fast is not DECLINED
     assert len(fast) == len(indices)
     for i, src in enumerate(indices):
         expected = None if src < 0 else storage[src]
@@ -140,9 +156,11 @@ def test_take_pad_conformance(vf, indices):
 
 
 def test_take_pad_on_empty_storage_declines():
-    from serif._accel.mask import take_pad_storage
     empty = Vector([1])[0:0]._storage
-    assert take_pad_storage(empty, [-1, -1]) is None  # nothing to clamp to
+    assert mask_mod.take_pad_storage(
+        empty,
+        [-1, -1],
+    ) is DECLINED
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +193,8 @@ def test_join_conforms(flavor):
 
 
 def test_join_on_string_keys_conforms():
-    # group_indices declines str keys (the ARROW backend buckets them when
-    # installed — test_accel_string_group.py); padded gather still engages.
+    # NumPy join probes decline str keys; Arrow owns them when installed.
+    # Padded gather remains independent and still engages.
     def run():
         left = Table({'k': ['a', 'b', 'c'], 'x': [1, 2, 3]})
         right = Table({'k': ['b', 'c', 'd'], 'y': [2.5, 3.5, 4.5]})
@@ -263,6 +281,15 @@ def test_multi_key_groupby_declines_conforms():
     _assert_tables_identical(_pure(run), run())
 
 
+def test_nan_group_keys_retain_python_dict_semantics():
+    nan = float('nan')
+    table = Table({'g': [nan, nan], 'x': [1, 2]})
+    result = table.aggregate(groupby='g')
+
+    assert len(result) == 2
+    assert all(math.isnan(value) for value in result.g)
+
+
 # ---------------------------------------------------------------------------
 # The fast paths actually engage (guards against silent decline rot)
 # ---------------------------------------------------------------------------
@@ -272,15 +299,14 @@ def _spy(monkeypatch, module, fn_name, calls):
 
     def wrapper(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(module, fn_name, wrapper)
 
 
 def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
-    from serif._accel import group as group_mod
-    from serif._accel import arrow as arrow_mod
+    from serif._table._arrow import aggregation as arrow_mod
     calls = []
     _spy(monkeypatch, group_mod, 'group_indices', calls)
     # Exercise the numpy bucket fallback, not the earlier fused Arrow
@@ -294,21 +320,18 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     calls.clear()
     t2 = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t2.aggregate(groupby=t2.g, aggregations={'m': t2.x.sum})
-    assert calls == [False]  # str key declines HERE; arrow's group_strings
+    assert calls == [False]  # str key declines HERE; Table's Arrow grouping
     #                          picks it up when installed (its own suite)
 
 
 def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
-    from serif._accel import join as join_mod
-    from serif._accel import mask as mask_mod
-    from serif._accel import arrow as arrow_mod
     probe_calls, pad_calls = [], []
     _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)
     _spy(monkeypatch, mask_mod, 'take_pad_storage', pad_calls)
     monkeypatch.setattr(join_mod, 'probe_int64_dense',
-                        lambda *args, **kwargs: None)
-    monkeypatch.setattr(arrow_mod, 'join_probe_strings_hash',
-                        lambda *args, **kwargs: None)
+                        lambda *args, **kwargs: DECLINED)
+    monkeypatch.setattr(arrow_join_mod, 'probe_strings_hash',
+                        lambda *args, **kwargs: DECLINED)
 
     left = Table({'id': [1, 2, 3], 'a': [1.0, 2.0, 3.0]})
     right = Table({'id': [2, 3], 'b': ['x', 'y']})

@@ -33,16 +33,17 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from serif import Vector
-import serif._accel as accel
+from serif._execution import DECLINED
+from serif._vector._numpy import reductions as reduce_mod
 
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved = reduce_mod._USE_NUMPY
+    reduce_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        reduce_mod._USE_NUMPY = saved
 
 
 VECTORS = [
@@ -115,7 +116,6 @@ def test_int_sum_past_int64_stays_exact_and_accelerated():
     # 3 · 2**62 wraps in a naive np.sum reading — but the spread is ZERO,
     # so the residue pins the exact bigint total and the fast path now
     # ANSWERS this instead of declining (it used to fall to pure).
-    from serif._accel import reduce as reduce_mod, DECLINED
     v = Vector([2**62, 2**62, 2**62])
     expected = 3 * 2**62                       # > int64 max
     assert reduce_mod.sum_(v._storage) is not DECLINED   # engaged, not pure
@@ -127,7 +127,6 @@ def test_int_sum_past_int64_stays_exact_and_accelerated():
 def test_full_range_spread_declines():
     # Spread 2**63 + 5 over two lanes: n·span ≥ 2**64, the residue is
     # ambiguous, and pure is the spec.
-    from serif._accel import reduce as reduce_mod, DECLINED
     v = Vector([-2**63, 5])
     assert reduce_mod.sum_(v._storage) is DECLINED
     assert v.sum() == -2**63 + 5 == _pure(lambda: v.sum())
@@ -139,7 +138,6 @@ def test_full_range_spread_declines():
 
 def _engaged_sum(v):
     """The fast path's answer, asserting it actually engaged."""
-    from serif._accel import reduce as reduce_mod, DECLINED
     result = reduce_mod.sum_(v._storage)
     assert result is not DECLINED
     return result
@@ -169,7 +167,6 @@ def test_outlier_spread_still_declines():
     # the residue stays ambiguous, and pure is the spec. (This shape
     # needs an ESTIMATE-based window — e.g. a float64 sum with a proven
     # error bound — a separate game with separate epistemics.)
-    from serif._accel import reduce as reduce_mod, DECLINED
     vals = [2**62] + list(range(-500, 500))
     v = Vector(vals)
     assert reduce_mod.sum_(v._storage) is DECLINED
@@ -267,14 +264,12 @@ def test_absorption_case_both_paths_bounded():
 # ---------------------------------------------------------------------------
 
 def test_fast_path_engages_and_declines_where_designed(monkeypatch):
-    from serif._accel import reduce as reduce_mod
-
     engaged = []
     orig = reduce_mod.sum_
 
     def spy(storage):
         result = orig(storage)
-        engaged.append(result is not accel.DECLINED)
+        engaged.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(reduce_mod, 'sum_', spy)

@@ -4,13 +4,16 @@ Reductions consume the innermost dimension. Rank-2 values lift the same
 reduction over their columns; rank-1 values reduce their scalar storage.
 """
 
-import builtins as _builtins
-import math
-from itertools import chain
-
-from .._accel.api import _accel_reduce
+from .._execution import DECLINED
 from ..errors import SerifEmptyReductionError
 from ..errors import SerifTypeError
+from ._python import reductions as _python_reductions
+
+
+def _numpy_reductions():
+    from ._numpy import reductions
+
+    return reductions
 
 
 def _check_on_empty(method_name, on_empty):
@@ -26,57 +29,43 @@ def _check_on_empty(method_name, on_empty):
 def max(vector):
     if vector.ndims() == 2:
         return vector.copy((c.max() for c in vector.cols()), name=None)
-    ok, fast = _accel_reduce(vector._storage, 'max_')
-    if ok:
+    fast = _numpy_reductions().max_(vector._storage)
+    if fast is not DECLINED:
         return fast
-    non_none = [v for v in vector._storage if v is not None]
-    return _builtins.max(non_none) if non_none else None
+    return _python_reductions.max_(vector._storage)
 
 
 def min(vector):
     if vector.ndims() == 2:
         return vector.copy((c.min() for c in vector.cols()), name=None)
-    ok, fast = _accel_reduce(vector._storage, 'min_')
-    if ok:
+    fast = _numpy_reductions().min_(vector._storage)
+    if fast is not DECLINED:
         return fast
-    non_none = [v for v in vector._storage if v is not None]
-    return _builtins.min(non_none) if non_none else None
+    return _python_reductions.min_(vector._storage)
 
 
 def first(vector):
     if vector.ndims() == 2:
         return vector.copy((c.first() for c in vector.cols()), name=None)
-    return vector._storage[0] if len(vector._storage) else None
+    return _python_reductions.first(vector._storage)
 
 
 def last(vector):
     if vector.ndims() == 2:
         return vector.copy((c.last() for c in vector.cols()), name=None)
-    n = len(vector._storage)
-    return vector._storage[n - 1] if n else None
+    return _python_reductions.last(vector._storage)
 
 
 def sum(vector):
     if vector.ndims() == 2:
         return vector.copy((c.sum() for c in vector.cols()), name=None)
-    ok, fast = _accel_reduce(vector._storage, 'sum_')
-    if ok:
+    fast = _numpy_reductions().sum_(vector._storage)
+    if fast is not DECLINED:
         return fast
-    # Exclude None values from sum.
-    values = (v for v in vector._storage if v is not None)
-    if vector.schema().kind is not float:
-        return _builtins.sum(values)
-
-    first_value = next(values, None)
-    if first_value is None:
-        return 0
-    try:
-        return math.fsum(chain((first_value,), values))
-    except (OverflowError, ValueError):
-        # math.fsum rejects mixtures such as +inf and -inf. Preserve
-        # Python's non-finite behavior while finite sums remain stable
-        # across every supported Python version.
-        return _builtins.sum(v for v in vector._storage if v is not None)
+    return _python_reductions.sum_(
+        vector._storage,
+        vector.schema().kind,
+    )
 
 
 def _no_verdict(vector, method_name, on_empty):
@@ -98,16 +87,10 @@ def all(vector, on_empty=None):
             (c.all(on_empty=on_empty) for c in vector.cols()),
             name=None,
         )
-    seen_valid = False
-    for value in vector._storage:
-        if value is None:
-            continue
-        if not value:
-            return False
-        seen_valid = True
-    if seen_valid:
-        return True
-    return _no_verdict(vector, 'all', on_empty)
+    verdict = _python_reductions.all_(vector._storage)
+    if verdict is None:
+        return _no_verdict(vector, 'all', on_empty)
+    return verdict
 
 
 def any(vector, on_empty=None):
@@ -117,27 +100,19 @@ def any(vector, on_empty=None):
             (c.any(on_empty=on_empty) for c in vector.cols()),
             name=None,
         )
-    seen_valid = False
-    for value in vector._storage:
-        if value is None:
-            continue
-        if value:
-            return True
-        seen_valid = True
-    if seen_valid:
-        return False
-    return _no_verdict(vector, 'any', on_empty)
+    verdict = _python_reductions.any_(vector._storage)
+    if verdict is None:
+        return _no_verdict(vector, 'any', on_empty)
+    return verdict
 
 
 def mean(vector):
     if vector.ndims() == 2:
         return vector.copy((c.mean() for c in vector.cols()), name=None)
-    ok, fast = _accel_reduce(vector._storage, 'mean')
-    if ok:
+    fast = _numpy_reductions().mean(vector._storage)
+    if fast is not DECLINED:
         return fast
-    # Exclude None values from mean.
-    non_none = [v for v in vector._storage if v is not None]
-    return _builtins.sum(non_none) / len(non_none) if non_none else None
+    return _python_reductions.mean(vector._storage)
 
 
 def stdev(vector, population=False):
@@ -146,28 +121,19 @@ def stdev(vector, population=False):
             (c.stdev(population) for c in vector.cols()),
             name=None,
         )
-    ok, fast = _accel_reduce(
+    fast = _numpy_reductions().stdev(
         vector._storage,
-        'stdev',
         population=population,
     )
-    if ok:
+    if fast is not DECLINED:
         return fast
-    # Exclude None values from stdev.
-    non_none = [v for v in vector._storage if v is not None]
-    if len(non_none) < 2:
-        return None
-    mean_value = _builtins.sum(non_none) / len(non_none)
-    # The zero-dependency fallback is the specification; NumPy is the fast
-    # path when it can produce the same result.
-    numerator = _builtins.sum(
-        (value - mean_value) * (value - mean_value)
-        for value in non_none
+    return _python_reductions.stdev(
+        vector._storage,
+        population=population,
     )
-    return (numerator / (len(non_none) - 1 + population)) ** 0.5
 
 
 def count(vector):
     if vector.ndims() == 2:
         return vector.copy((c.count() for c in vector.cols()), name=None)
-    return _builtins.sum(1 for v in vector._storage if v is not None)
+    return _python_reductions.count(vector._storage)

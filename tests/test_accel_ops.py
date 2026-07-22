@@ -24,17 +24,18 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from serif import Vector
-import serif._accel as accel
+from serif._execution import DECLINED
+from serif._vector._numpy import operators as ops_mod
 from serif._vector.storage import BoolStorage
 
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved = ops_mod._USE_NUMPY
+    ops_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        ops_mod._USE_NUMPY = saved
 
 
 def _assert_identical(pure_v, fast_v):
@@ -162,13 +163,12 @@ def test_floordiv_int64_min_edge():
 # ---------------------------------------------------------------------------
 
 def test_fast_path_engages_and_declines_where_designed(monkeypatch):
-    from serif._accel import ops as ops_mod
     engaged = []
     orig = ops_mod.binop_storage
 
     def spy(lhs, rhs, op_func, kind):
         result = orig(lhs, rhs, op_func, kind)
-        engaged.append(result is not None)
+        engaged.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(ops_mod, 'binop_storage', spy)
@@ -177,5 +177,5 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     Vector([1, None]) / Vector([2, 2])               # nullable: engages
     Vector([2**62, 2**62]) + Vector([2**62, 2**62])  # overflow: declines
     with pytest.raises(ZeroDivisionError):
-        Vector([1, 2]) / Vector([1, 0])              # declines, pure raises
-    assert engaged == [True, True, True, False, False]
+        Vector([1, 2]) / Vector([1, 0])              # semantic layer raises
+    assert engaged == [True, True, True, False]

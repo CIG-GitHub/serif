@@ -4,6 +4,7 @@ Pins for behavior changes that ride along with the structural refactor
 unified duplicate-name disambiguation rule, and is_na() derivation rules.
 """
 
+from pathlib import Path
 import warnings
 
 import pytest
@@ -25,6 +26,68 @@ def test_vector_public_module_is_canonical():
     assert Vector is PublicVector
     assert Vector is PrivateCompatibilityVector
     assert Vector.__module__ == 'serif.vector'
+
+
+def test_vector_backends_do_not_own_public_classes():
+    from serif._vector import operators as semantic_ops
+    from serif._vector import reductions as semantic_reductions
+    from serif._vector import selection as semantic_selection
+    from serif._vector._arrow import operators as arrow_ops
+    from serif._vector._numpy import operators as numpy_ops
+    from serif._vector._numpy import reductions as numpy_reductions
+    from serif._vector._numpy import selection as numpy_selection
+    from serif._vector._python import operators as python_ops
+    from serif._vector._python import reductions as python_reductions
+    from serif._vector._python import selection as python_selection
+
+    for module in (
+        semantic_ops,
+        semantic_reductions,
+        semantic_selection,
+        arrow_ops,
+        numpy_ops,
+        numpy_reductions,
+        numpy_selection,
+        python_ops,
+        python_reductions,
+        python_selection,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_table_join_backends_do_not_own_public_classes():
+    from serif._table._arrow import joins as arrow_joins
+    from serif._table._numpy import joins as numpy_joins
+    from serif._table._python import joins as python_joins
+
+    for module in (
+        arrow_joins,
+        numpy_joins,
+        python_joins,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_arrow_aggregation_backend_does_not_own_public_classes():
+    from serif._table._arrow import aggregation
+
+    assert 'Vector' not in vars(aggregation)
+    assert 'Table' not in vars(aggregation)
+
+
+def test_legacy_accel_package_has_no_python_modules_or_callers():
+    source_root = Path(__file__).parents[1] / 'src' / 'serif'
+    legacy_root = source_root / '_accel'
+    assert not list(legacy_root.glob('*.py'))
+
+    callers = []
+    for path in source_root.rglob('*.py'):
+        source = path.read_text(encoding='utf-8')
+        if '._accel' in source or 'serif._accel' in source:
+            callers.append(path.relative_to(source_root))
+    assert callers == []
 
 
 # ---------------------------------------------------------------------------

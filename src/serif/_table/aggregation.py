@@ -1,5 +1,6 @@
 """Table aggregation orchestration and result construction."""
 
+from .._execution import DECLINED
 from .._vector import Schema
 from ..errors import SerifValueError
 from ..vector import Vector
@@ -12,10 +13,16 @@ def _table_class():
     return Table
 
 
+def _arrow_aggregation():
+    from ._arrow import aggregation
+
+    return aggregation
+
+
 def _bound_grouped_sums(table, groupby, aggregations, nrows):
     """Recognize the narrow Arrow hash-grouped sum fast path."""
     if not aggregations:
-        return None
+        return DECLINED
 
     specifications = (
         [groupby]
@@ -23,7 +30,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
         else groupby
     )
     if specifications is None or len(specifications) != 1:
-        return None
+        return DECLINED
 
     group_column = table._resolve_column(specifications[0])
     if len(group_column) != nrows:
@@ -40,7 +47,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
             and isinstance(function.__self__, Vector)
             and function.__name__ == "sum"
         ):
-            return None
+            return DECLINED
 
         source = function.__self__
         if len(source) != nrows:
@@ -49,18 +56,16 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
                 f"{len(source)} != table length {nrows}"
             )
         if source.ndims() != 1:
-            return None
+            return DECLINED
         names.append(aggregation_name)
         sources.append(source)
 
-    from .._accel.arrow import grouped_sums
-
-    result = grouped_sums(
+    result = _arrow_aggregation().grouped_sums(
         group_column._storage,
         [source._storage for source in sources],
     )
-    if result is None:
-        return None
+    if result is DECLINED:
+        return DECLINED
     keys, columns = result
     return group_column, keys, list(zip(names, columns))
 
@@ -92,7 +97,7 @@ def aggregate(table, groupby=None, aggregations=None):
 
     if groupby is not None:
         fast = _bound_grouped_sums(table, groupby, aggregations, nrows)
-        if fast is not None:
+        if fast is not DECLINED:
             group_column, keys, summed = fast
             uniquify = _grouping.make_uniquifier()
             result_columns = [
