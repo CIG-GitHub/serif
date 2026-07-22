@@ -205,7 +205,7 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
 
 
 def test_group_slicer_fallback_engages_when_fused_sum_declines(monkeypatch):
-    from serif._accel import arrow as arrow_mod
+    from serif._table._arrow import aggregation as arrow_mod
     calls = []
     orig = mask_mod.take_storage
 
@@ -217,7 +217,11 @@ def test_group_slicer_fallback_engages_when_fused_sum_declines(monkeypatch):
     monkeypatch.setattr(mask_mod, 'take_storage', spy)
     # Keep this as a fallback slicer guard. Eligible bound sums normally
     # bypass per-group slicing through the fused Arrow path.
-    monkeypatch.setattr(arrow_mod, 'grouped_sums', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        arrow_mod,
+        'grouped_sums',
+        lambda *args, **kwargs: DECLINED,
+    )
     t = Table({'g': [1, 2, 1], 'x': [1.0, 2.0, 3.0]})
     t.aggregate(groupby=t.g, aggregations={'total': t.x.sum})
     assert calls and all(calls)

@@ -1,74 +1,42 @@
-"""Legacy optional Arrow grouped aggregation implementation.
+"""Optional Arrow physical implementation for grouped bound sums."""
 
-Vector operator kernels and storage bridges live under
-``serif._vector._arrow``. This module keeps the established ``None`` decline
-contract until grouped aggregation migrates.
-"""
+from ..._execution import DECLINED
+from ..._vector._arrow import storage as _arrow_storage
+from ..._vector.storage import ArrayStorage
+from ..._vector.storage import StringStorage
+from . import _pa
+from . import _USE_ARROW
 
-from .._execution import DECLINED
-from .._execution import _load_arrow
-from .._vector._arrow import storage as _arrow_storage
-from .._vector.storage import ArrayStorage
-from .._vector.storage import StringStorage
-
-
-_pa, _pc = _load_arrow()
-_USE_ARROW = _pa is not None
 
 _U64 = 2**64
-
-
-def _legacy_result(result):
-    return None if result is DECLINED else result
-
-
-def string_array(storage):
-    """Return an Arrow string view, or legacy ``None`` decline."""
-    if not _USE_ARROW:
-        return None
-    return _legacy_result(_arrow_storage.string_array(storage))
-
-
-def numeric_array(storage):
-    """Return an Arrow numeric view, or legacy ``None`` decline."""
-    if not _USE_ARROW:
-        return None
-    return _legacy_result(_arrow_storage.numeric_array(storage))
-
-
-def int64_array(storage):
-    """Return an Arrow int64 view, or legacy ``None`` decline."""
-    if not _USE_ARROW:
-        return None
-    return _legacy_result(_arrow_storage.int64_array(storage))
 
 
 def grouped_sums(key_storage, value_storages):
     """Hash-group one key and sum supported numeric value columns."""
     if not _USE_ARROW:
-        return None
+        return DECLINED
 
     if (
         isinstance(key_storage, ArrayStorage)
         and key_storage._data.typecode == 'q'
         and key_storage._mask is None
     ):
-        key_array = int64_array(key_storage)
+        key_array = _arrow_storage.int64_array(key_storage)
     elif (
         isinstance(key_storage, StringStorage)
         and key_storage._mask is None
     ):
-        key_array = string_array(key_storage)
+        key_array = _arrow_storage.string_array(key_storage)
     else:
-        return None
-    if key_array is None:
-        return None
+        return DECLINED
+    if key_array is DECLINED:
+        return DECLINED
 
     value_arrays = []
     for storage in value_storages:
-        array = numeric_array(storage)
-        if array is None:
-            return None
+        array = _arrow_storage.numeric_array(storage)
+        if array is DECLINED:
+            return DECLINED
         value_arrays.append(array)
 
     key_name = '__serif_group_key'
@@ -80,9 +48,9 @@ def grouped_sums(key_storage, value_storages):
         [key_array, *value_arrays],
         names=[key_name, *value_names],
     )
-    specs = []
+    specifications = []
     for name in value_names:
-        specs.extend([
+        specifications.extend([
             (name, 'sum'),
             (name, 'count'),
             (name, 'min'),
@@ -92,9 +60,9 @@ def grouped_sums(key_storage, value_storages):
         grouped = table.group_by(
             key_name,
             use_threads=False,
-        ).aggregate(specs)
+        ).aggregate(specifications)
     except (_pa.ArrowInvalid, _pa.ArrowNotImplementedError):
-        return None
+        return DECLINED
 
     keys = grouped[key_name].to_pylist()
     outputs = []
@@ -119,7 +87,7 @@ def grouped_sums(key_storage, value_storages):
                 minimum = int(minimum)
                 maximum = int(maximum)
                 if count * (maximum - minimum) >= _U64:
-                    return None
+                    return DECLINED
                 residue = int(residue)
                 spread_sum = (residue - count * minimum) % _U64
                 values.append(count * minimum + spread_sum)
@@ -131,3 +99,4 @@ def grouped_sums(key_storage, value_storages):
             ])
 
     return keys, outputs
+

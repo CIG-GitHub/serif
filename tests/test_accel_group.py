@@ -306,7 +306,7 @@ def _spy(monkeypatch, module, fn_name, calls):
 
 
 def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
-    from serif._accel import arrow as arrow_mod
+    from serif._table._arrow import aggregation as arrow_mod
     calls = []
     _spy(monkeypatch, group_mod, 'group_indices', calls)
     # Exercise the numpy bucket fallback, not the earlier fused Arrow

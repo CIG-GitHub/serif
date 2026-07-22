@@ -1,22 +1,24 @@
 """Conformance for Arrow's fused hash-grouped bound-sum fast path."""
 
 import math
+import warnings
 
 import pytest
 
 pytest.importorskip("pyarrow")
 
 from serif import Table
-from serif._accel import arrow as bridge
+from serif._execution import DECLINED
+from serif._table._arrow import aggregation as arrow_aggregation
 
 
 def _without_arrow(fn):
-    saved = bridge._USE_ARROW
-    bridge._USE_ARROW = False
+    saved = arrow_aggregation._USE_ARROW
+    arrow_aggregation._USE_ARROW = False
     try:
         return fn()
     finally:
-        bridge._USE_ARROW = saved
+        arrow_aggregation._USE_ARROW = saved
 
 
 def _assert_tables_identical(expected, actual):
@@ -54,6 +56,22 @@ def test_nullable_int_sum_and_first_appearance_conform():
     assert list(actual.total) == [1, 7, 4]
 
 
+def test_fast_and_fallback_warning_behavior_matches():
+    def run():
+        table = Table({'group': [1, 2, 1], 'value': [3, 4, 5]})
+        return table.aggregate('group', {'total': table.value.sum})
+
+    with warnings.catch_warnings(record=True) as fast_warnings:
+        warnings.simplefilter('always')
+        run()
+    with warnings.catch_warnings(record=True) as fallback_warnings:
+        warnings.simplefilter('always')
+        _without_arrow(run)
+
+    assert [str(item.message) for item in fast_warnings] == []
+    assert [str(item.message) for item in fallback_warnings] == []
+
+
 def test_multiple_bound_sums_share_one_grouping():
     def run():
         table = Table({
@@ -65,6 +83,29 @@ def test_multiple_bound_sums_share_one_grouping():
             'group', {'sx': table.x.sum, 'sy': table.y.sum})
 
     _assert_tables_identical(_without_arrow(run), run())
+
+
+def test_physical_result_contains_only_python_values():
+    table = Table({
+        'group': ['b', 'a', 'b'],
+        'x': [1, 2, 3],
+        'y': [1.5, None, 2.5],
+    })
+    result = arrow_aggregation.grouped_sums(
+        table.group._storage,
+        [table.x._storage, table.y._storage],
+    )
+
+    assert result is not DECLINED
+    keys, columns = result
+    assert keys == ['b', 'a']
+    assert columns == [[4, 2], [4.0, 0]]
+    assert all(type(key) is str for key in keys)
+    assert all(
+        type(value) in (int, float)
+        for column in columns
+        for value in column
+    )
 
 
 def test_all_null_group_retains_sum_identity():
@@ -98,8 +139,10 @@ def test_ambiguous_int_group_declines():
         'group': [1, 1],
         'value': [-2**63, 2**63 - 1],
     })
-    assert bridge.grouped_sums(
-        table.group._storage, [table.value._storage]) is None
+    assert arrow_aggregation.grouped_sums(
+        table.group._storage,
+        [table.value._storage],
+    ) is DECLINED
     _assert_tables_identical(
         _without_arrow(lambda: table.aggregate(
             'group', {'total': table.value.sum})),
@@ -107,16 +150,30 @@ def test_ambiguous_int_group_declines():
     )
 
 
+def test_unsupported_key_storages_decline():
+    nullable = Table({'group': [1, None], 'value': [2, 3]})
+    floating = Table({'group': [1.0, 2.0], 'value': [2, 3]})
+
+    assert arrow_aggregation.grouped_sums(
+        nullable.group._storage,
+        [nullable.value._storage],
+    ) is DECLINED
+    assert arrow_aggregation.grouped_sums(
+        floating.group._storage,
+        [floating.value._storage],
+    ) is DECLINED
+
+
 @pytest.mark.parametrize('aggregation', ['callable', 'other_method'])
 def test_unrecognized_aggregation_declines(aggregation, monkeypatch):
     calls = []
-    original = bridge.grouped_sums
+    original = arrow_aggregation.grouped_sums
 
     def spy(*args, **kwargs):
         calls.append(True)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(bridge, 'grouped_sums', spy)
+    monkeypatch.setattr(arrow_aggregation, 'grouped_sums', spy)
     table = Table({'group': [1, 1, 2], 'value': [1, 2, 3]})
     if aggregation == 'callable':
         table.aggregate('group', {'total': lambda group: group.value.sum()})
@@ -127,14 +184,14 @@ def test_unrecognized_aggregation_declines(aggregation, monkeypatch):
 
 def test_fast_path_engages(monkeypatch):
     calls = []
-    original = bridge.grouped_sums
+    original = arrow_aggregation.grouped_sums
 
     def spy(*args, **kwargs):
         result = original(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
-    monkeypatch.setattr(bridge, 'grouped_sums', spy)
+    monkeypatch.setattr(arrow_aggregation, 'grouped_sums', spy)
     table = Table({'group': [1, 2, 1], 'value': [1, None, 3]})
     table.aggregate('group', {'total': table.value.sum})
     assert calls == [True]

@@ -22,11 +22,11 @@ pytest.importorskip("pyarrow")
 
 from serif import Table, Vector
 from serif._execution import DECLINED
+from serif._table._arrow import aggregation as aggregation_mod
 from serif._table._arrow import grouping as group_mod
 from serif._table._arrow import joins as join_mod
 from serif._table._numpy import grouping as numpy_grouping
 from serif.errors import SerifValueError
-from serif._accel import arrow as bridge
 
 
 # ---------------------------------------------------------------------------
@@ -34,16 +34,16 @@ from serif._accel import arrow as bridge
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved_bridge = bridge._USE_ARROW
+    saved_aggregation = aggregation_mod._USE_ARROW
     saved_grouping = group_mod._USE_ARROW
     saved_join = join_mod._USE_ARROW
-    bridge._USE_ARROW = False
+    aggregation_mod._USE_ARROW = False
     group_mod._USE_ARROW = False
     join_mod._USE_ARROW = False
     try:
         return fn()
     finally:
-        bridge._USE_ARROW = saved_bridge
+        aggregation_mod._USE_ARROW = saved_aggregation
         group_mod._USE_ARROW = saved_grouping
         join_mod._USE_ARROW = saved_join
 
@@ -208,7 +208,11 @@ def test_string_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     monkeypatch.setattr(group_mod, 'group_strings', spy)
     # Exercise string bucketing as a fallback after the fused grouped-sum
     # path declines; that earlier path has its own engagement test.
-    monkeypatch.setattr(bridge, 'grouped_sums', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        aggregation_mod,
+        'grouped_sums',
+        lambda *args, **kwargs: DECLINED,
+    )
 
     t = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t.aggregate(groupby=t.g, aggregations={'m': t.x.sum})

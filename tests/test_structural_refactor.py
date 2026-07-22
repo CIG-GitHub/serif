@@ -4,7 +4,7 @@ Pins for behavior changes that ride along with the structural refactor
 unified duplicate-name disambiguation rule, and is_na() derivation rules.
 """
 
-import importlib.util
+from pathlib import Path
 import warnings
 
 import pytest
@@ -56,28 +56,6 @@ def test_vector_backends_do_not_own_public_classes():
         assert 'Table' not in vars(module)
 
 
-def test_legacy_accel_api_no_longer_dispatches_vector_operations():
-    from serif._accel import api
-
-    for name in (
-        '_accel_binop',
-        '_accel_compare',
-        '_accel_invert',
-        '_accel_logical',
-        '_accel_reduce',
-        '_accel_filter',
-        '_accel_popcount',
-        '_accel_take',
-        '_accel_take_pad',
-        '_take',
-    ):
-        assert not hasattr(api, name)
-
-
-def test_legacy_accel_mask_module_is_removed():
-    assert importlib.util.find_spec('serif._accel.mask') is None
-
-
 def test_table_join_backends_do_not_own_public_classes():
     from serif._table._arrow import joins as arrow_joins
     from serif._table._numpy import joins as numpy_joins
@@ -92,12 +70,24 @@ def test_table_join_backends_do_not_own_public_classes():
         assert 'Table' not in vars(module)
 
 
-def test_legacy_accel_no_longer_dispatches_table_joins():
-    from serif._accel import api
+def test_arrow_aggregation_backend_does_not_own_public_classes():
+    from serif._table._arrow import aggregation
 
-    assert not hasattr(api, '_accel_group')
-    assert not hasattr(api, '_accel_join_probe')
-    assert importlib.util.find_spec('serif._accel.join') is None
+    assert 'Vector' not in vars(aggregation)
+    assert 'Table' not in vars(aggregation)
+
+
+def test_legacy_accel_package_has_no_python_modules_or_callers():
+    source_root = Path(__file__).parents[1] / 'src' / 'serif'
+    legacy_root = source_root / '_accel'
+    assert not list(legacy_root.glob('*.py'))
+
+    callers = []
+    for path in source_root.rglob('*.py'):
+        source = path.read_text(encoding='utf-8')
+        if '._accel' in source or 'serif._accel' in source:
+            callers.append(path.relative_to(source_root))
+    assert callers == []
 
 
 # ---------------------------------------------------------------------------

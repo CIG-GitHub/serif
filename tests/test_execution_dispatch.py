@@ -8,10 +8,10 @@ import pytest
 from serif import Table
 from serif import Vector
 from serif.errors import SerifValueError
-import serif._accel as accel
 import serif._execution as execution
 from serif._table import grouping as table_grouping
 from serif._table import joins as table_joins
+from serif._table._arrow import aggregation as arrow_aggregation
 from serif._table._arrow import grouping as arrow_grouping
 from serif._table._arrow import joins as arrow_joins
 from serif._table._numpy import grouping as numpy_grouping
@@ -30,8 +30,9 @@ from serif._vector._python import selection as python_selection
 
 
 def test_declined_has_one_identity_and_is_not_none():
-    assert execution.DECLINED is accel.DECLINED
     assert execution.DECLINED is not None
+    assert execution.DECLINED is arrow_aggregation.DECLINED
+    assert execution.DECLINED is numpy_ops.DECLINED
 
 
 def test_execution_contract_does_not_import_public_classes():
@@ -896,4 +897,105 @@ def test_disabled_join_backends_decline(monkeypatch):
     ) is execution.DECLINED
     assert arrow_joins.probe_strings(
         left_string, right_string, False, True, False, False
+    ) is execution.DECLINED
+
+
+def test_grouped_sum_decline_reaches_ordinary_aggregation(monkeypatch):
+    calls = []
+    original = table_grouping.build_partition_index
+
+    monkeypatch.setattr(
+        arrow_aggregation,
+        'grouped_sums',
+        lambda *args: execution.DECLINED,
+    )
+
+    def spy_grouping(*args, **kwargs):
+        calls.append('grouping')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        table_grouping,
+        'build_partition_index',
+        spy_grouping,
+    )
+
+    table = Table({'key': [1, 2, 1], 'value': [3, 4, 5]})
+    result = table.aggregate('key', {'total': table.value.sum})
+    assert list(result.total) == [8, 4]
+    assert calls == ['grouping']
+
+
+def test_grouped_sum_none_is_not_decline(monkeypatch):
+    def unexpected_grouping(*args, **kwargs):
+        raise AssertionError('backend None reached ordinary grouping')
+
+    monkeypatch.setattr(
+        arrow_aggregation,
+        'grouped_sums',
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        table_grouping,
+        'build_partition_index',
+        unexpected_grouping,
+    )
+
+    table = Table({'key': [1], 'value': [2]})
+    with pytest.raises(TypeError):
+        table.aggregate('key', {'total': table.value.sum})
+
+
+def test_grouped_sum_backend_defects_propagate(monkeypatch):
+    def broken_arrow(*args):
+        raise RuntimeError('grouped aggregation backend defect')
+
+    monkeypatch.setattr(
+        arrow_aggregation,
+        'grouped_sums',
+        broken_arrow,
+    )
+
+    table = Table({'key': [1], 'value': [2]})
+    with pytest.raises(RuntimeError, match='aggregation backend defect'):
+        table.aggregate('key', {'total': table.value.sum})
+
+
+def test_unrecognized_aggregation_skips_arrow_dispatch(monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('unrecognized aggregation reached Arrow')
+
+    monkeypatch.setattr(arrow_aggregation, 'grouped_sums', unexpected)
+
+    table = Table({'key': [1, 1, 2], 'value': [3, 4, 5]})
+    result = table.aggregate('key', {'peak': table.value.max})
+    assert list(result.peak) == [4, 5]
+
+
+def test_grouped_sum_validation_precedes_arrow_dispatch(monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('invalid grouped sum reached Arrow')
+
+    monkeypatch.setattr(arrow_aggregation, 'grouped_sums', unexpected)
+
+    table = Table({'value': [1, 2, 3]})
+    with pytest.raises(SerifValueError, match='groupby key.*length 2'):
+        table.aggregate(
+            Vector([1, 2]),
+            {'total': table.value.sum},
+        )
+
+
+def test_arrow_aggregation_layer_does_not_own_public_classes():
+    assert 'Vector' not in vars(arrow_aggregation)
+    assert 'Table' not in vars(arrow_aggregation)
+
+
+def test_disabled_arrow_aggregation_declines(monkeypatch):
+    table = Table({'key': [1], 'value': [2]})
+    monkeypatch.setattr(arrow_aggregation, '_USE_ARROW', False)
+
+    assert arrow_aggregation.grouped_sums(
+        table.key._storage,
+        [table.value._storage],
     ) is execution.DECLINED
