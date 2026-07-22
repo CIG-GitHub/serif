@@ -1,8 +1,8 @@
 """Stable Table sorting and coordinated row permutation."""
 
-from .._accel.api import _take
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from .._vector.selection import take_storage
 from ..vector import Vector
 from .._vector.transforms import _null_sort_flag
 from .columns import iter_columns
@@ -91,7 +91,7 @@ def sort_by(table, by, reverse=False, na_last=True):
     # keeps ArrayStorage) with zero re-inference. The columns are freshly
     # built, so the nocopy assembly is safe.
     new_columns = [
-        column._clone(_take(column._storage, indices))
+        column._clone(take_storage(column._storage, indices))
         for column in iter_columns(table)
     ]
     return Table._from_columns_nocopy(new_columns)

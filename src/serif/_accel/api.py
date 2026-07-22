@@ -1,60 +1,9 @@
 """Remaining legacy optional-accelerator call-throughs.
 
-Vector operators and reductions dispatch from their semantic modules. This
-boundary preserves the established per-call ``None`` decline behavior for
-selection, grouping, and joins until those semantic families migrate.
+Vector operations dispatch from their semantic modules. This boundary now
+preserves the established per-call ``None`` decline behavior only for Table
+grouping and joins until those families migrate.
 """
-
-
-def _accel_filter(storage, mask):
-    """Numpy-accelerated boolean-mask filter; None = decline to the pure
-    path, whose behavior is the specification. OPTIONAL numpy — transport,
-    never semantics; see serif/_accel/__init__.py for the doctrine."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .mask import filter_storage
-    return filter_storage(storage, mask)
-
-
-def _accel_popcount(mask_storage):
-    """Numpy-accelerated True count of a boolean mask (nulls count False);
-    None = decline to the pure count, whose behavior is the specification.
-    OPTIONAL numpy — transport, never semantics; see serif/_accel/__init__.py."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .mask import popcount_storage
-    return popcount_storage(mask_storage)
-
-
-def _accel_take(storage, indices):
-    """Numpy-accelerated positional gather; None = decline to the pure
-    storage.take(), whose behavior is the specification. OPTIONAL numpy —
-    transport, never semantics; see serif/_accel/__init__.py."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .mask import take_storage
-    return take_storage(storage, indices)
-
-
-def _take(storage, indices):
-    """storage.take() behind the accelerator: numpy gather when the backend
-    is supported, the protocol's pure take() otherwise."""
-    fast = _accel_take(storage, indices)
-    return fast if fast is not None else storage.take(indices)
-
-
-def _accel_take_pad(storage, indices):
-    """Numpy-accelerated gather where index -1 emits null (join pad rows);
-    None = decline to the caller's pure emission, whose behavior is the
-    specification."""
-    from .. import _accel
-    if not _accel._USE_NUMPY:
-        return None
-    from .mask import take_pad_storage
-    return take_pad_storage(storage, indices)
 
 
 def _accel_group(storage):

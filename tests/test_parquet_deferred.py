@@ -133,12 +133,14 @@ def test_boolean_mask_reaches_remaining_parquet_columns(tmp_path, monkeypatch):
 
 
 def test_pure_mask_filter_does_not_require_numpy(tmp_path, monkeypatch):
+    from serif._vector._numpy import selection as numpy_selection
+
     path = tmp_path / 'table.parquet'
     Table({
         'a': [1, 2, 3, 4],
         'b': [None, 20, None, 40],
     }).to_parquet(str(path))
-    monkeypatch.setattr(parquet, '_accel_filter', lambda storage, mask: None)
+    monkeypatch.setattr(numpy_selection, '_USE_NUMPY', False)
 
     source = read_parquet(path)
     selected = source[source.a > 1]

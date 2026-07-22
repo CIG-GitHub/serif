@@ -1,7 +1,7 @@
 """
 Conformance tests for the OPTIONAL numpy accelerators behind joins and
 partitions: group.group_indices (single-key bucketing) and
-mask.take_pad_storage (gather with -1 → null pad lanes).
+_vector._numpy.selection.take_pad_storage (gather with -1 → null pad lanes).
 
 The guarantee under test — accelerators widen transport, never semantics:
 every join and aggregate must return IDENTICAL results with numpy on or
@@ -21,6 +21,8 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from serif import Table, Vector
+from serif._execution import DECLINED
+from serif._vector._numpy import selection as mask_mod
 from serif.errors import SerifValueError
 import serif._accel as accel
 
@@ -31,11 +33,14 @@ import serif._accel as accel
 
 def _pure(fn):
     saved = accel._USE_NUMPY
+    saved_selection = mask_mod._USE_NUMPY
     accel._USE_NUMPY = False
+    mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
         accel._USE_NUMPY = saved
+        mask_mod._USE_NUMPY = saved_selection
 
 
 def _assert_same_value(p, f, where):
@@ -128,10 +133,9 @@ VECTORS = [
     [3, 2, 1, 0],        # no pads: plain take passthrough
 ], ids=["mixed_pads", "all_pads", "no_pads"])
 def test_take_pad_conformance(vf, indices):
-    from serif._accel.mask import take_pad_storage
     storage = vf()._storage
-    fast = take_pad_storage(storage, indices)
-    assert fast is not None
+    fast = mask_mod.take_pad_storage(storage, indices)
+    assert fast is not DECLINED
     assert len(fast) == len(indices)
     for i, src in enumerate(indices):
         expected = None if src < 0 else storage[src]
@@ -140,9 +144,11 @@ def test_take_pad_conformance(vf, indices):
 
 
 def test_take_pad_on_empty_storage_declines():
-    from serif._accel.mask import take_pad_storage
     empty = Vector([1])[0:0]._storage
-    assert take_pad_storage(empty, [-1, -1]) is None  # nothing to clamp to
+    assert mask_mod.take_pad_storage(
+        empty,
+        [-1, -1],
+    ) is DECLINED
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +278,7 @@ def _spy(monkeypatch, module, fn_name, calls):
 
     def wrapper(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not None and result is not DECLINED)
         return result
 
     monkeypatch.setattr(module, fn_name, wrapper)
@@ -300,7 +306,6 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
 
 def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
     from serif._accel import join as join_mod
-    from serif._accel import mask as mask_mod
     from serif._accel import arrow as arrow_mod
     probe_calls, pad_calls = [], []
     _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)

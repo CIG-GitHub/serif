@@ -2,11 +2,52 @@
 
 import warnings
 
-from .._accel.api import _accel_filter
+from .._execution import DECLINED
 from ..errors import SerifIndexError
 from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from ._python import selection as _python_selection
+
+
+def _numpy_selection():
+    from ._numpy import selection
+
+    return selection
+
+
+def filter_storage(storage, mask):
+    """Filter validated storage through NumPy, then canonical Python."""
+    result = _numpy_selection().filter_storage(storage, mask)
+    if result is not DECLINED:
+        return result
+    return _python_selection.filter_storage(storage, mask)
+
+
+def take_storage(storage, indices):
+    """Gather validated positions through NumPy, then storage.take()."""
+    result = _numpy_selection().take_storage(storage, indices)
+    if result is not DECLINED:
+        return result
+    return _python_selection.take_storage(storage, indices)
+
+
+def take_pad_storage(storage, indices):
+    """Try the optional padded gather; its caller owns pure wrapping."""
+    return _numpy_selection().take_pad_storage(storage, indices)
+
+
+def take_pad_values(storage, indices):
+    """Return canonical Python values for a declined padded gather."""
+    return _python_selection.take_pad_values(storage, indices)
+
+
+def popcount(mask_storage):
+    """Count selected mask lanes through NumPy, then canonical Python."""
+    result = _numpy_selection().popcount_storage(mask_storage)
+    if result is not DECLINED:
+        return result
+    return _python_selection.popcount(mask_storage)
 
 
 def _vector_class():
@@ -43,12 +84,8 @@ def getitem(vector, key):
             raise SerifValueError(
                 f"Boolean mask length mismatch: {len(vector)} != {len(key)}"
             )
-        fast = _accel_filter(vector._storage, key._storage)
-        if fast is not None:
-            return vector._clone(fast)
-        return vector.copy(
-            (x for x, flag in zip(vector, key, strict=True) if flag),
-            name=vector._name,
+        return vector._clone(
+            filter_storage(vector._storage, key._storage)
         )
 
     if isinstance(key, list) and {type(element) for element in key} == {bool}:
@@ -56,13 +93,7 @@ def getitem(vector, key):
             raise SerifValueError(
                 f"Boolean mask length mismatch: {len(vector)} != {len(key)}"
             )
-        fast = _accel_filter(vector._storage, key)
-        if fast is not None:
-            return vector._clone(fast)
-        return vector.copy(
-            (x for x, flag in zip(vector, key, strict=True) if flag),
-            name=vector._name,
-        )
+        return vector._clone(filter_storage(vector._storage, key))
 
     if isinstance(key, slice):
         return vector._clone(vector._storage.slice(key))

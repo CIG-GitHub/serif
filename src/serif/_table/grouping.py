@@ -1,8 +1,8 @@
 """Shared Table partitioning and grouped aggregation evaluation."""
 
 from .._accel.api import _accel_group
-from .._accel.api import _accel_take
 from .._vector import Schema
+from .._vector.selection import take_storage
 from ..errors import SerifEmptyReductionError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
@@ -87,9 +87,10 @@ def _make_group_slicer(source_column):
 
     def slicer(row_indices, name):
         if typed:
-            fast = _accel_take(source_column._storage, row_indices)
-            if fast is not None:
-                return source_column._clone(fast, name=name)
+            return source_column._clone(
+                take_storage(source_column._storage, row_indices),
+                name=name,
+            )
         if "data" not in state:
             state["data"] = source_column._storage.to_tuple()
         values = [state["data"][index] for index in row_indices]

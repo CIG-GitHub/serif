@@ -2,8 +2,10 @@
 
 from .._accel.api import _accel_group
 from .._accel.api import _accel_join_probe
-from .._accel.api import _accel_take_pad
+from .._execution import DECLINED
 from .._vector import Schema
+from .._vector.selection import take_pad_storage
+from .._vector.selection import take_pad_values
 from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
@@ -313,15 +315,14 @@ def _gather_join_column(original_column, indices, nullable_pad):
     """Gather one output column, padding unmatched lanes with null."""
     schema = original_column.schema()
     if schema is not None and schema.kind is not object:
-        fast = _accel_take_pad(original_column._storage, indices)
-        if fast is not None:
+        fast = take_pad_storage(original_column._storage, indices)
+        if fast is not DECLINED:
             return original_column._clone(
                 fast,
                 dtype=Schema(schema.kind, schema.nullable or nullable_pad),
             )
 
-    storage = original_column._storage
-    values = [None if index < 0 else storage[index] for index in indices]
+    values = take_pad_values(original_column._storage, indices)
     return _wrap_join_column(values, original_column, nullable_pad)
 
 

@@ -4,6 +4,7 @@ Pins for behavior changes that ride along with the structural refactor
 unified duplicate-name disambiguation rule, and is_na() derivation rules.
 """
 
+import importlib.util
 import warnings
 
 import pytest
@@ -27,18 +28,35 @@ def test_vector_public_module_is_canonical():
     assert Vector.__module__ == 'serif.vector'
 
 
-def test_vector_operator_backends_do_not_own_public_classes():
+def test_vector_backends_do_not_own_public_classes():
     from serif._vector import operators as semantic_ops
+    from serif._vector import reductions as semantic_reductions
+    from serif._vector import selection as semantic_selection
     from serif._vector._arrow import operators as arrow_ops
     from serif._vector._numpy import operators as numpy_ops
+    from serif._vector._numpy import reductions as numpy_reductions
+    from serif._vector._numpy import selection as numpy_selection
     from serif._vector._python import operators as python_ops
+    from serif._vector._python import reductions as python_reductions
+    from serif._vector._python import selection as python_selection
 
-    for module in (semantic_ops, arrow_ops, numpy_ops, python_ops):
+    for module in (
+        semantic_ops,
+        semantic_reductions,
+        semantic_selection,
+        arrow_ops,
+        numpy_ops,
+        numpy_reductions,
+        numpy_selection,
+        python_ops,
+        python_reductions,
+        python_selection,
+    ):
         assert 'Vector' not in vars(module)
         assert 'Table' not in vars(module)
 
 
-def test_legacy_accel_api_no_longer_dispatches_vector_operators():
+def test_legacy_accel_api_no_longer_dispatches_vector_operations():
     from serif._accel import api
 
     for name in (
@@ -46,8 +64,18 @@ def test_legacy_accel_api_no_longer_dispatches_vector_operators():
         '_accel_compare',
         '_accel_invert',
         '_accel_logical',
+        '_accel_reduce',
+        '_accel_filter',
+        '_accel_popcount',
+        '_accel_take',
+        '_accel_take_pad',
+        '_take',
     ):
         assert not hasattr(api, name)
+
+
+def test_legacy_accel_mask_module_is_removed():
+    assert importlib.util.find_spec('serif._accel.mask') is None
 
 
 # ---------------------------------------------------------------------------

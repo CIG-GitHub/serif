@@ -38,8 +38,8 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
-from .._accel.api import _accel_filter
 from .._vector.nullable import BitMask
+from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
     ArrayStorage,
     BoolStorage,
@@ -1767,24 +1767,11 @@ def _column_from_raw(meta, raw):
     return Vector._from_iterable_known_dtype(raw, dtype, name=meta['name'])
 
 
-class _TrueIndices:
-    """Re-iterable positions selected by a Serif byte mask."""
-
-    __slots__ = ('_storage',)
-
-    def __init__(self, storage):
-        self._storage = storage
-
-    def __iter__(self):
-        return (i for i, keep in enumerate(self._storage) if keep)
-
-
 def _filter_column(col, mask):
-    fast = _accel_filter(col._storage, mask._storage)
-    if fast is not None:
-        return col._clone(fast, name=col._name)
     return col._clone(
-        col._storage.take(_TrueIndices(mask._storage)), name=col._name)
+        _filter_storage(col._storage, mask._storage),
+        name=col._name,
+    )
 
 
 def _mask_has_true(mask, start, stop):

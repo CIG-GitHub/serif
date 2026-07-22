@@ -29,11 +29,10 @@ proven by the pyarrow reader (serif/io/_arrow.py):
     layout (validity bitmap, offsets, UTF-8 buffer), so pyarrow wraps it
     with zero copies. The storage layout being arrow-shaped keeps paying.
 
-Modules: api (the remaining selection and Table call-through boundary), mask
-(row gathering — filter, take, padded take), group (single-key bucketing for
-partitions), join (vectorized single-key join probe), and arrow (the remaining
-Table Arrow kernels). Migrated Vector implementations live beside their
-semantic modules under serif/_vector/_python, _numpy, and _arrow.
+Modules: api (the remaining Table call-through boundary), group (single-key
+bucketing for partitions), join (vectorized single-key join probe), and arrow
+(the remaining Table Arrow kernels). Migrated Vector implementations live
+beside their semantic modules under serif/_vector/_python, _numpy, and _arrow.
 
 _USE_NUMPY here and _USE_ARROW in arrow.py are private switches for
 tests/benchmarks, not API.
@@ -41,8 +40,6 @@ tests/benchmarks, not API.
 
 from .._execution import DECLINED
 from .._execution import _load_numpy
-from .._vector._numpy.storage import NP_DTYPES
-from .._vector._numpy.storage import valid_bits
 
 
 _np = _load_numpy()

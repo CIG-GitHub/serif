@@ -112,6 +112,27 @@ class TestIntegerVectorIndexing:
         indices = [0, 2, 4]
         result = v[indices]
         assert list(result) == [10, 30, 50]
+
+    def test_large_integer_vector_warning_is_preserved(self):
+        vector = Vector(list(range(1001)))
+        with pytest.warns(UserWarning) as caught:
+            result = vector[Vector([0, 1000])]
+        assert list(result) == [0, 1000]
+        assert len(caught) == 1
+        assert str(caught[0].message) == (
+            "Subscript indexing is sub-optimal for large vectors; "
+            "prefer slices or boolean masks"
+        )
+
+    def test_large_integer_list_warning_is_preserved(self):
+        vector = Vector(list(range(1001)))
+        with pytest.warns(UserWarning) as caught:
+            result = vector[[0, 1000]]
+        assert list(result) == [0, 1000]
+        assert len(caught) == 1
+        assert str(caught[0].message) == (
+            "Subscript indexing is sub-optimal for large vectors"
+        )
     
     def test_setitem_integer_vector_single_value(self):
         v = Vector([1, 2, 3, 4, 5])

@@ -4,11 +4,11 @@ import builtins as _builtins
 from datetime import date
 from datetime import datetime
 
-from .._accel.api import _take
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from .dtype import Schema
 from .dtype import infer_dtype
+from .selection import take_storage
 from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import BoolStorage
@@ -134,7 +134,7 @@ def dropna(vector):
         else None
     )
     kept = [index for index in range(len(storage)) if not storage.is_null(index)]
-    return vector._clone(_take(storage, kept), dtype=new_dtype)
+    return vector._clone(take_storage(storage, kept), dtype=new_dtype)
 
 
 def is_na(vector):
@@ -216,4 +216,4 @@ def sort_by(vector, reverse=False, na_last=True):
         key=key,
         reverse=reverse,
     )
-    return vector._clone(_take(storage, order))
+    return vector._clone(take_storage(storage, order))

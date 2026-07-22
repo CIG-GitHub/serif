@@ -20,7 +20,8 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from serif import Table, Vector
-import serif._accel as accel
+from serif._execution import DECLINED
+from serif._vector._numpy import selection as mask_mod
 
 
 # ---------------------------------------------------------------------------
@@ -28,12 +29,12 @@ import serif._accel as accel
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
-    accel._USE_NUMPY = False
+    saved = mask_mod._USE_NUMPY
+    mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
+        mask_mod._USE_NUMPY = saved
 
 
 def _assert_same_value(p, f, where):
@@ -86,11 +87,10 @@ INDEX_SETS = [
 @pytest.mark.parametrize("vf", [v[1] for v in VECTORS], ids=[v[0] for v in VECTORS])
 @pytest.mark.parametrize("indices", [i[1] for i in INDEX_SETS], ids=[i[0] for i in INDEX_SETS])
 def test_storage_conformance(vf, indices):
-    from serif._accel.mask import take_storage
     storage = vf()._storage
-    fast = take_storage(storage, indices)
+    fast = mask_mod.take_storage(storage, indices)
     pure = storage.take(indices)
-    assert fast is not None, "supported backend must not decline"
+    assert fast is not DECLINED, "supported backend must not decline"
     assert type(fast) is type(pure)
     assert len(fast) == len(pure)
     for i in range(len(pure)):
@@ -99,9 +99,8 @@ def test_storage_conformance(vf, indices):
 
 
 def test_dupes_of_null_slots_stay_null():
-    from serif._accel.mask import take_storage
     storage = Vector([10, None, 30])._storage
-    out = take_storage(storage, [1, 1, 1, 0])
+    out = mask_mod.take_storage(storage, [1, 1, 1, 0])
     assert [out[i] for i in range(4)] == [None, None, None, 10]
 
 
@@ -186,13 +185,12 @@ def test_categorical_group_key_declines_identically():
 # ---------------------------------------------------------------------------
 
 def test_fast_path_engages_for_supported_storage(monkeypatch):
-    from serif._accel import mask as mask_mod
     calls = []
     orig = mask_mod.take_storage
 
     def spy(storage, indices):
         result = orig(storage, indices)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(mask_mod, 'take_storage', spy)
@@ -207,14 +205,13 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
 
 
 def test_group_slicer_fallback_engages_when_fused_sum_declines(monkeypatch):
-    from serif._accel import mask as mask_mod
     from serif._accel import arrow as arrow_mod
     calls = []
     orig = mask_mod.take_storage
 
     def spy(storage, indices):
         result = orig(storage, indices)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(mask_mod, 'take_storage', spy)

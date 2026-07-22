@@ -1,6 +1,6 @@
 """Deferred boolean-mask Table coordination."""
 
-from .._accel.api import _accel_popcount
+from .._vector.selection import popcount
 from .._vector.storage import TupleStorage
 from ..table import Table
 from . import columns as _columns
@@ -68,10 +68,7 @@ class MaskedTable(Table):
         mask_shell = mask.copy()
 
         # Survivor popcount, eager: len()/shape stay exact and cheap.
-        n = _accel_popcount(mask_shell._storage)
-        if n is None:
-            # None is falsy: null mask entries exclude, same as the filter.
-            n = sum(1 for v in mask_shell._storage if v)
+        n = popcount(mask_shell._storage)
 
         # Deferral state. Table.__setattr__ would route these through
         # column lookup, so bind them raw.

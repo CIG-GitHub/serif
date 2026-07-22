@@ -6,14 +6,18 @@ import operator
 import pytest
 
 from serif import Vector
+from serif.errors import SerifValueError
 import serif._accel as accel
 import serif._execution as execution
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
+from serif._vector import selection as vector_selection
 from serif._vector._arrow import operators as arrow_ops
 from serif._vector._numpy import operators as numpy_ops
 from serif._vector._numpy import reductions as numpy_reductions
+from serif._vector._numpy import selection as numpy_selection
 from serif._vector._python import reductions as python_reductions
+from serif._vector._python import selection as python_selection
 
 
 def test_declined_has_one_identity_and_is_not_none():
@@ -318,3 +322,152 @@ def test_disabled_numpy_reductions_decline(monkeypatch):
     assert numpy_reductions.sum_(storage) is execution.DECLINED
     assert numpy_reductions.mean(storage) is execution.DECLINED
     assert numpy_reductions.stdev(storage) is execution.DECLINED
+
+
+def test_filter_dispatch_is_numpy_then_python(monkeypatch):
+    calls = []
+    result = object()
+
+    def decline_numpy(storage, mask):
+        calls.append('numpy')
+        return execution.DECLINED
+
+    def accept_python(storage, mask):
+        calls.append('python')
+        return result
+
+    monkeypatch.setattr(
+        numpy_selection,
+        'filter_storage',
+        decline_numpy,
+    )
+    monkeypatch.setattr(
+        python_selection,
+        'filter_storage',
+        accept_python,
+    )
+
+    actual = vector_selection.filter_storage(object(), object())
+    assert actual is result
+    assert calls == ['numpy', 'python']
+
+
+def test_take_backend_success_skips_python(monkeypatch):
+    calls = []
+    result = object()
+
+    def accept_numpy(storage, indices):
+        calls.append('numpy')
+        return result
+
+    def unexpected_python(storage, indices):
+        calls.append('python')
+        raise AssertionError('successful take fell through')
+
+    monkeypatch.setattr(numpy_selection, 'take_storage', accept_numpy)
+    monkeypatch.setattr(
+        python_selection,
+        'take_storage',
+        unexpected_python,
+    )
+
+    actual = vector_selection.take_storage(object(), object())
+    assert actual is result
+    assert calls == ['numpy']
+
+
+def test_zero_popcount_is_a_completed_backend_result(monkeypatch):
+    calls = []
+
+    def numpy_zero(storage):
+        calls.append('numpy')
+        return 0
+
+    def unexpected_python(storage):
+        calls.append('python')
+        raise AssertionError('successful zero fell through')
+
+    monkeypatch.setattr(
+        numpy_selection,
+        'popcount_storage',
+        numpy_zero,
+    )
+    monkeypatch.setattr(
+        python_selection,
+        'popcount',
+        unexpected_python,
+    )
+
+    assert vector_selection.popcount(object()) == 0
+    assert calls == ['numpy']
+
+
+def test_selection_backend_defects_propagate(monkeypatch):
+    def broken_numpy(storage, indices):
+        raise RuntimeError('selection backend defect')
+
+    monkeypatch.setattr(numpy_selection, 'take_storage', broken_numpy)
+
+    with pytest.raises(RuntimeError, match='selection backend defect'):
+        vector_selection.take_storage(object(), object())
+
+
+def test_invalid_mask_raises_before_filter_dispatch(monkeypatch):
+    def unexpected_filter(storage, mask):
+        raise AssertionError('invalid mask reached dispatch')
+
+    monkeypatch.setattr(
+        vector_selection,
+        'filter_storage',
+        unexpected_filter,
+    )
+
+    with pytest.raises(SerifValueError, match='length mismatch'):
+        Vector([1, 2])[Vector([True])]
+
+
+def test_padded_take_decline_remains_caller_visible(monkeypatch):
+    monkeypatch.setattr(
+        numpy_selection,
+        'take_pad_storage',
+        lambda storage, indices: execution.DECLINED,
+    )
+
+    assert vector_selection.take_pad_storage(
+        object(),
+        object(),
+    ) is execution.DECLINED
+    assert vector_selection.take_pad_values(
+        Vector([10, 20])._storage,
+        [1, -1, 0],
+    ) == [20, None, 10]
+
+
+def test_selection_layers_do_not_own_public_classes():
+    for module in (
+        vector_selection,
+        numpy_selection,
+        python_selection,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_disabled_numpy_selection_declines(monkeypatch):
+    storage = Vector([1, 2])._storage
+    mask = Vector([True, False])._storage
+    monkeypatch.setattr(numpy_selection, '_USE_NUMPY', False)
+
+    assert numpy_selection.filter_storage(
+        storage,
+        mask,
+    ) is execution.DECLINED
+    assert numpy_selection.take_storage(
+        storage,
+        [0],
+    ) is execution.DECLINED
+    assert numpy_selection.take_pad_storage(
+        storage,
+        [-1],
+    ) is execution.DECLINED
+    assert numpy_selection.popcount_storage(mask) is execution.DECLINED
