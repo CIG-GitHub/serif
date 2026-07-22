@@ -823,6 +823,211 @@ Focused verification:
 python -m pytest tests\test_execution_dispatch.py tests\test_accel_arrow_grouped_sum.py tests\test_aggregate_blocks.py tests\test_aggregate_ordered_pick.py tests\test_aggregate_sort_order.py tests\test_aggregate_window.py tests\test_structural_refactor.py -q
 ```
 
+## PR 5 ordered commit plan
+
+PR 5 enforces the final physical dependency direction and addresses only the
+ownership problems demonstrated by the current implementation. It adds no
+public semantics, public APIs, backend mirrors, registries, or service objects.
+Existing class identity, state, storage, schemas, names, metadata, warnings,
+exceptions, and result types remain authoritative.
+
+Each item is a separate user-reviewed commit. Codex implements only one
+approved item at a time, then stops for inspection, user-run verification, and
+Git work.
+
+### Commit 0: Record the PR 5 physical-foundations plan
+
+Files:
+
+- update this document only.
+
+Work:
+
+- Record the approved PR 5 sequence, boundaries, invariants, and focused
+  verification commands.
+- Correct the stale handoff that still described PR 4 as pending.
+- Make no runtime changes and do not edit `docs/table-is-a-vector.md`.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_structural_refactor.py -q
+```
+
+### Commit 1: Apply the `DECLINED` contract to Arrow I/O
+
+Files:
+
+- update `src/serif/io/_arrow.py` and `src/serif/io/parquet.py`;
+- update `tests/test_parquet_arrow.py`.
+
+Work:
+
+- Return the unique `DECLINED` sentinel when an Arrow I/O physical read is
+  unsupported or an expected Arrow parse/conversion failure requires the pure
+  reader.
+- Compare decline by identity in whole-file and projected-column dispatch;
+  `None` remains legitimate cell data and is never dispatch control flow.
+- Preserve cheap whole-file decline, projected-column fallback, and the pure
+  reader's user-facing refusals.
+- Narrow accelerator exception handling so expected Arrow failures decline but
+  unexpected Serif or backend defects propagate.
+
+Invariants:
+
+- Preserve public Parquet values, schemas, names, decimal metadata, null slots,
+  concrete Python scalar types, lazy materialization, and mask pushdown.
+- Preserve unsupported-type rejection and Serif errors reached through ordinary
+  fallback. Add no warnings and change no public result type.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_parquet_arrow.py tests\test_parquet_deferred.py tests\test_execution_dispatch.py -q
+```
+
+### Commit 2: Move kind promotion under dtype ownership
+
+Files:
+
+- update `src/serif/_vector/dtype.py`, `src/serif/_vector/operators.py`, and
+  `src/serif/_vector/numeric.py`.
+
+Work:
+
+- Move the existing kind-promotion table into `dtype.py` behind a small
+  dtype-owned function.
+- Remove the semantic operator module's dependency on the concrete numeric
+  subclass module.
+- Leave `_Float`, `_Int`, their identities, and storage construction untouched.
+
+Invariants:
+
+- Preserve the exact promotion matrix, division and reverse-operation rules,
+  power behavior, string addition, nullable propagation, result schemas,
+  inference, scalar validation, warnings, and exceptions.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_type_promotion.py tests\test_inference_order.py tests\test_arithmetic_edges.py tests\test_accel_ops.py tests\test_accel_arrow_arith.py tests\test_execution_dispatch.py -q
+```
+
+### Commit 3: Centralize physical storage concatenation
+
+Files:
+
+- update `src/serif/_vector/storage.py` and `src/serif/io/parquet.py`;
+- update `tests/test_storage_protocol.py` and `tests/test_parquet_foreign.py`.
+
+Work:
+
+- Add one storage-owned concatenation function for `ArrayStorage`,
+  `BoolStorage`, `StringStorage`, `DecimalStorage`, and `TupleStorage`.
+- Move raw-buffer, offset, and null-mask combination out of Parquet and remove
+  its duplicate storage-concatenation mechanics.
+- Keep row-group orchestration, dtype selection, heterogeneous fallback,
+  naming, and public `Vector` wrapping in Parquet I/O.
+
+Invariants:
+
+- Preserve storage classes, array typecodes, value order, string offsets, raw
+  bytes, Arrow-compatible null bitmaps, decimal scale/precision, and input
+  immutability.
+- Preserve the all-valid `mask is None` representation, heterogeneous iterable
+  fallback, lazy Parquet state, and mask pushdown.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_storage_protocol.py tests\test_bool_storage.py tests\test_nullable.py tests\test_parquet.py tests\test_parquet_deferred.py tests\test_parquet_foreign.py -q
+```
+
+### Commit 4: Share Arrow-to-Serif storage reconstruction
+
+Files:
+
+- update `src/serif/_vector/_arrow/storage.py` and `src/serif/io/_arrow.py`;
+- update `tests/test_accel_arrow.py` and `tests/test_parquet_arrow.py`.
+
+Work:
+
+- Extend the physical Arrow storage adapter to reconstruct string and decimal
+  storage alongside its existing numeric, boolean, and bitmap conversions.
+- Make Parquet I/O reuse those conversions and remove its duplicate buffer
+  copying, boolean unpacking, string-offset reconstruction, and decimal
+  byte-order conversion.
+- Keep supported-type policy, schema decisions, Arrow casting, date/datetime
+  treatment, file fallback, and public-result wrapping in I/O.
+- Load optional NumPy through the shared execution layer rather than through the
+  NumPy backend package.
+
+Invariants:
+
+- Physical functions return Serif storage or `DECLINED`, never `Vector`,
+  `Table`, Arrow results, or NumPy results.
+- Preserve empty-array storage classes, decimal metadata and byte order, null
+  masks, NumPy-disabled behavior, and canonical Python output scalars.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_accel_arrow.py tests\test_accel_arrow_arith.py tests\test_accel_arrow_div.py tests\test_accel_logical.py tests\test_parquet_arrow.py tests\test_bool_storage.py tests\test_nullable.py tests\test_execution_dispatch.py -q
+```
+
+### Commit 5: Lock the physical dependency graph
+
+Files:
+
+- update `tests/test_structural_refactor.py`.
+
+Work:
+
+- Add AST-based assertions for the final import direction.
+- Ensure execution, dtype, nullable, storage, and physical backend modules do
+  not import public `Vector` or `Table`, and physical modules do not import
+  semantic operation or I/O modules.
+- Preserve the canonical-class and retired-`_accel` assertions.
+- Explicitly allow the existing, conformance-tested Arrow-plus-NumPy physical
+  composition for dictionary grouping and join probing.
+
+Focused verification:
+
+```cmd
+python -m pytest tests\test_structural_refactor.py tests\test_execution_dispatch.py -q
+```
+
+The intended dependency direction after PR 5 is:
+
+```text
+public Vector / Table
+        -> semantic Vector / Table modules
+        -> explicit backend selection
+        -> useful _python / _numpy / _arrow physical code
+        -> dtype / storage / nullable foundations
+```
+
+Table semantic code may depend on Vector semantic code. I/O may depend on
+public classes and lower-level physical storage adapters. The existing hybrid
+Arrow-plus-NumPy grouping and join implementations remain deliberate physical
+composition; no new hybrid backend package is introduced.
+
+PR 5 deliberately does not turn `dtype.py` into a package, split `storage.py`
+into a package, move categorical storage, revisit remaining public Vector
+matrix/compose methods, change Table algebra, or redesign the hybrid grouping
+and join kernels. The demonstrated ownership problems can be fixed with less
+churn while preserving existing private storage import paths.
+
+After every runtime commit, the full-suite gate remains:
+
+```cmd
+python -m pytest tests\ -q
+```
+
+Any unexpected warnings summary is a failure to investigate. PR completion
+also requires the existing pure-Python, NumPy-only, Arrow-only, and combined CI
+environments.
+
 ## Verification protocol
 
 No source item is complete until the user has run the relevant tests and
@@ -876,10 +1081,10 @@ At the beginning of a later working session:
 5. Implement one approved commit item, then stop for user inspection, tests,
    and Git work.
 
-Current position: PR 1, PR 2, and PR 3 are complete, green, committed, and
-pushed; the user also reported no material join benchmark regression during
-PR 3. The combined eight-item PR 4 plan (documentation-only Commit 0 followed
-by implementation Commits 1 through 7) is approved. PR 4, Commit 0, "Record
-the combined PR 4 execution plan," has been implemented and is awaiting user
-inspection and commit. Do not begin PR 4, Commit 1 until the user reports
+Current position: PR 1, PR 2, PR 3, and PR 4 are complete, green, committed,
+pushed, and merged. The six-item PR 5 plan (documentation-only Commit 0
+followed by implementation Commits 1 through 5) is approved, including applying
+the unique `DECLINED` contract to Arrow I/O. PR 5, Commit 0, "Record the PR 5
+physical-foundations plan," has been implemented and is awaiting user
+inspection and commit. Do not begin PR 5, Commit 1 until the user reports
 Commit 0 complete and explicitly says to proceed.
