@@ -1,6 +1,6 @@
 """
 Conformance tests for the OPTIONAL Arrow string-key bucketing under
-serif._table._arrow.grouping behind aggregate and the join right-index build.
+serif._table._arrow.grouping behind aggregate, plus adjacent join isolation.
 
 The guarantee under test — accelerators widen transport, never
 semantics: every string-keyed aggregate and join must return IDENTICAL
@@ -23,6 +23,7 @@ pytest.importorskip("pyarrow")
 from serif import Table, Vector
 from serif._execution import DECLINED
 from serif._table._arrow import grouping as group_mod
+from serif._table._arrow import joins as join_mod
 from serif._table._numpy import grouping as numpy_grouping
 from serif.errors import SerifValueError
 from serif._accel import arrow as bridge
@@ -35,13 +36,16 @@ from serif._accel import arrow as bridge
 def _pure(fn):
     saved_bridge = bridge._USE_ARROW
     saved_grouping = group_mod._USE_ARROW
+    saved_join = join_mod._USE_ARROW
     bridge._USE_ARROW = False
     group_mod._USE_ARROW = False
+    join_mod._USE_ARROW = False
     try:
         return fn()
     finally:
         bridge._USE_ARROW = saved_bridge
         group_mod._USE_ARROW = saved_grouping
+        join_mod._USE_ARROW = saved_join
 
 
 def _assert_identical(pure_v, fast_v):
@@ -161,7 +165,7 @@ def test_window_string_groupby_conforms():
 
 
 # ---------------------------------------------------------------------------
-# Joins — string keys now bucket in C on the right side
+# Joins — conformance remains independent of grouping dispatch
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("flavor", ["inner_join", "left_join", "full_join"])

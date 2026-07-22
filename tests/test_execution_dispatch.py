@@ -11,9 +11,13 @@ from serif.errors import SerifValueError
 import serif._accel as accel
 import serif._execution as execution
 from serif._table import grouping as table_grouping
+from serif._table import joins as table_joins
 from serif._table._arrow import grouping as arrow_grouping
+from serif._table._arrow import joins as arrow_joins
 from serif._table._numpy import grouping as numpy_grouping
+from serif._table._numpy import joins as numpy_joins
 from serif._table._python import grouping as python_grouping
+from serif._table._python import joins as python_joins
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
 from serif._vector import selection as vector_selection
@@ -652,4 +656,244 @@ def test_disabled_grouping_backends_decline(monkeypatch):
     monkeypatch.setattr(arrow_grouping, '_USE_ARROW', False)
     assert arrow_grouping.group_strings(
         string_storage
+    ) is execution.DECLINED
+
+
+def test_join_dispatch_uses_effective_cascade(monkeypatch):
+    calls = []
+    result = object()
+
+    def decline(name):
+        def implementation(*args):
+            calls.append(name)
+            return execution.DECLINED
+        return implementation
+
+    def accept_strings(*args):
+        calls.append('arrow_sorted')
+        return result
+
+    monkeypatch.setattr(
+        numpy_joins,
+        'probe_int64_dense',
+        decline('numpy_dense'),
+    )
+    monkeypatch.setattr(
+        arrow_joins,
+        'probe_strings_hash',
+        decline('arrow_hash'),
+    )
+    monkeypatch.setattr(
+        numpy_joins,
+        'probe_int64',
+        decline('numpy_sorted'),
+    )
+    monkeypatch.setattr(arrow_joins, 'probe_strings', accept_strings)
+
+    actual = table_joins._dispatch_single_key_join(
+        object(), object(), False, True, True, False
+    )
+    assert actual is result
+    assert calls == [
+        'numpy_dense',
+        'arrow_hash',
+        'numpy_sorted',
+        'arrow_sorted',
+    ]
+
+
+def test_join_diagnostic_is_a_completed_backend_outcome(monkeypatch):
+    calls = []
+    diagnostic = ('right_dup', (2,), 2)
+
+    def dense_diagnostic(*args):
+        calls.append('numpy_dense')
+        return diagnostic
+
+    def unexpected(*args):
+        calls.append('unexpected')
+        return execution.DECLINED
+
+    monkeypatch.setattr(
+        numpy_joins,
+        'probe_int64_dense',
+        dense_diagnostic,
+    )
+    monkeypatch.setattr(arrow_joins, 'probe_strings_hash', unexpected)
+    monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
+    monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
+
+    actual = table_joins._dispatch_single_key_join(
+        object(), object(), False, True, False, False
+    )
+    assert actual is diagnostic
+    assert calls == ['numpy_dense']
+
+
+def test_join_none_is_not_decline(monkeypatch):
+    calls = []
+
+    def dense_none(*args):
+        calls.append('numpy_dense')
+        return None
+
+    def unexpected(*args):
+        calls.append('unexpected')
+        return execution.DECLINED
+
+    monkeypatch.setattr(numpy_joins, 'probe_int64_dense', dense_none)
+    monkeypatch.setattr(arrow_joins, 'probe_strings_hash', unexpected)
+    monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
+    monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
+
+    actual = table_joins._dispatch_single_key_join(
+        object(), object(), False, True, False, False
+    )
+    assert actual is None
+    assert calls == ['numpy_dense']
+
+
+def test_join_declines_reach_mandatory_python_path(monkeypatch):
+    calls = []
+    original = python_joins.probe
+
+    for module, name in (
+        (numpy_joins, 'probe_int64_dense'),
+        (arrow_joins, 'probe_strings_hash'),
+        (numpy_joins, 'probe_int64'),
+        (arrow_joins, 'probe_strings'),
+    ):
+        monkeypatch.setattr(
+            module,
+            name,
+            lambda *args: execution.DECLINED,
+        )
+
+    def spy_python(*args, **kwargs):
+        calls.append('python')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(python_joins, 'probe', spy_python)
+
+    left = Table({'key': [1, 2], 'x': [10, 20]})
+    right = Table({'key': [2], 'y': [30]})
+    result = left.left_join(right, 'key', 'key')
+    assert list(result.y) == [None, 30]
+    assert calls == ['python']
+
+
+def test_join_backend_defects_propagate_without_fallback(monkeypatch):
+    calls = []
+
+    def broken_dense(*args):
+        calls.append('numpy_dense')
+        raise RuntimeError('join backend defect')
+
+    def unexpected(*args):
+        calls.append('unexpected')
+        return execution.DECLINED
+
+    monkeypatch.setattr(numpy_joins, 'probe_int64_dense', broken_dense)
+    monkeypatch.setattr(arrow_joins, 'probe_strings_hash', unexpected)
+    monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
+    monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
+    monkeypatch.setattr(python_joins, 'probe', unexpected)
+
+    left = Table({'key': [1]})
+    right = Table({'key': [1]})
+    with pytest.raises(RuntimeError, match='join backend defect'):
+        left.inner_join(right, 'key', 'key')
+    assert calls == ['numpy_dense']
+
+
+def test_arrow_join_backend_defects_propagate(monkeypatch):
+    calls = []
+
+    def decline_dense(*args):
+        calls.append('numpy_dense')
+        return execution.DECLINED
+
+    def broken_arrow(*args):
+        calls.append('arrow_hash')
+        raise RuntimeError('Arrow join backend defect')
+
+    def unexpected(*args):
+        calls.append('unexpected')
+        return execution.DECLINED
+
+    monkeypatch.setattr(numpy_joins, 'probe_int64_dense', decline_dense)
+    monkeypatch.setattr(arrow_joins, 'probe_strings_hash', broken_arrow)
+    monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
+    monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
+    monkeypatch.setattr(python_joins, 'probe', unexpected)
+
+    left = Table({'key': ['a']})
+    right = Table({'key': ['a']})
+    with pytest.raises(RuntimeError, match='Arrow join backend defect'):
+        left.inner_join(right, 'key', 'key')
+    assert calls == ['numpy_dense', 'arrow_hash']
+
+
+def test_invalid_join_keys_raise_before_dispatch(monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('invalid join keys reached dispatch')
+
+    monkeypatch.setattr(table_joins, '_dispatch_single_key_join', unexpected)
+
+    left = Table({'key': [1, 2, 3]})
+    right = Table({'key': [1, 2]})
+    with pytest.raises(SerifValueError, match='Left join key.*length 2'):
+        left.inner_join(right, Vector([1, 2]), 'key')
+
+
+def test_multi_key_join_skips_optional_dispatch(monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('multi-key join reached optional dispatch')
+
+    monkeypatch.setattr(table_joins, '_dispatch_single_key_join', unexpected)
+
+    left = Table({'a': [1, 1], 'b': ['x', 'y']})
+    right = Table({'a': [1], 'b': ['y']})
+    result = left.inner_join(right, ['a', 'b'], ['a', 'b'])
+    assert list(result.a) == [1]
+    assert list(result.b) == ['y']
+
+
+def test_join_physical_layers_do_not_own_public_classes():
+    for module in (
+        numpy_joins,
+        arrow_joins,
+        python_joins,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_disabled_join_backends_decline(monkeypatch):
+    left_int = Vector([1, 2])._storage
+    right_int = Vector([2])._storage
+    left_string = Vector(['a', 'b'])._storage
+    right_string = Vector(['b'])._storage
+
+    monkeypatch.setattr(numpy_joins, '_USE_NUMPY', False)
+    assert numpy_joins.probe_int64_dense(
+        left_int, right_int, False, True, False, False
+    ) is execution.DECLINED
+    assert numpy_joins.probe_int64(
+        left_int, right_int, False, True, False, False
+    ) is execution.DECLINED
+    assert arrow_joins.probe_strings_hash(
+        left_string, right_string, False, True, False, False
+    ) is execution.DECLINED
+    assert arrow_joins.probe_strings(
+        left_string, right_string, False, True, False, False
+    ) is execution.DECLINED
+
+    monkeypatch.undo()
+    monkeypatch.setattr(arrow_joins, '_USE_ARROW', False)
+    assert arrow_joins.probe_strings_hash(
+        left_string, right_string, False, True, False, False
+    ) is execution.DECLINED
+    assert arrow_joins.probe_strings(
+        left_string, right_string, False, True, False, False
     ) is execution.DECLINED

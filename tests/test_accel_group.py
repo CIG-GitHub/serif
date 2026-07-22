@@ -22,10 +22,11 @@ pytest.importorskip("numpy")
 
 from serif import Table, Vector
 from serif._execution import DECLINED
+from serif._table._arrow import joins as arrow_join_mod
 from serif._table._numpy import grouping as group_mod
+from serif._table._numpy import joins as join_mod
 from serif._vector._numpy import selection as mask_mod
 from serif.errors import SerifValueError
-import serif._accel as accel
 
 
 # ---------------------------------------------------------------------------
@@ -33,17 +34,17 @@ import serif._accel as accel
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = accel._USE_NUMPY
     saved_grouping = group_mod._USE_NUMPY
+    saved_join = join_mod._USE_NUMPY
     saved_selection = mask_mod._USE_NUMPY
-    accel._USE_NUMPY = False
     group_mod._USE_NUMPY = False
+    join_mod._USE_NUMPY = False
     mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
-        accel._USE_NUMPY = saved
         group_mod._USE_NUMPY = saved_grouping
+        join_mod._USE_NUMPY = saved_join
         mask_mod._USE_NUMPY = saved_selection
 
 
@@ -192,8 +193,8 @@ def test_join_conforms(flavor):
 
 
 def test_join_on_string_keys_conforms():
-    # group_indices declines str keys (the ARROW backend buckets them when
-    # installed — test_accel_string_group.py); padded gather still engages.
+    # NumPy join probes decline str keys; Arrow owns them when installed.
+    # Padded gather remains independent and still engages.
     def run():
         left = Table({'k': ['a', 'b', 'c'], 'x': [1, 2, 3]})
         right = Table({'k': ['b', 'c', 'd'], 'y': [2.5, 3.5, 4.5]})
@@ -298,7 +299,7 @@ def _spy(monkeypatch, module, fn_name, calls):
 
     def wrapper(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None and result is not DECLINED)
+        calls.append(result is not DECLINED)
         return result
 
     monkeypatch.setattr(module, fn_name, wrapper)
@@ -324,15 +325,13 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
 
 
 def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
-    from serif._accel import join as join_mod
-    from serif._accel import arrow as arrow_mod
     probe_calls, pad_calls = [], []
     _spy(monkeypatch, join_mod, 'probe_int64', probe_calls)
     _spy(monkeypatch, mask_mod, 'take_pad_storage', pad_calls)
     monkeypatch.setattr(join_mod, 'probe_int64_dense',
-                        lambda *args, **kwargs: None)
-    monkeypatch.setattr(arrow_mod, 'join_probe_strings_hash',
-                        lambda *args, **kwargs: None)
+                        lambda *args, **kwargs: DECLINED)
+    monkeypatch.setattr(arrow_join_mod, 'probe_strings_hash',
+                        lambda *args, **kwargs: DECLINED)
 
     left = Table({'id': [1, 2, 3], 'a': [1.0, 2.0, 3.0]})
     right = Table({'id': [2, 3], 'b': ['x', 'y']})

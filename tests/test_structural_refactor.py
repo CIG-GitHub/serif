@@ -78,6 +78,28 @@ def test_legacy_accel_mask_module_is_removed():
     assert importlib.util.find_spec('serif._accel.mask') is None
 
 
+def test_table_join_backends_do_not_own_public_classes():
+    from serif._table._arrow import joins as arrow_joins
+    from serif._table._numpy import joins as numpy_joins
+    from serif._table._python import joins as python_joins
+
+    for module in (
+        arrow_joins,
+        numpy_joins,
+        python_joins,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_legacy_accel_no_longer_dispatches_table_joins():
+    from serif._accel import api
+
+    assert not hasattr(api, '_accel_group')
+    assert not hasattr(api, '_accel_join_probe')
+    assert importlib.util.find_spec('serif._accel.join') is None
+
+
 # ---------------------------------------------------------------------------
 # Table.sort_by preserves column backends and subclasses
 # ---------------------------------------------------------------------------
