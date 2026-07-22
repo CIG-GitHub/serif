@@ -15,11 +15,10 @@ proven by the pyarrow reader (serif/io/_arrow.py):
     invisible to equality checks; conformance tests assert
     `type(x) is float`.
 
-  * Accelerators may widen TRANSPORT, never SEMANTICS. Every accelerated
-    operation returns results IDENTICAL to the pure path, or DECLINES
-    (returns None) and the pure path runs. Declines are per-call — an
-    unsupported storage type, typecode, or value range costs one
-    isinstance check, not a mode switch.
+  * Accelerators may widen TRANSPORT, never SEMANTICS. Every optional
+    implementation returns results IDENTICAL to the pure path, or the unique
+    DECLINED sentinel. The remaining legacy join boundary translates that
+    sentinel to None until it migrates.
 
   * No new representation. Backends operate on serif's EXISTING buffers:
     ArrayStorage's array.array and BoolStorage's bytearray are viewed
@@ -29,10 +28,10 @@ proven by the pyarrow reader (serif/io/_arrow.py):
     layout (validity bitmap, offsets, UTF-8 buffer), so pyarrow wraps it
     with zero copies. The storage layout being arrow-shaped keeps paying.
 
-Modules: api (the remaining Table call-through boundary), group (single-key
-bucketing for partitions), join (vectorized single-key join probe), and arrow
-(the remaining Table Arrow kernels). Migrated Vector implementations live
-beside their semantic modules under serif/_vector/_python, _numpy, and _arrow.
+Modules: api (the remaining Table join call-through boundary), join
+(vectorized single-key join probe), and arrow (the remaining Table Arrow
+kernels). Migrated implementations live beside their semantic modules under
+serif/_vector and serif/_table backend directories.
 
 _USE_NUMPY here and _USE_ARROW in arrow.py are private switches for
 tests/benchmarks, not API.

@@ -5,10 +5,15 @@ import operator
 
 import pytest
 
+from serif import Table
 from serif import Vector
 from serif.errors import SerifValueError
 import serif._accel as accel
 import serif._execution as execution
+from serif._table import grouping as table_grouping
+from serif._table._arrow import grouping as arrow_grouping
+from serif._table._numpy import grouping as numpy_grouping
+from serif._table._python import grouping as python_grouping
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
 from serif._vector import selection as vector_selection
@@ -471,3 +476,180 @@ def test_disabled_numpy_selection_declines(monkeypatch):
         [-1],
     ) is execution.DECLINED
     assert numpy_selection.popcount_storage(mask) is execution.DECLINED
+
+
+def test_grouping_dispatch_is_numpy_then_arrow(monkeypatch):
+    calls = []
+    result = object()
+
+    def decline_numpy(storage):
+        calls.append('numpy')
+        return execution.DECLINED
+
+    def accept_arrow(storage):
+        calls.append('arrow')
+        return result
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', decline_numpy)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', accept_arrow)
+
+    assert table_grouping._dispatch_single_key(object()) is result
+    assert calls == ['numpy', 'arrow']
+
+
+def test_grouping_none_is_a_completed_backend_result(monkeypatch):
+    calls = []
+
+    def numpy_none(storage):
+        calls.append('numpy')
+        return None
+
+    def unexpected_arrow(storage):
+        calls.append('arrow')
+        raise AssertionError('successful None fell through')
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', numpy_none)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_arrow)
+
+    assert table_grouping._dispatch_single_key(object()) is None
+    assert calls == ['numpy']
+
+
+def test_grouping_declines_reach_mandatory_python_path(monkeypatch):
+    calls = []
+    original = python_grouping.bucket_rows
+
+    monkeypatch.setattr(
+        numpy_grouping,
+        'group_indices',
+        lambda storage: execution.DECLINED,
+    )
+    monkeypatch.setattr(
+        arrow_grouping,
+        'group_strings',
+        lambda storage: execution.DECLINED,
+    )
+
+    def spy_python(*args, **kwargs):
+        calls.append('python')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(python_grouping, 'bucket_rows', spy_python)
+
+    result = Table({'g': [2, 1, 2]}).aggregate(groupby='g')
+    assert list(result.g) == [2, 1]
+    assert calls == ['python']
+
+
+def test_grouping_backend_defects_propagate(monkeypatch):
+    calls = []
+
+    def broken_numpy(storage):
+        calls.append('numpy')
+        raise RuntimeError('grouping backend defect')
+
+    def unexpected_arrow(storage):
+        calls.append('arrow')
+        return execution.DECLINED
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', broken_numpy)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_arrow)
+
+    with pytest.raises(RuntimeError, match='grouping backend defect'):
+        Table({'g': [1, 2]}).aggregate(groupby='g')
+    assert calls == ['numpy']
+
+
+def test_arrow_grouping_defects_propagate_without_python_fallback(monkeypatch):
+    calls = []
+
+    def decline_numpy(storage):
+        calls.append('numpy')
+        return execution.DECLINED
+
+    def broken_arrow(storage):
+        calls.append('arrow')
+        raise RuntimeError('Arrow grouping backend defect')
+
+    def unexpected_python(*args, **kwargs):
+        calls.append('python')
+        raise AssertionError('backend defect reached Python fallback')
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', decline_numpy)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', broken_arrow)
+    monkeypatch.setattr(python_grouping, 'bucket_rows', unexpected_python)
+
+    with pytest.raises(RuntimeError, match='Arrow grouping backend defect'):
+        Table({'g': ['a', 'b']}).aggregate(groupby='g')
+    assert calls == ['numpy', 'arrow']
+
+
+def test_invalid_group_key_length_raises_before_dispatch(monkeypatch):
+    def unexpected_optional(storage):
+        raise AssertionError('invalid group key reached dispatch')
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', unexpected_optional)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_optional)
+
+    table = Table({'x': [1, 2, 3]})
+    with pytest.raises(SerifValueError, match='has length 2'):
+        table.aggregate(groupby=Vector([1, 2]))
+
+
+def test_multi_key_grouping_uses_canonical_python_path(monkeypatch):
+    def unexpected_optional(storage):
+        raise AssertionError('multi-key grouping reached optional dispatch')
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', unexpected_optional)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_optional)
+
+    result = Table({
+        'a': [1, 1, 2],
+        'b': ['x', 'y', 'x'],
+    }).aggregate(groupby=['a', 'b'])
+    assert list(zip(result.a, result.b)) == [
+        (1, 'x'),
+        (1, 'y'),
+        (2, 'x'),
+    ]
+
+
+def test_window_row_keys_use_canonical_python_grouping(monkeypatch):
+    def unexpected_optional(storage):
+        raise AssertionError('window row keys reached optional dispatch')
+
+    monkeypatch.setattr(numpy_grouping, 'group_indices', unexpected_optional)
+    monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_optional)
+
+    result = Table({'g': [1, 2, 1], 'x': [3, 4, 5]}).window(
+        groupby='g',
+        aggregations={'total': lambda group: group.x.sum()},
+    )
+    assert list(result.total) == [8, 4, 8]
+
+
+def test_grouping_physical_layers_do_not_own_public_classes():
+    for module in (
+        numpy_grouping,
+        arrow_grouping,
+        python_grouping,
+    ):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
+
+
+def test_disabled_grouping_backends_decline(monkeypatch):
+    int_storage = Vector([1, 2])._storage
+    string_storage = Vector(['a', 'b'])._storage
+
+    monkeypatch.setattr(numpy_grouping, '_USE_NUMPY', False)
+    assert numpy_grouping.group_indices(int_storage) is execution.DECLINED
+    assert arrow_grouping.group_strings(
+        string_storage
+    ) is execution.DECLINED
+
+    monkeypatch.undo()
+    monkeypatch.setattr(arrow_grouping, '_USE_ARROW', False)
+    assert arrow_grouping.group_strings(
+        string_storage
+    ) is execution.DECLINED

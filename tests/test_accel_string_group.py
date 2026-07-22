@@ -1,7 +1,6 @@
 """
-Conformance tests for the OPTIONAL arrow-accelerated string-key
-bucketing (serif._accel.arrow.group_strings) behind aggregate, window,
-and the join right-index build.
+Conformance tests for the OPTIONAL Arrow string-key bucketing under
+serif._table._arrow.grouping behind aggregate and the join right-index build.
 
 The guarantee under test — accelerators widen transport, never
 semantics: every string-keyed aggregate and join must return IDENTICAL
@@ -13,17 +12,19 @@ off) must be invisible.
 
 group_strings is a two-backend composition (arrow encodes, numpy
 buckets), so this suite skips unless BOTH are installed; _pure()
-toggles only the arrow switch, isolating this commit's tier.
+toggles the Arrow switches, isolating this commit's tier.
 """
 
 import pytest
 
-np = pytest.importorskip("numpy")
-pa = pytest.importorskip("pyarrow")
+pytest.importorskip("numpy")
+pytest.importorskip("pyarrow")
 
 from serif import Table, Vector
+from serif._execution import DECLINED
+from serif._table._arrow import grouping as group_mod
+from serif._table._numpy import grouping as numpy_grouping
 from serif.errors import SerifValueError
-import serif._accel as accel
 from serif._accel import arrow as bridge
 
 
@@ -32,12 +33,15 @@ from serif._accel import arrow as bridge
 # ---------------------------------------------------------------------------
 
 def _pure(fn):
-    saved = bridge._USE_ARROW
+    saved_bridge = bridge._USE_ARROW
+    saved_grouping = group_mod._USE_ARROW
     bridge._USE_ARROW = False
+    group_mod._USE_ARROW = False
     try:
         return fn()
     finally:
-        bridge._USE_ARROW = saved
+        bridge._USE_ARROW = saved_bridge
+        group_mod._USE_ARROW = saved_grouping
 
 
 def _assert_identical(pure_v, fast_v):
@@ -89,31 +93,40 @@ def _pure_partition(vals):
 ], ids=["dupes", "single_key", "empty_strings", "all_unique_desc",
         "one_row", "unicode", "long_strings"])
 def test_group_strings_matches_pure_dict(vals):
-    fast = bridge.group_strings(Vector(vals)._storage)
+    fast = group_mod.group_strings(Vector(vals)._storage)
     pure = _pure_partition(vals)
-    assert fast is not None
-    # Buckets are numpy arrays (transport — pinned so it doesn't silently
-    # regress to lists); contents and key order must match the pure dict.
-    assert all(isinstance(b, np.ndarray) for b in fast.values())
-    assert {k: list(b) for k, b in fast.items()} == pure
+    assert fast is not DECLINED
+    assert fast == pure
+    assert all(type(bucket) is list for bucket in fast.values())
+    assert all(
+        type(index) is int
+        for bucket in fast.values()
+        for index in bucket
+    )
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
     assert all(type(k[0]) is str for k in fast.keys())   # python out
 
 
 def test_group_strings_declines_unsupported():
-    assert bridge.group_strings(Vector(['a', None, 'b'])._storage) is None  # nullable
-    assert bridge.group_strings(Vector([1, 2])._storage) is None           # ints
-    assert bridge.group_strings(Vector(['a'])[:0]._storage) is None        # empty
+    assert group_mod.group_strings(
+        Vector(['a', None, 'b'])._storage
+    ) is DECLINED  # nullable
+    assert group_mod.group_strings(
+        Vector([1, 2])._storage
+    ) is DECLINED  # ints
+    assert group_mod.group_strings(
+        Vector(['a'])[:0]._storage
+    ) is DECLINED  # empty
 
 
 def test_group_strings_gates_on_both_switches(monkeypatch):
     storage = Vector(['a', 'b', 'a'])._storage
-    assert bridge.group_strings(storage) is not None
-    monkeypatch.setattr(bridge, '_USE_ARROW', False)
-    assert bridge.group_strings(storage) is None
+    assert group_mod.group_strings(storage) is not DECLINED
+    monkeypatch.setattr(group_mod, '_USE_ARROW', False)
+    assert group_mod.group_strings(storage) is DECLINED
     monkeypatch.undo()
-    monkeypatch.setattr(accel, '_USE_NUMPY', False)
-    assert bridge.group_strings(storage) is None
+    monkeypatch.setattr(numpy_grouping, '_USE_NUMPY', False)
+    assert group_mod.group_strings(storage) is DECLINED
 
 
 # ---------------------------------------------------------------------------
@@ -181,14 +194,14 @@ def test_string_key_expect_right_unique_error_matches_pure():
 
 def test_string_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     calls = []
-    orig = bridge.group_strings
+    orig = group_mod.group_strings
 
     def spy(*args, **kwargs):
         result = orig(*args, **kwargs)
-        calls.append(result is not None)
+        calls.append(result is not DECLINED)
         return result
 
-    monkeypatch.setattr(bridge, 'group_strings', spy)
+    monkeypatch.setattr(group_mod, 'group_strings', spy)
     # Exercise string bucketing as a fallback after the fused grouped-sum
     # path declines; that earlier path has its own engagement test.
     monkeypatch.setattr(bridge, 'grouped_sums', lambda *args, **kwargs: None)

@@ -1,6 +1,6 @@
 """
-Conformance tests for the OPTIONAL numpy accelerators behind joins and
-partitions: group.group_indices (single-key bucketing) and
+Conformance tests for the OPTIONAL numpy implementations behind joins and
+partitions: _table._numpy.grouping.group_indices (single-key bucketing) and
 _vector._numpy.selection.take_pad_storage (gather with -1 → null pad lanes).
 
 The guarantee under test — accelerators widen transport, never semantics:
@@ -18,10 +18,11 @@ from datetime import date
 
 import pytest
 
-np = pytest.importorskip("numpy")
+pytest.importorskip("numpy")
 
 from serif import Table, Vector
 from serif._execution import DECLINED
+from serif._table._numpy import grouping as group_mod
 from serif._vector._numpy import selection as mask_mod
 from serif.errors import SerifValueError
 import serif._accel as accel
@@ -33,13 +34,16 @@ import serif._accel as accel
 
 def _pure(fn):
     saved = accel._USE_NUMPY
+    saved_grouping = group_mod._USE_NUMPY
     saved_selection = mask_mod._USE_NUMPY
     accel._USE_NUMPY = False
+    group_mod._USE_NUMPY = False
     mask_mod._USE_NUMPY = False
     try:
         return fn()
     finally:
         accel._USE_NUMPY = saved
+        group_mod._USE_NUMPY = saved_grouping
         mask_mod._USE_NUMPY = saved_selection
 
 
@@ -92,22 +96,29 @@ def _pure_partition(vals):
     [7],
 ], ids=["dupes", "single_key", "negatives", "all_unique_desc", "one_row"])
 def test_group_indices_matches_pure_dict(vals):
-    from serif._accel.group import group_indices
-    fast = group_indices(Vector(vals)._storage)
+    fast = group_mod.group_indices(Vector(vals)._storage)
     pure = _pure_partition(vals)
-    assert fast is not None
-    # Buckets are numpy intp arrays (transport — pinned so it doesn't
-    # silently regress to lists); contents must match the pure dict.
-    assert all(isinstance(b, np.ndarray) for b in fast.values())
-    assert {k: list(b) for k, b in fast.items()} == pure
+    assert fast is not DECLINED
+    assert fast == pure
+    assert all(type(bucket) is list for bucket in fast.values())
+    assert all(
+        type(index) is int
+        for bucket in fast.values()
+        for index in bucket
+    )
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
 
 
 def test_group_indices_declines_unsupported():
-    from serif._accel.group import group_indices
-    assert group_indices(Vector([1.5, 2.5])._storage) is None    # float: NaN semantics
-    assert group_indices(Vector([1, None, 2])._storage) is None  # nullable
-    assert group_indices(Vector(['a', 'b'])._storage) is None    # strings
+    assert group_mod.group_indices(
+        Vector([1.5, 2.5])._storage
+    ) is DECLINED  # float: NaN semantics
+    assert group_mod.group_indices(
+        Vector([1, None, 2])._storage
+    ) is DECLINED  # nullable
+    assert group_mod.group_indices(
+        Vector(['a', 'b'])._storage
+    ) is DECLINED  # strings
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +280,15 @@ def test_multi_key_groupby_declines_conforms():
     _assert_tables_identical(_pure(run), run())
 
 
+def test_nan_group_keys_retain_python_dict_semantics():
+    nan = float('nan')
+    table = Table({'g': [nan, nan], 'x': [1, 2]})
+    result = table.aggregate(groupby='g')
+
+    assert len(result) == 2
+    assert all(math.isnan(value) for value in result.g)
+
+
 # ---------------------------------------------------------------------------
 # The fast paths actually engage (guards against silent decline rot)
 # ---------------------------------------------------------------------------
@@ -285,7 +305,6 @@ def _spy(monkeypatch, module, fn_name, calls):
 
 
 def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
-    from serif._accel import group as group_mod
     from serif._accel import arrow as arrow_mod
     calls = []
     _spy(monkeypatch, group_mod, 'group_indices', calls)
@@ -300,7 +319,7 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     calls.clear()
     t2 = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t2.aggregate(groupby=t2.g, aggregations={'m': t2.x.sum})
-    assert calls == [False]  # str key declines HERE; arrow's group_strings
+    assert calls == [False]  # str key declines HERE; Table's Arrow grouping
     #                          picks it up when installed (its own suite)
 
 

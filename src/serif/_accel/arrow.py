@@ -44,27 +44,6 @@ def int64_array(storage):
     return _legacy_result(_arrow_storage.int64_array(storage))
 
 
-def group_strings(storage):
-    """Bucket one non-null string key in first-appearance order."""
-    from . import _USE_NUMPY
-
-    if not _USE_NUMPY or _np is None:
-        return None
-    if not isinstance(storage, StringStorage) or storage._mask is not None:
-        return None
-    array = string_array(storage)
-    if array is None:
-        return None
-    encoded = array.dictionary_encode()
-    codes = encoded.indices.to_numpy(zero_copy_only=True)
-    nkeys = len(encoded.dictionary)
-    order = _np.argsort(codes, kind='stable')
-    counts = _np.bincount(codes, minlength=nkeys)
-    groups = _np.split(order, _np.cumsum(counts)[:-1])
-    keys = encoded.dictionary.to_pylist()
-    return {(keys[code],): groups[code] for code in range(nkeys)}
-
-
 def join_probe_strings(
     left_storage,
     right_storage,

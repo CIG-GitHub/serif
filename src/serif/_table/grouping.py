@@ -1,12 +1,13 @@
 """Shared Table partitioning and grouped aggregation evaluation."""
 
-from .._accel.api import _accel_group
+from .._execution import DECLINED
 from .._vector import Schema
 from .._vector.selection import take_storage
 from ..errors import SerifEmptyReductionError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from ._python import grouping as _python_grouping
 from .columns import iter_columns
 
 
@@ -34,6 +35,39 @@ def make_uniquifier():
     return uniquify
 
 
+def _numpy_grouping():
+    from ._numpy import grouping
+
+    return grouping
+
+
+def _arrow_grouping():
+    from ._arrow import grouping
+
+    return grouping
+
+
+def _dispatch_single_key(storage):
+    """Try useful optional single-key bucket implementations in order."""
+    result = _numpy_grouping().group_indices(storage)
+    if result is not DECLINED:
+        return result
+    return _arrow_grouping().group_strings(storage)
+
+
+def _bucket_storages(storages, nrows, *, track_row_keys=False):
+    """Bucket validated key storage through optional, then Python paths."""
+    if len(storages) == 1 and not track_row_keys:
+        result = _dispatch_single_key(storages[0])
+        if result is not DECLINED:
+            return result, None
+    return _python_grouping.bucket_rows(
+        storages,
+        nrows,
+        track_row_keys=track_row_keys,
+    )
+
+
 def build_partition_index(
     table,
     groupby,
@@ -54,28 +88,11 @@ def build_partition_index(
                 f"but table has {nrows} rows."
             )
 
-    # A single supported key can bucket in the accelerator. Windowing needs
-    # the per-row key list as well, so that case remains on the pure path.
-    if len(groupby) == 1 and not track_row_keys:
-        fast = _accel_group(groupby[0]._storage)
-        if fast is not None:
-            return groupby, fast, None
-
-    partition_index = {}
-    key_count = len(groupby)
-    key_data = [column._storage.to_tuple() for column in groupby]
-    row_keys = [None] * nrows if track_row_keys else None
-
-    for row_index in range(nrows):
-        key = tuple(key_data[index][row_index] for index in range(key_count))
-        if row_keys is not None:
-            row_keys[row_index] = key
-        bucket = partition_index.get(key)
-        if bucket is None:
-            partition_index[key] = [row_index]
-        else:
-            bucket.append(row_index)
-
+    partition_index, row_keys = _bucket_storages(
+        [column._storage for column in groupby],
+        nrows,
+        track_row_keys=track_row_keys,
+    )
     return groupby, partition_index, row_keys
 
 

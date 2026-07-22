@@ -1,26 +1,23 @@
 """Remaining legacy optional-accelerator call-throughs.
 
-Vector operations dispatch from their semantic modules. This boundary now
-preserves the established per-call ``None`` decline behavior only for Table
-grouping and joins until those families migrate.
+Vector operations and Table grouping dispatch from their semantic modules.
+This boundary preserves the established per-call ``None`` decline behavior
+only for Table joins until that family migrates.
 """
 
 
 def _accel_group(storage):
-    """Accelerated single-key bucketing ({(key,): [rows]} in first-
-    appearance order); None = decline to the pure dict loop, whose
-    behavior is the specification. numpy buckets int64 keys from buffer
-    math; string keys ride arrow's hash kernel into the same math
-    (serif/_accel/arrow.py, which gates on both switches itself)."""
+    """Temporary ``None``-decline adapter for the join right index."""
     from .. import _accel
-    fast = None
-    if _accel._USE_NUMPY:
-        from .group import group_indices
-        fast = group_indices(storage)
-    if fast is None:
-        from .arrow import group_strings
-        fast = group_strings(storage)
-    return fast
+    from .._execution import DECLINED
+
+    if not _accel._USE_NUMPY:
+        return None
+
+    from .._table.grouping import _dispatch_single_key
+
+    result = _dispatch_single_key(storage)
+    return None if result is DECLINED else result
 
 
 def _accel_join_probe(left_storage, right_storage,
