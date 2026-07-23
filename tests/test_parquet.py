@@ -12,9 +12,11 @@ import os
 import tempfile
 from array import array
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 
+import serif.io.parquet as parquet_mod
 from serif import Table, Vector
 from serif.errors import SerifTypeError
 from serif.io.parquet import _decode_array_raw
@@ -159,6 +161,114 @@ def test_all_valid_optional_packed_page_reuses_array(typecode, values):
 
     assert storage._data is packed
     assert storage._mask is None
+
+
+def _read_optional_pages(page_values, kind, phys_type, *,
+                         conv_type=None, decimal_scale=None,
+                         decimal_precision=None):
+    chunk = bytearray()
+    for values in page_values:
+        null_flags = [value is None for value in values]
+        non_null = [value for value in values if value is not None]
+        body = (
+            parquet_mod._encode_def_levels(null_flags)
+            + parquet_mod._encode_plain(
+                non_null, kind, 'x', decimal_scale)
+        )
+        data_header = parquet_mod._enc_data_page_header(len(values))
+        chunk.extend(parquet_mod._enc_page_header(
+            len(body), len(body), data_header))
+        chunk.extend(body)
+
+    return parquet_mod._read_column_chunk(
+        memoryview(chunk),
+        {
+            'codec': parquet_mod._CODEC_UNCOMPRESSED,
+            'num_values': sum(map(len, page_values)),
+            'data_page_offset': 0,
+        },
+        kind=kind,
+        phys_type=phys_type,
+        conv_type=conv_type,
+        is_optional=True,
+        col_name='x',
+        decimal_scale=decimal_scale,
+        decimal_precision=decimal_precision,
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,phys_type,page_values,options",
+    [
+        (
+            int,
+            parquet_mod._T_INT64,
+            [[1, None], [None, -3], [4]],
+            {},
+        ),
+        (
+            float,
+            parquet_mod._T_DOUBLE,
+            [[1.5, None], [None, -3.25], [4.5]],
+            {},
+        ),
+        (
+            bool,
+            parquet_mod._T_BOOLEAN,
+            [[True, None], [None, False], [True]],
+            {},
+        ),
+        (
+            str,
+            parquet_mod._T_BYTE_ARRAY,
+            [['a', None], [None, 'β'], ['']],
+            {'conv_type': parquet_mod._CT_UTF8},
+        ),
+        (
+            Decimal,
+            parquet_mod._T_FIXED_LEN_BYTE_ARRAY,
+            [
+                [Decimal('1.25'), None],
+                [None, Decimal('-2.50')],
+                [Decimal('0.01')],
+            ],
+            {'decimal_scale': 2, 'decimal_precision': 4},
+        ),
+    ],
+    ids=['int64', 'double', 'boolean', 'string', 'decimal'],
+)
+def test_column_chunk_concatenates_page_storages_once(
+        monkeypatch, kind, phys_type, page_values, options):
+    calls = []
+    original = parquet_mod.concatenate_storages
+
+    def recording_concatenate(storages):
+        storages = tuple(storages)
+        calls.append(storages)
+        return original(storages)
+
+    monkeypatch.setattr(
+        parquet_mod, 'concatenate_storages', recording_concatenate)
+
+    result = _read_optional_pages(
+        page_values, kind, phys_type, **options)
+
+    assert len(calls) == 1
+    assert len(calls[0]) == len(page_values)
+    assert all(type(page) is type(calls[0][0]) for page in calls[0])
+    assert list(result) == [
+        value
+        for page in page_values
+        for value in page
+    ]
+
+
+def test_page_result_combiner_preserves_empty_and_mixed_fallback():
+    assert parquet_mod._combine_page_results([]) == []
+    assert parquet_mod._combine_page_results([
+        array('q', [1, 2]),
+        [None, 4],
+    ]) == [1, 2, None, 4]
 
 
 class TestNullableRoundtrip:
