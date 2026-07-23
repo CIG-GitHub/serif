@@ -598,3 +598,66 @@ class DecimalStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
+
+
+def _concatenate_masks(storages) -> BitMask | None:
+    """Combine storage masks without materializing any storage values."""
+    if all(storage._mask is None for storage in storages):
+        return None
+
+    nulls = []
+    for storage in storages:
+        mask = storage._mask
+        nulls.extend(
+            mask.is_null(index) if mask is not None else False
+            for index in range(len(storage))
+        )
+    return BitMask.from_iterable(nulls) if any(nulls) else None
+
+
+def concatenate_storages(storages):
+    """Concatenate homogeneous Serif storage without boxing its values."""
+    storages = tuple(storages)
+    if not storages:
+        raise ValueError("cannot concatenate an empty storage sequence")
+
+    first = storages[0]
+    if all(isinstance(storage, ArrayStorage) for storage in storages):
+        data = array(first._data.typecode)
+        for storage in storages:
+            data.extend(storage._data)
+        return ArrayStorage(data, _concatenate_masks(storages))
+
+    if all(isinstance(storage, BoolStorage) for storage in storages):
+        data = bytearray()
+        for storage in storages:
+            data.extend(storage._data)
+        return BoolStorage.from_raw(data, _concatenate_masks(storages))
+
+    if all(isinstance(storage, StringStorage) for storage in storages):
+        raw_parts = []
+        offsets = array('I', [0])
+        total = 0
+        for storage in storages:
+            raw_parts.append(storage._buf)
+            offsets.extend(total + offset for offset in storage._offsets[1:])
+            total += len(storage._buf)
+        return StringStorage.from_raw(
+            b''.join(raw_parts), offsets, _concatenate_masks(storages))
+
+    if all(isinstance(storage, DecimalStorage) for storage in storages):
+        return DecimalStorage(
+            bytearray(b''.join(storage._buf for storage in storages)),
+            first._scale,
+            first._precision,
+            _concatenate_masks(storages),
+        )
+
+    if all(isinstance(storage, TupleStorage) for storage in storages):
+        return TupleStorage(tuple(
+            value
+            for storage in storages
+            for value in storage._data
+        ))
+
+    raise TypeError("storages must share a supported physical type")
