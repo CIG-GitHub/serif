@@ -7,6 +7,8 @@ from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..naming import _disambiguate
+from ..naming import _is_python_keyword
+from ..naming import _normalize_name
 from ..naming import _reserved_collision
 from ..naming import _sanitize_user_name
 from ..vector import Vector
@@ -37,6 +39,14 @@ def resolve_column_key(columns, key):
     key_lower = key.lower()
     for index, column in enumerate(columns):
         if column._name is not None:
+            normalized = _normalize_name(column._name)
+            if (
+                normalized == key_lower
+                and _is_python_keyword(normalized)
+            ):
+                # Adding keyword-safe dot aliases must not remove the legacy
+                # normalized bracket spelling for differently-cased names.
+                return index
             base = _sanitize_user_name(column._name)
             if base is None:
                 if f"col{index}_" == key_lower:
@@ -97,6 +107,7 @@ def build_column_map(table):
     column_map = {}
     seen = {}
     for index, column in enumerate(iter_columns(table)):
+        collision = None
         if column._name is not None:
             collision = _reserved_collision(column._name)
             if (
@@ -104,15 +115,28 @@ def build_column_map(table):
                 and collision not in table._warned_collisions
             ):
                 table._warned_collisions.add(collision)
-                warnings.warn(
-                    f"Column '{column._name}' collides with the reserved "
-                    f"method/attribute '{collision}': dot access "
-                    f"'t.{collision}' returns the method, not this column. "
-                    f"Use 't.{collision}_' or 't[{column._name!r}]' to get "
-                    f"the column, or rename it.",
-                    UserWarning,
-                    stacklevel=3,
-                )
+                if _is_python_keyword(collision):
+                    warnings.warn(
+                        f"Column '{column._name}' collides with the reserved "
+                        f"Python keyword '{collision}': dot access "
+                        f"'t.{collision}' is invalid Python syntax. "
+                        f"Use 't.{collision}_' or "
+                        f"'t[{column._name!r}]' to get the column, or "
+                        f"rename it.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                else:
+                    warnings.warn(
+                        f"Column '{column._name}' collides with the reserved "
+                        f"method/attribute '{collision}': dot access "
+                        f"'t.{collision}' returns the method, not this column. "
+                        f"Use 't.{collision}_' or "
+                        f"'t[{column._name!r}]' to get the column, or "
+                        f"rename it.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
 
             base = _sanitize_user_name(column._name)
             if base is None:
@@ -136,6 +160,11 @@ def build_column_map(table):
             sanitized = f"col{index}_"
 
         column_map[sanitized] = index
+        if collision is not None and _is_python_keyword(collision):
+            # ``getattr(t, 'class')`` was legal before keyword-safe aliases
+            # were introduced. Keep that programmatic access as a hidden
+            # compatibility spelling; ordinary dot access uses ``class_``.
+            column_map.setdefault(collision, index)
         column._mark_tame()
         if not table._unlocked:
             column._frozen = True

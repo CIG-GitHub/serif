@@ -1,3 +1,5 @@
+import keyword
+
 import pytest
 from serif import Vector
 from serif.naming import _sanitize_user_name
@@ -84,6 +86,19 @@ def test_sanitize_preserves_valid_python_identifiers():
 	assert _sanitize_user_name("_private") == "private"  # Leading _ stripped
 	assert _sanitize_user_name("CamelCase") == "camelcase"
 	assert _sanitize_user_name("snake_case_name") == "snake_case_name"
+
+
+@pytest.mark.parametrize(
+	"name",
+	[name for name in keyword.kwlist if keyword.iskeyword(name.lower())],
+)
+def test_sanitize_unreachable_python_keyword(name):
+	assert _sanitize_user_name(name) == f"{name}_"
+
+
+@pytest.mark.parametrize("name", ["False", "None", "True"])
+def test_sanitize_keyword_literal_normalizes_to_reachable_alias(name):
+	assert _sanitize_user_name(name) == name.lower()
 
 
 def test_sanitize_csv_headers():
