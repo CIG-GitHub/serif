@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 
 from serif import Table, Vector
 from serif._execution import DECLINED
+from serif._vector._arrow import storage as arrow_storage
 from serif.errors import SerifTypeError
 import serif.io.parquet as parquet_mod
 from serif.io import _arrow
@@ -217,7 +218,7 @@ def test_conformance_without_numpy(monkeypatch):
     # fallbacks even where numpy IS installed so CI covers them. The other
     # columns confirm the rest of the reader never needs numpy at all.
     # Same identical-to-pure-reader guarantee.
-    monkeypatch.setattr(_arrow, '_np', None)
+    monkeypatch.setattr(arrow_storage, '_np', None)
     _conform(Table({
         'n':   [10, None, 30, None],
         'f':   [None, 2.5, None, -0.0],

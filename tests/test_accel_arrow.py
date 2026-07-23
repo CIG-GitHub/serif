@@ -10,6 +10,8 @@ buffers, same addresses), and every decline path.
 Skipped entirely when pyarrow isn't installed.
 """
 
+from decimal import Decimal
+
 import pytest
 
 pa = pytest.importorskip("pyarrow")
@@ -18,7 +20,10 @@ import pyarrow.compute as pc
 from serif._execution import DECLINED
 from serif._vector._arrow import storage as bridge
 from serif._vector.nullable import BitMask
-from serif._vector.storage import BoolStorage, StringStorage
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
+from serif._vector.storage import DecimalStorage
+from serif._vector.storage import StringStorage
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +94,79 @@ def test_string_array_declines_offsets_past_int32(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Arrow arrays → canonical Serif storage
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "values,arrow_type,typecode",
+    [
+        ([1, None, -3], pa.int64(), 'q'),
+        ([1.5, None, -2.25], pa.float64(), 'd'),
+    ],
+    ids=['int64', 'float64'],
+)
+def test_numeric_storage_round_trip(values, arrow_type, typecode):
+    storage = bridge.numeric_storage(pa.array(values, type=arrow_type))
+    assert type(storage) is ArrayStorage
+    assert storage._data.typecode == typecode
+    assert list(storage) == values
+
+
+def test_numeric_storage_empty_and_declines():
+    storage = bridge.numeric_storage(pa.array([], type=pa.int64()))
+    assert type(storage) is ArrayStorage
+    assert storage._data.typecode == 'q'
+    assert storage._mask is None
+    assert bridge.numeric_storage(pa.array(['a'])) is DECLINED
+    assert bridge.numeric_storage(pa.array([1, 2, 3]).slice(1)) is DECLINED
+
+
+def test_string_storage_round_trip():
+    values = ['α', None, '', '🎉', '日本語']
+    storage = bridge.string_storage(pa.array(values, type=pa.string()))
+    expected = StringStorage.from_iterable(values)
+    assert type(storage) is StringStorage
+    assert list(storage) == values
+    assert storage._buf == expected._buf
+    assert tuple(storage._offsets) == tuple(expected._offsets)
+    assert bytes(storage._mask._buf) == bytes(expected._mask._buf)
+
+
+def test_string_storage_empty_and_declines():
+    storage = bridge.string_storage(pa.array([], type=pa.string()))
+    assert type(storage) is StringStorage
+    assert tuple(storage._offsets) == (0,)
+    assert storage._mask is None
+    assert bridge.string_storage(pa.array(['a'], type=pa.large_string())) is DECLINED
+    assert bridge.string_storage(pa.array(['a', 'b']).slice(1)) is DECLINED
+
+
+def test_decimal_storage_round_trip():
+    arrow_type = pa.decimal128(6, 2)
+    values = [Decimal('123.45'), None, Decimal('-0.01')]
+    storage = bridge.decimal_storage(pa.array(values, type=arrow_type))
+    assert type(storage) is DecimalStorage
+    assert list(storage) == values
+    assert storage._scale == 2
+    assert storage._precision == 6
+
+
+def test_decimal_storage_empty_and_declines():
+    storage = bridge.decimal_storage(
+        pa.array([], type=pa.decimal128(9, 3)))
+    assert type(storage) is DecimalStorage
+    assert len(storage) == 0
+    assert storage._scale == 3
+    assert storage._precision == 9
+    assert storage._mask is None
+    assert bridge.decimal_storage(
+        pa.array([Decimal('1')], type=pa.decimal256(40, 0))) is DECLINED
+    assert bridge.decimal_storage(
+        pa.array([Decimal('1'), Decimal('2')],
+                 type=pa.decimal128(4, 0)).slice(1)) is DECLINED
+
+
+# ---------------------------------------------------------------------------
 # bool_storage — pa.BooleanArray → BoolStorage
 # ---------------------------------------------------------------------------
 
@@ -117,6 +195,20 @@ def test_bool_storage_declines_sliced_array():
     arr = pa.array([True, False, None, True]).slice(1)
     assert arr.offset != 0          # the premise of the decline
     assert bridge.bool_storage(arr) is DECLINED
+
+
+def test_bool_storage_declines_non_boolean_array():
+    assert bridge.bool_storage(pa.array([1, 0], type=pa.int64())) is DECLINED
+
+
+def test_storage_reconstruction_without_numpy(monkeypatch):
+    monkeypatch.setattr(bridge, '_np', None)
+    assert list(bridge.bool_storage(
+        pa.array([True, None, False]))) == [True, None, False]
+    assert list(bridge.decimal_storage(pa.array(
+        [Decimal('1.25'), None, Decimal('-2.50')],
+        type=pa.decimal128(4, 2),
+    ))) == [Decimal('1.25'), None, Decimal('-2.50')]
 
 
 # ---------------------------------------------------------------------------
