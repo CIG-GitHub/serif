@@ -32,14 +32,13 @@ from __future__ import annotations
 import array as _pyarray
 import os as _os
 import struct as _struct
-from itertools import chain as _chain
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from .._execution import DECLINED
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
-from .._vector.nullable import BitMask
+from .._vector.nullable import _BitMaskBuilder
 from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
     ArrayStorage,
@@ -674,6 +673,10 @@ def _decode_plain(data, pos: int, kind: type, phys_type: int,
     Decode `count` non-null PLAIN-encoded values.
     Returns (values: list, new_pos).
     """
+    if count == 0 and kind is int and phys_type == _T_INT64:
+        return _pyarray.array('q'), pos
+    if count == 0 and kind is float and phys_type == _T_DOUBLE:
+        return _pyarray.array('d'), pos
     if count == 0:
         return [], pos
 
@@ -1421,6 +1424,43 @@ def _decompress(page_bytes: bytes, codec: int, col_name: str) -> bytes:
 # Column chunk reader
 # ---------------------------------------------------------------------------
 
+def _decode_array_raw(page_values: _pyarray.array,
+                      null_flags) -> ArrayStorage:
+    """Combine packed PLAIN values and definition levels without boxing.
+
+    PLAIN omits physical values at null positions. ArrayStorage keeps a
+    fixed-width sentinel in those lanes, covered by its validity bitmap.
+    """
+    if null_flags is None:
+        return ArrayStorage(page_values, None)
+
+    # An optional page need not contain a null. Its decoded packed array is
+    # already final-form storage, so retain it directly.
+    if len(page_values) == len(null_flags):
+        return ArrayStorage(page_values, None)
+
+    data = _pyarray.array(page_values.typecode)
+    validity = _BitMaskBuilder()
+    raw_index = 0
+    for is_null in null_flags:
+        if is_null:
+            data.append(0)
+        else:
+            if raw_index >= len(page_values):
+                raise SerifValueError(
+                    "Definition levels describe more present values than "
+                    "the PLAIN page contains")
+            data.append(page_values[raw_index])
+            raw_index += 1
+        validity.append(is_null)
+
+    if raw_index != len(page_values):
+        raise SerifValueError(
+            "PLAIN page contains more values than its definition levels "
+            "describe")
+    return ArrayStorage(data, validity.finish())
+
+
 def _decode_str_raw(page_body: bytes, body_pos: int,
                     null_flags, non_null_count: int) -> StringStorage:
     """
@@ -1541,13 +1581,67 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     return BoolStorage(data, mask)
 
 
+def _combine_decoded_parts(parts):
+    """Combine completed decoded parts once, preserving physical storage."""
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return parts[0]
+
+    for storage_type in (
+            ArrayStorage, BoolStorage, StringStorage, DecimalStorage):
+        if all(isinstance(part, storage_type) for part in parts):
+            return concatenate_storages(parts)
+
+    if all(isinstance(part, _pyarray.array) for part in parts):
+        result = parts[0]
+        typecode = result.typecode
+        for part in parts[1:]:
+            if part.typecode != typecode:
+                raise RuntimeError(
+                    "Parquet decoder produced mixed packed array types")
+            result.extend(part)
+        return result
+
+    if all(isinstance(part, list) for part in parts):
+        result = []
+        for part in parts:
+            result.extend(part)
+        return result
+
+    raise RuntimeError(
+        "Parquet decoder produced mixed physical representations: "
+        + ", ".join(type(part).__name__ for part in parts))
+
+
+def _empty_chunk_result(kind, phys_type, is_optional,
+                        decimal_scale=None, decimal_precision=None):
+    """Return the physical representation used by non-empty peer chunks."""
+    if kind is str:
+        return StringStorage.from_raw(
+            b'', _pyarray.array('I', [0]), None)
+    if kind is bool:
+        return BoolStorage(bytearray(), None)
+    if kind is _Decimal:
+        return DecimalStorage(
+            bytearray(), decimal_scale, decimal_precision, None)
+    if kind is int and phys_type == _T_INT64:
+        data = _pyarray.array('q')
+        return ArrayStorage(data, None) if is_optional else data
+    if kind is float and phys_type == _T_DOUBLE:
+        data = _pyarray.array('d')
+        return ArrayStorage(data, None) if is_optional else data
+    return []
+
+
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                         conv_type, is_optional: bool, col_name: str,
                         decimal_scale: int = None,
-                        decimal_precision: int = None) -> list:
+                        decimal_precision: int = None):
     """
     Read all data pages for one column chunk.
-    Returns a flat list (None at null positions for optional columns).
+    Returns canonical storage where a physical fast path exists, otherwise a
+    flat list (None at null positions for optional columns).
     """
     codec          = cm.get('codec', _CODEC_UNCOMPRESSED)
     num_values     = cm['num_values']
@@ -1557,7 +1651,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
     # starting from data_page_offset skips it implicitly.
     pos = data_page_off
 
-    values    = None   # None = not yet initialised; may become list or array.array
+    page_results = []
     remaining = num_values
 
     while remaining > 0:
@@ -1610,6 +1704,10 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
 
         if is_optional:
             null_flags, body_pos = _decode_def_levels(page_body, body_pos, page_num_values)
+            if len(null_flags) != page_num_values:
+                raise SerifValueError(
+                    f"Column '{col_name}': malformed definition levels; "
+                    f"expected {page_num_values}, decoded {len(null_flags)}")
 
         non_null_count = (
             sum(1 for f in null_flags if not f)
@@ -1622,63 +1720,46 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             # No .decode() calls — offsets built from length prefixes, raw
             # UTF-8 bytes copied into a single contiguous buffer.
             page_storage = _decode_str_raw(page_body, body_pos, null_flags, non_null_count)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, StringStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         elif kind is _Decimal:
             # Decimal fast path: build DecimalStorage directly from raw bytes.
             # Each value is exactly 16 bytes big-endian — no boxing, no loop.
             page_storage = _decode_decimal_raw(
                 page_body, body_pos, null_flags, non_null_count,
                 decimal_scale, decimal_precision)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, DecimalStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         elif kind is bool:
             # Bool fast path: unpack PLAIN BOOLEAN bits straight into a
             # BoolStorage bytearray — no interned-bool boxing.
             page_storage = _decode_bool_raw(page_body, body_pos,
                                             null_flags, non_null_count)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, BoolStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         else:
             page_values, _ = _decode_plain(
                 page_body, body_pos, kind, phys_type, non_null_count, conv_type
             )
 
-            if null_flags is not None:
+            if (null_flags is not None
+                    and isinstance(page_values, _pyarray.array)):
+                page_result = _decode_array_raw(page_values, null_flags)
+            elif null_flags is not None:
                 it = iter(page_values)
                 page_result = [None if f else next(it) for f in null_flags]
             else:
-                page_result = page_values  # may be array.array (DOUBLE/INT64 fast path)
+                page_result = page_values  # packed DOUBLE/INT64 fast path
 
-            # Accumulate — keep array.array alive to avoid boxing
-            if values is None:
-                values = (page_result
-                          if isinstance(page_result, _pyarray.array)
-                          else list(page_result))
-            elif isinstance(values, _pyarray.array) and isinstance(page_result, _pyarray.array):
-                values += page_result          # pure array concatenation, no boxing
-            else:
-                if isinstance(values, _pyarray.array):     # first page was fast, rest aren't
-                    values = list(values)
-                values.extend(page_result)
+            page_results.append(page_result)
         remaining -= page_num_values
 
-    return values if values is not None else []
+    if not page_results:
+        return _empty_chunk_result(
+            kind,
+            phys_type,
+            is_optional,
+            decimal_scale,
+            decimal_precision,
+        )
+    return _combine_decoded_parts(page_results)
 
 
 # ---------------------------------------------------------------------------
@@ -1708,12 +1789,18 @@ def _empty_column(meta):
 
 def _column_from_raw(meta, raw):
     dtype = _dtype_for(meta)
-    if isinstance(raw, (StringStorage, DecimalStorage, BoolStorage)):
+    if isinstance(raw, (
+            ArrayStorage, StringStorage, DecimalStorage, BoolStorage)):
         return Vector._from_storage(raw, dtype, name=meta['name'])
     if isinstance(raw, _pyarray.array):
         return Vector._from_storage(
             ArrayStorage(raw, None), dtype, name=meta['name'])
-    return Vector._from_iterable_known_dtype(raw, dtype, name=meta['name'])
+    if isinstance(raw, list):
+        return Vector._from_iterable_known_dtype(
+            raw, dtype, name=meta['name'])
+    raise RuntimeError(
+        f"Parquet decoder returned unsupported {type(raw).__name__} "
+        f"representation for column '{meta['name']}'")
 
 
 def _filter_column(col, mask):
@@ -1752,11 +1839,9 @@ def _combine_columns(columns, meta):
     if not any(
             all(isinstance(storage, storage_type) for storage in storages)
             for storage_type in storage_types):
-        return Vector._from_iterable_known_dtype(
-            _chain.from_iterable(columns),
-            _dtype_for(meta),
-            name=meta['name'],
-        )
+        raise RuntimeError(
+            f"Parquet column '{meta['name']}' produced mixed storage types: "
+            + ", ".join(type(storage).__name__ for storage in storages))
     combined = concatenate_storages(storages)
     return Vector._from_storage(combined, _dtype_for(meta), name=meta['name'])
 
@@ -2074,7 +2159,6 @@ def _read_parquet_eager(path: str):
     Table
     """
     from ..table import Table
-    from .._vector.dtype import Schema as _Schema
 
     if _USE_ARROW and _arrow_accel is not None:
         result = _arrow_accel.try_read(path)
@@ -2139,10 +2223,10 @@ def _read_parquet_eager(path: str):
             'decimal_precision': s.get('precision'),
         })
 
-    # Accumulate values per schema-leaf POSITION (not name): duplicate
+    # Accumulate chunks per schema-leaf POSITION (not name): duplicate
     # column names are legal in both Parquet and serif (invariant #6), and
     # a name-keyed accumulator would silently merge them.
-    col_values = [None] * len(col_meta)
+    col_chunks = [[] for _ in col_meta]
     name_to_indices = {}
     for i, m in enumerate(col_meta):
         name_to_indices.setdefault(m['name'], []).append(i)
@@ -2185,46 +2269,15 @@ def _read_parquet_eager(path: str):
                 raise SerifValueError(
                     f"'{path}': truncated or corrupt Parquet data for "
                     f"column '{col_name}'") from e
-            existing = col_values[col_idx]
-            if existing is None:
-                col_values[col_idx] = chunk_values
-            elif any(
-                    isinstance(existing, storage_type)
-                    and isinstance(chunk_values, storage_type)
-                    for storage_type in (
-                        StringStorage, DecimalStorage, BoolStorage)):
-                col_values[col_idx] = concatenate_storages(
-                    (existing, chunk_values))
-            elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
-                col_values[col_idx] = existing + chunk_values
-            else:
-                if isinstance(existing, _pyarray.array):
-                    col_values[col_idx] = list(existing)
-                col_values[col_idx].extend(chunk_values)
+            col_chunks[col_idx].append(chunk_values)
 
     result_cols = []
     for col_idx, m in enumerate(col_meta):
-        raw   = col_values[col_idx] or []
-        dtype = _Schema(m['kind'], m['is_optional'])
-
-        if isinstance(raw, StringStorage):
-            # Str fast path: StringStorage already built with raw bytes,
-            # no .decode() has occurred yet.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, DecimalStorage):
-            # Decimal fast path: DecimalStorage built directly from raw bytes.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, BoolStorage):
-            # Bool fast path: BoolStorage bytes unpacked directly from
-            # PLAIN BOOLEAN bits.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, _pyarray.array):
-            # Non-nullable float or int: storage is already a packed C array.
-            # Wrap it directly — zero extra iteration, zero boxing.
-            storage = ArrayStorage(raw, None)
-            col     = Vector._from_storage(storage, dtype, name=m['name'])
+        if col_chunks[col_idx]:
+            raw = _combine_decoded_parts(col_chunks[col_idx])
+            col = _column_from_raw(m, raw)
         else:
-            col = Vector._from_iterable_known_dtype(raw, dtype, name=m['name'])
+            col = _empty_column(m)
 
         result_cols.append(col)
 

@@ -21,8 +21,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import serif.io.parquet as parquet_mod
 from serif import Table, read_parquet, write_parquet
 from serif.errors import SerifTypeError, SerifValueError
+from serif._vector.storage import ArrayStorage
 from serif.io.parquet import (
     _MAGIC,
     _CODEC_GZIP,
@@ -139,6 +141,42 @@ def test_float32_physical_reads_as_float(tmp_path):
     t = read_parquet(str(p))
     assert list(t['x']) == [1.5, -2.25]
     assert t['x'].schema().kind is float
+
+
+def test_optional_int64_all_valid_keeps_nullable_schema(tmp_path):
+    flags = [False, False]
+    body = _encode_def_levels(flags) + array('q', [1, -2]).tobytes()
+    p = tmp_path / "optional_i64_dense.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=len(flags),
+        page_body=body,
+    )
+
+    col = read_parquet(str(p))['x']
+    assert type(col._storage) is ArrayStorage
+    assert col._storage._mask is None
+    assert col.schema().nullable is True
+    assert list(col) == [1, -2]
+
+
+def test_optional_int64_all_null_builds_array_storage(tmp_path):
+    flags = [True, True, True]
+    p = tmp_path / "optional_i64_all_null.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=len(flags),
+        page_body=_encode_def_levels(flags),
+    )
+
+    col = read_parquet(str(p))['x']
+    assert type(col._storage) is ArrayStorage
+    assert col._storage._data.tolist() == [0, 0, 0]
+    assert list(col) == [None, None, None]
 
 
 def test_timestamp_millis_reads_as_datetime(tmp_path):
@@ -259,6 +297,20 @@ def test_data_page_v2_raises(tmp_path):
         list(read_parquet(str(p))['x'])
 
 
+def test_short_definition_levels_raise(tmp_path):
+    p = tmp_path / "short_definition_levels.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=3,
+        page_body=struct.pack('<I', 0),
+    )
+
+    with pytest.raises(SerifValueError, match='definition levels'):
+        list(read_parquet(str(p))['x'])
+
+
 def test_rle_value_encoding_raises(tmp_path):
     # encoding=RLE in DataPageHeader field 2 means RLE-encoded VALUES
     # (legal for booleans); decoding them as PLAIN bit-packing would yield
@@ -346,15 +398,17 @@ def test_unknown_struct_field_with_long_form_header_is_skipped(tmp_path):
 # Multiple row groups
 # ---------------------------------------------------------------------------
 
-def test_multi_row_group_strings_with_nulls(tmp_path):
-    """Two row groups on one nullable string column — exercises
+def test_multi_row_group_strings_with_nulls(tmp_path, monkeypatch):
+    """Three row groups on one nullable string column — exercises
     storage-owned concatenation including null-mask combination."""
     group1 = ['aa', None, 'b']
     group2 = ['ccc', None]
+    group3 = ['', 'dddd']
+    groups = (group1, group2, group3)
 
     buf = bytearray(_MAGIC)
     row_groups = []
-    for values in (group1, group2):
+    for values in groups:
         body = _string_page(values)
         dph = _enc_data_page_header(len(values))
         ph = _enc_page_header(len(body), len(body), dph)
@@ -371,7 +425,8 @@ def test_multi_row_group_strings_with_nulls(tmp_path):
         _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=1),
         _enc_schema_element('x', _T_BYTE_ARRAY, _CT_UTF8, _REP_OPTIONAL),
     ]
-    footer = _enc_file_metadata(schema, row_groups, len(group1) + len(group2))
+    footer = _enc_file_metadata(
+        schema, row_groups, sum(map(len, groups)))
     buf += footer
     buf += struct.pack('<I', len(footer))
     buf += _MAGIC
@@ -380,9 +435,26 @@ def test_multi_row_group_strings_with_nulls(tmp_path):
     p.write_bytes(bytes(buf))
 
     t = read_parquet(str(p))
-    assert list(t['x']) == ['aa', None, 'b', 'ccc', None]
+    expected = ['aa', None, 'b', 'ccc', None, '', 'dddd']
+    assert list(t['x']) == expected
     assert t['x'].schema().kind is str
     assert t['x'].schema().nullable is True
+
+    calls = []
+    original = parquet_mod.concatenate_storages
+
+    def recording_concatenate(storages):
+        storages = tuple(storages)
+        calls.append(storages)
+        return original(storages)
+
+    monkeypatch.setattr(
+        parquet_mod, 'concatenate_storages', recording_concatenate)
+    eager = parquet_mod._read_parquet_eager(str(p))
+
+    assert list(eager['x']) == expected
+    assert len(calls) == 1
+    assert len(calls[0]) == len(groups)
 
 
 # ---------------------------------------------------------------------------

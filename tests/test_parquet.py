@@ -10,12 +10,20 @@ Coverage targets:
 """
 import os
 import tempfile
+from array import array
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 
+import serif.io.parquet as parquet_mod
 from serif import Table, Vector
 from serif.errors import SerifTypeError
+from serif.io.parquet import _decode_array_raw
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
+from serif._vector.storage import DecimalStorage
+from serif._vector.storage import StringStorage
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +104,292 @@ class TestNonNullableRoundtrip:
 # Nullable columns — null position fidelity
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize(
+    "typecode,packed,null_flags,raw_values,values,mask_bytes",
+    [
+        (
+            'q',
+            [10, -3],
+            [False, True, False, True],
+            [10, 0, -3, 0],
+            [10, None, -3, None],
+            b'\x05',
+        ),
+        (
+            'd',
+            [1.5, -2.25],
+            [False, True, False, True],
+            [1.5, 0.0, -2.25, 0.0],
+            [1.5, None, -2.25, None],
+            b'\x05',
+        ),
+        (
+            'q',
+            [],
+            [True, True, True],
+            [0, 0, 0],
+            [None, None, None],
+            b'\x00',
+        ),
+        (
+            'd',
+            [],
+            [True, True, True],
+            [0.0, 0.0, 0.0],
+            [None, None, None],
+            b'\x00',
+        ),
+    ],
+    ids=['int64-mixed', 'double-mixed', 'int64-all-null', 'double-all-null'],
+)
+def test_nullable_packed_page_builds_array_storage(
+        typecode, packed, null_flags, raw_values, values, mask_bytes):
+    storage = _decode_array_raw(array(typecode, packed), null_flags)
+
+    assert type(storage) is ArrayStorage
+    assert storage._data.typecode == typecode
+    assert storage._data.tolist() == raw_values
+    assert list(storage) == values
+    assert bytes(storage._mask._buf) == mask_bytes
+
+
+@pytest.mark.parametrize(
+    "typecode,values",
+    [('q', [1, -2]), ('d', [1.5, -2.25])],
+    ids=['int64', 'double'],
+)
+def test_all_valid_optional_packed_page_reuses_array(typecode, values):
+    packed = array(typecode, values)
+    storage = _decode_array_raw(packed, [False] * len(values))
+
+    assert storage._data is packed
+    assert storage._mask is None
+
+
+def _read_optional_pages(page_values, kind, phys_type, *,
+                         conv_type=None, decimal_scale=None,
+                         decimal_precision=None):
+    chunk = bytearray()
+    for values in page_values:
+        null_flags = [value is None for value in values]
+        non_null = [value for value in values if value is not None]
+        body = (
+            parquet_mod._encode_def_levels(null_flags)
+            + parquet_mod._encode_plain(
+                non_null, kind, 'x', decimal_scale)
+        )
+        data_header = parquet_mod._enc_data_page_header(len(values))
+        chunk.extend(parquet_mod._enc_page_header(
+            len(body), len(body), data_header))
+        chunk.extend(body)
+
+    return parquet_mod._read_column_chunk(
+        memoryview(chunk),
+        {
+            'codec': parquet_mod._CODEC_UNCOMPRESSED,
+            'num_values': sum(map(len, page_values)),
+            'data_page_offset': 0,
+        },
+        kind=kind,
+        phys_type=phys_type,
+        conv_type=conv_type,
+        is_optional=True,
+        col_name='x',
+        decimal_scale=decimal_scale,
+        decimal_precision=decimal_precision,
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,phys_type,page_values,options",
+    [
+        (
+            int,
+            parquet_mod._T_INT64,
+            [[1, None], [None, -3], [4]],
+            {},
+        ),
+        (
+            float,
+            parquet_mod._T_DOUBLE,
+            [[1.5, None], [None, -3.25], [4.5]],
+            {},
+        ),
+        (
+            bool,
+            parquet_mod._T_BOOLEAN,
+            [[True, None], [None, False], [True]],
+            {},
+        ),
+        (
+            str,
+            parquet_mod._T_BYTE_ARRAY,
+            [['a', None], [None, 'β'], ['']],
+            {'conv_type': parquet_mod._CT_UTF8},
+        ),
+        (
+            Decimal,
+            parquet_mod._T_FIXED_LEN_BYTE_ARRAY,
+            [
+                [Decimal('1.25'), None],
+                [None, Decimal('-2.50')],
+                [Decimal('0.01')],
+            ],
+            {'decimal_scale': 2, 'decimal_precision': 4},
+        ),
+    ],
+    ids=['int64', 'double', 'boolean', 'string', 'decimal'],
+)
+def test_column_chunk_concatenates_page_storages_once(
+        monkeypatch, kind, phys_type, page_values, options):
+    calls = []
+    original = parquet_mod.concatenate_storages
+
+    def recording_concatenate(storages):
+        storages = tuple(storages)
+        calls.append(storages)
+        return original(storages)
+
+    monkeypatch.setattr(
+        parquet_mod, 'concatenate_storages', recording_concatenate)
+
+    result = _read_optional_pages(
+        page_values, kind, phys_type, **options)
+
+    assert len(calls) == 1
+    assert len(calls[0]) == len(page_values)
+    assert all(type(page) is type(calls[0][0]) for page in calls[0])
+    assert list(result) == [
+        value
+        for page in page_values
+        for value in page
+    ]
+
+
+def test_decoded_part_combiner_preserves_empty_and_list_results():
+    assert parquet_mod._combine_decoded_parts([]) == []
+    assert parquet_mod._combine_decoded_parts([
+        [1, 2],
+        [None, 4],
+    ]) == [1, 2, None, 4]
+
+
+def test_decoded_part_combiner_rejects_mixed_representations():
+    with pytest.raises(RuntimeError, match='mixed physical'):
+        parquet_mod._combine_decoded_parts([
+            array('q', [1, 2]),
+            [None, 4],
+        ])
+
+
+def test_column_combiner_rejects_impossible_mixed_storage_types():
+    with pytest.raises(RuntimeError, match='mixed storage'):
+        parquet_mod._combine_columns(
+            [
+                Vector([1], name='x'),
+                Vector([2**70], name='x'),
+            ],
+            {
+                'name': 'x',
+                'kind': int,
+                'is_optional': False,
+            },
+        )
+
+
+def test_decoded_part_combiner_extends_packed_arrays_in_place():
+    first = array('q', [1, 2])
+    result = parquet_mod._combine_decoded_parts([
+        first,
+        array('q', [3]),
+        array('q', [4, 5]),
+    ])
+
+    assert result is first
+    assert result.tolist() == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    "kind,phys_type,is_optional,options,expected_type,typecode",
+    [
+        (
+            int, parquet_mod._T_INT64, False,
+            {}, array, 'q',
+        ),
+        (
+            int, parquet_mod._T_INT64, True,
+            {}, ArrayStorage, 'q',
+        ),
+        (
+            float, parquet_mod._T_DOUBLE, False,
+            {}, array, 'd',
+        ),
+        (
+            float, parquet_mod._T_DOUBLE, True,
+            {}, ArrayStorage, 'd',
+        ),
+        (
+            int, parquet_mod._T_INT32, False,
+            {}, list, None,
+        ),
+        (
+            str, parquet_mod._T_BYTE_ARRAY, True,
+            {'conv_type': parquet_mod._CT_UTF8}, StringStorage, None,
+        ),
+        (
+            bool, parquet_mod._T_BOOLEAN, True,
+            {}, BoolStorage, None,
+        ),
+        (
+            Decimal, parquet_mod._T_FIXED_LEN_BYTE_ARRAY, True,
+            {'decimal_scale': 2, 'decimal_precision': 4},
+            DecimalStorage, None,
+        ),
+    ],
+    ids=[
+        'required-int64',
+        'optional-int64',
+        'required-double',
+        'optional-double',
+        'int32-list',
+        'string',
+        'boolean',
+        'decimal',
+    ],
+)
+def test_empty_chunk_uses_peer_physical_representation(
+        kind, phys_type, is_optional, options, expected_type, typecode):
+    result = parquet_mod._read_column_chunk(
+        memoryview(b''),
+        {
+            'codec': parquet_mod._CODEC_UNCOMPRESSED,
+            'num_values': 0,
+            'data_page_offset': 0,
+        },
+        kind=kind,
+        phys_type=phys_type,
+        conv_type=options.get('conv_type'),
+        is_optional=is_optional,
+        col_name='x',
+        decimal_scale=options.get('decimal_scale'),
+        decimal_precision=options.get('decimal_precision'),
+    )
+
+    assert type(result) is expected_type
+    if typecode is not None:
+        data = result._data if isinstance(result, ArrayStorage) else result
+        assert data.typecode == typecode
+    assert len(result) == 0
+
+
 class TestNullableRoundtrip:
+
+    def test_nullable_int_nulls_in_right_slots(self):
+        t = Table({'i': [1, None, -3, None]})
+        t2 = roundtrip(t)
+        result = t2['i']
+        assert type(result._storage) is ArrayStorage
+        assert list(result) == [1, None, -3, None]
 
     def test_nullable_string_nulls_in_right_slots(self):
         t = Table({'s': ['alice', None, 'carol', None]})
@@ -110,11 +403,9 @@ class TestNullableRoundtrip:
     def test_nullable_float_nulls_in_right_slots(self):
         t = Table({'f': [1.5, None, 3.5, None]})
         t2 = roundtrip(t)
-        result = col(t2, 'f')
-        assert result[0] == 1.5
-        assert result[1] is None
-        assert result[2] == 3.5
-        assert result[3] is None
+        result = t2['f']
+        assert type(result._storage) is ArrayStorage
+        assert list(result) == [1.5, None, 3.5, None]
 
     def test_nullable_bool_nulls_in_right_slots(self):
         t = Table({'b': [True, None, False, None]})
