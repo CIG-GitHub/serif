@@ -24,6 +24,8 @@ pa = pytest.importorskip("pyarrow")
 import pyarrow.parquet as pq
 
 from serif import Table, Vector
+from serif._execution import DECLINED
+from serif._vector._arrow import storage as arrow_storage
 from serif.errors import SerifTypeError
 import serif.io.parquet as parquet_mod
 from serif.io import _arrow
@@ -216,7 +218,7 @@ def test_conformance_without_numpy(monkeypatch):
     # fallbacks even where numpy IS installed so CI covers them. The other
     # columns confirm the rest of the reader never needs numpy at all.
     # Same identical-to-pure-reader guarantee.
-    monkeypatch.setattr(_arrow, '_np', None)
+    monkeypatch.setattr(arrow_storage, '_np', None)
     _conform(Table({
         'n':   [10, None, 30, None],
         'f':   [None, 2.5, None, -0.0],
@@ -324,7 +326,8 @@ def test_uint32_still_declines():
     # stay serif's, so the arrow path must decline and surface that refusal.
     path = _write_foreign(pa.table({'u': pa.array([1, 2], type=pa.uint32())}))
     try:
-        assert _arrow.try_read(path) is None
+        assert _arrow.try_read(path) is DECLINED
+        assert _arrow.try_read_column(path, 0, [0]) is DECLINED
         with pytest.raises(SerifTypeError, match='UINT_32'):
             parquet_mod.read_parquet(path)
     finally:
@@ -341,13 +344,56 @@ def test_arrow_conversion_failure_declines_but_serif_bugs_stay_loud(monkeypatch)
         def _arrow_boom(arr, name, nullable):
             raise pa.lib.ArrowInvalid('synthetic conversion failure')
         monkeypatch.setattr(_arrow, '_to_vector', _arrow_boom)
-        assert _arrow.try_read(path) is None
+        assert _arrow.try_read(path) is DECLINED
 
         def _serif_boom(arr, name, nullable):
             raise IndexError('synthetic serif bug')
         monkeypatch.setattr(_arrow, '_to_vector', _serif_boom)
         with pytest.raises(IndexError):
             _arrow.try_read(path)
+    finally:
+        os.unlink(path)
+
+
+def test_arrow_open_and_read_defects_stay_loud(monkeypatch):
+    def open_boom(path):
+        raise RuntimeError('synthetic open defect')
+
+    monkeypatch.setattr(_arrow._pq, 'ParquetFile', open_boom)
+    with pytest.raises(RuntimeError, match='synthetic open defect'):
+        _arrow.try_read('unused')
+    with pytest.raises(RuntimeError, match='synthetic open defect'):
+        _arrow.try_read_column('unused', 0, [0])
+
+    schema = pa.schema([pa.field('n', pa.int64())])
+
+    class BrokenFile:
+        schema_arrow = schema
+
+        def read(self):
+            raise RuntimeError('synthetic read defect')
+
+        def read_row_groups(self, *args, **kwargs):
+            raise RuntimeError('synthetic projected-read defect')
+
+    monkeypatch.setattr(_arrow._pq, 'ParquetFile', lambda path: BrokenFile())
+    with pytest.raises(RuntimeError, match='synthetic read defect'):
+        _arrow.try_read('unused')
+    with pytest.raises(RuntimeError, match='synthetic projected-read defect'):
+        _arrow.try_read_column('unused', 0, [0])
+
+
+def test_projected_dispatch_rejects_none_backend_result(monkeypatch):
+    path = _write(Table({'n': [1, 2, 3]}))
+    try:
+        monkeypatch.setattr(parquet_mod, '_USE_ARROW', True)
+        monkeypatch.setattr(
+            parquet_mod._arrow_accel, 'try_read_column',
+            lambda *args, **kwargs: None,
+        )
+        source = parquet_mod.read_parquet(path)
+        with pytest.raises(RuntimeError, match='returned None'):
+            list(source['n'])
     finally:
         os.unlink(path)
 
@@ -364,7 +410,7 @@ def test_nanosecond_timestamps_still_raise():
     pq.write_table(pa.table({'t': pa.array(
         [1, 2], type=pa.timestamp('ns'))}), path)
     try:
-        assert _arrow.try_read(path) is None
+        assert _arrow.try_read(path) is DECLINED
         with pytest.raises(SerifTypeError, match='NANOS'):
             parquet_mod.read_parquet(path)
     finally:
@@ -379,7 +425,7 @@ def test_decimal256_declines():
     pq.write_table(pa.table({'big': pa.array(
         [1234, 567], type=pa.decimal256(40, 2))}), path)
     try:
-        assert _arrow.try_read(path) is None
+        assert _arrow.try_read(path) is DECLINED
         with pytest.raises(SerifTypeError, match='DECIMAL'):
             parquet_mod.read_parquet(path)
     finally:
@@ -392,6 +438,6 @@ def test_arrow_declines_garbage_file():
     with open(path, 'wb') as f:
         f.write(b'PAR1 this is not a parquet file PAR1')
     try:
-        assert _arrow.try_read(path) is None
+        assert _arrow.try_read(path) is DECLINED
     finally:
         os.unlink(path)

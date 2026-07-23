@@ -12,13 +12,20 @@ Each case is (id, factory, expected_values). Factories build a fresh vector
 per test so mutation tests can't leak between cases.
 """
 
+from array import array
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
 from serif import Vector
 from serif.errors import SerifValueError
-from serif._vector.storage import ArrayStorage, TupleStorage, StringStorage, BoolStorage
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
+from serif._vector.storage import DecimalStorage
+from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
+from serif._vector.storage import concatenate_storages
 from serif._vector.categorical import _Category, _CategoryStorage
 
 
@@ -352,6 +359,129 @@ def test_to_object(factory, values):
 @_params(CASES, IDS)
 def test_concat_lshift(factory, values):
     assert list(factory() << factory()) == values + values
+
+
+def _mask_signature(mask):
+    if mask is None:
+        return None
+    return bytes(mask._buf), len(mask)
+
+
+def _storage_signature(storage):
+    if isinstance(storage, ArrayStorage):
+        return (
+            ArrayStorage,
+            storage._data.typecode,
+            storage._data.tobytes(),
+            _mask_signature(storage._mask),
+        )
+    if isinstance(storage, BoolStorage):
+        return BoolStorage, bytes(storage._data), _mask_signature(storage._mask)
+    if isinstance(storage, StringStorage):
+        return (
+            StringStorage,
+            storage._buf,
+            tuple(storage._offsets),
+            _mask_signature(storage._mask),
+        )
+    if isinstance(storage, DecimalStorage):
+        return (
+            DecimalStorage,
+            bytes(storage._buf),
+            storage._scale,
+            storage._precision,
+            _mask_signature(storage._mask),
+        )
+    return TupleStorage, storage._data
+
+
+PHYSICAL_CONCAT_CASES = [
+    (
+        "array",
+        lambda: (
+            ArrayStorage.from_iterable([1, None], 'q', nullable=True),
+            ArrayStorage.from_iterable([3, 4], 'q', nullable=False),
+        ),
+        lambda: ArrayStorage.from_iterable(
+            [1, None, 3, 4], 'q', nullable=True),
+    ),
+    (
+        "bool",
+        lambda: (
+            BoolStorage.from_iterable([True, None]),
+            BoolStorage.from_iterable([False, True]),
+        ),
+        lambda: BoolStorage.from_iterable([True, None, False, True]),
+    ),
+    (
+        "string",
+        lambda: (
+            StringStorage.from_iterable(["a", None]),
+            StringStorage.from_iterable(["", "🐍"]),
+            StringStorage.from_iterable(["tail"]),
+        ),
+        lambda: StringStorage.from_iterable(
+            ["a", None, "", "🐍", "tail"]),
+    ),
+    (
+        "decimal",
+        lambda: (
+            DecimalStorage.from_iterable(
+                [Decimal('1.25'), None], 2, 4, nullable=True),
+            DecimalStorage.from_iterable(
+                [Decimal('-2.50')], 2, 4, nullable=False),
+        ),
+        lambda: DecimalStorage.from_iterable(
+            [Decimal('1.25'), None, Decimal('-2.50')],
+            2,
+            4,
+            nullable=True,
+        ),
+    ),
+    (
+        "tuple",
+        lambda: (
+            TupleStorage.from_iterable([date(2024, 1, 1), None]),
+            TupleStorage.from_iterable([date(2024, 1, 3)]),
+        ),
+        lambda: TupleStorage.from_iterable(
+            [date(2024, 1, 1), None, date(2024, 1, 3)]),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "parts_factory,expected_factory",
+    [case[1:] for case in PHYSICAL_CONCAT_CASES],
+    ids=[case[0] for case in PHYSICAL_CONCAT_CASES],
+)
+def test_physical_storage_concatenation(parts_factory, expected_factory):
+    parts = parts_factory()
+    before = [_storage_signature(part) for part in parts]
+
+    result = concatenate_storages(parts)
+
+    assert _storage_signature(result) == _storage_signature(expected_factory())
+    assert [_storage_signature(part) for part in parts] == before
+    assert all(result is not part for part in parts)
+
+
+def test_physical_storage_concatenation_keeps_dense_mask_absent():
+    result = concatenate_storages((
+        ArrayStorage(array('q', [1, 2])),
+        ArrayStorage(array('q', [3, 4])),
+    ))
+    assert result._mask is None
+
+
+def test_physical_storage_concatenation_rejects_invalid_sequences():
+    with pytest.raises(ValueError, match='empty'):
+        concatenate_storages(())
+    with pytest.raises(TypeError, match='physical type'):
+        concatenate_storages((
+            ArrayStorage(array('q', [1])),
+            TupleStorage((2,)),
+        ))
 
 
 # ---------------------------------------------------------------------------

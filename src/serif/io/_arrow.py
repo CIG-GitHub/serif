@@ -46,27 +46,21 @@ Why this is fast: serif's storage layout is deliberately arrow-shaped.
 
 from __future__ import annotations
 
-import array as _pyarray
-
-try:
-    import numpy as _np
-except ImportError:            # pyarrow >= 25 no longer pulls numpy in
-    _np = None
 import pyarrow as _pa
 import pyarrow.parquet as _pq
 
 from datetime import date as _date, datetime as _datetime
 from decimal import Decimal as _Decimal
 
+from .._execution import DECLINED
 from ..vector import Vector
+from .._vector._arrow import storage as _arrow_storage
 from .._vector.dtype import Schema as _Schema
-from .._vector.nullable import BitMask
-from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolStorage
 
 
 def _target_type(t):
     """
-    Map an arrow column type to the type to DECODE AS; None means DECLINE.
+    Map an arrow column type to the type to decode as, or `DECLINED`.
 
     Identity for the types serif's writer emits. A handful of foreign types
     additionally widen to a supported type — legal because the widening is
@@ -85,12 +79,13 @@ def _target_type(t):
                                        pure reader surfaces plain values
 
     Types serif REJECTS (nanosecond timestamps, uint32/64, decimal256)
-    return None: the whole file declines, and the pure reader's refusal is
-    what users see, with pyarrow installed or not.
+    return `DECLINED`: the whole file declines, and the pure reader's refusal
+    is what users see, with pyarrow installed or not.
     """
     if _pa.types.is_dictionary(t):
         vt = t.value_type
-        return _target_type(vt) if not _pa.types.is_dictionary(vt) else None
+        return (_target_type(vt)
+                if not _pa.types.is_dictionary(vt) else DECLINED)
     if (_pa.types.is_int64(t) or _pa.types.is_float64(t)
             or _pa.types.is_string(t) or _pa.types.is_boolean(t)
             or _pa.types.is_date32(t)):
@@ -111,15 +106,15 @@ def _target_type(t):
     # decimal128 only; decimal256 declines (serif has no 256-bit backend).
     if _pa.types.is_decimal(t) and t.bit_width == 128:
         return t
-    return None
+    return DECLINED
 
 
 def try_read(path):
     """
     Read `path` via pyarrow if every column type is supported.
 
-    Returns a Table, or None to DECLINE — whole-file fallback to the pure
-    reader. Declining covers unsupported column types (semantics stay
+    Returns a Table or `DECLINED` for whole-file fallback to the pure reader.
+    Declining covers unsupported column types (semantics stay
     serif's: the pure reader raises its own loud errors) and any pyarrow
     parse failure (so corrupt files surface serif's messages, not arrow's).
     """
@@ -129,18 +124,18 @@ def try_read(path):
     # BEFORE decoding any data.
     try:
         pf = _pq.ParquetFile(path)
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     schema  = pf.schema_arrow
     targets = [_target_type(field.type) for field in schema]
-    if not all(t is not None for t in targets):
-        return None
+    if any(target is DECLINED for target in targets):
+        return DECLINED
 
     try:
         table = pf.read()
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     # Arrow-layer failures during conversion (cast overflow, string concat
     # past 2 GB, …) decline like any other pyarrow failure — the pure
@@ -161,11 +156,11 @@ def try_read(path):
             if arr.offset != 0:
                 # The buffer math below assumes offset 0. Fresh reads always
                 # are; decline rather than risk a misread.
-                return None
+                return DECLINED
             cols.append(_to_vector(arr, field.name, field.nullable))
         return Table._from_columns_nocopy(cols)
-    except _pa.ArrowException:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
 
 def try_read_column(path, column_index, row_groups, batched=False):
@@ -175,23 +170,23 @@ def try_read_column(path, column_index, row_groups, batched=False):
     With ``batched=True``, the result is grouped by row group and split into
     bounded batches so the caller can apply Serif's byte masks without
     retaining a whole unfiltered payload column. Returns nested Vector
-    pieces, or None to decline to the pure reader.
+    pieces, or `DECLINED` to fall through to the pure reader.
     """
     try:
         pf = _pq.ParquetFile(path)
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     schema = pf.schema_arrow
     targets = [_target_type(field.type) for field in schema]
-    if not all(target is not None for target in targets):
-        return None
+    if any(target is DECLINED for target in targets):
+        return DECLINED
 
     field = schema.field(column_index)
     # ParquetFile projection is name-based; duplicate names are legal in
     # Serif, so decline rather than risk selecting the wrong occurrence.
     if schema.names.count(field.name) != 1:
-        return None
+        return DECLINED
 
     try:
         target = targets[column_index]
@@ -207,7 +202,7 @@ def try_read_column(path, column_index, row_groups, batched=False):
             else:
                 arr = _pa.concat_arrays(chunked.chunks)
             if arr.offset != 0:
-                return None
+                return DECLINED
             return [[_to_vector(arr, field.name, field.nullable)]]
 
         groups = []
@@ -219,34 +214,19 @@ def try_read_column(path, column_index, row_groups, batched=False):
                 if arr.type != target:
                     arr = arr.cast(target)
                 if arr.offset != 0:
-                    return None
+                    return DECLINED
                 vectors.append(_to_vector(arr, field.name, field.nullable))
             groups.append(vectors)
         return groups
-    except _pa.ArrowException:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
 
-def _bit_mask(arr):
-    """
-    Arrow validity bitmap → serif BitMask, near-zero-copy.
-
-    Arrow and BitMask use the identical layout: one packed bit per element,
-    least-significant-bit-first, 1=valid/0=null. So arrow's validity buffer
-    is already a valid BitMask buffer — copy it once and trim to the ceil(n/8)
-    bytes BitMask holds (arrow pads the buffer to a wider alignment; the
-    trailing bytes and any bits past n are never read but we drop them so the
-    buffer length matches what BitMask.from_iterable would have produced).
-    No numpy needed on this path, with or without it installed.
-
-    Callers must pass an array at offset 0 (try_read declines otherwise); a
-    non-zero offset would misalign every bit against this bytewise copy.
-    """
-    if arr.null_count == 0:
-        return None
-    n   = len(arr)
-    buf = bytearray(memoryview(arr.buffers()[0])[:(n + 7) // 8])
-    return BitMask(buf, n)
+def _wrap_storage(storage, dtype, name):
+    if storage is DECLINED:
+        raise RuntimeError(
+            "Arrow storage adapter declined a normalized Parquet array")
+    return Vector._from_storage(storage, dtype, name=name)
 
 
 def _to_vector(arr, name, nullable):
@@ -259,73 +239,28 @@ def _to_vector(arr, name, nullable):
         dtype = _Schema(str, nullable)
         if n == 0:
             return Vector._from_iterable_known_dtype([], dtype, name=name)
-        # Arrow pads buffers to a wider alignment; trim each memoryview to
-        # the live bytes BEFORE copying so every buffer costs one memcpy.
-        bufs = arr.buffers()  # [validity, int32 offsets, utf-8 data]
-        offs = _pyarray.array('I')
-        offs.frombytes(memoryview(bufs[1])[:(n + 1) * 4])  # same layout as int32
-        data_buf = bufs[2]
-        raw = memoryview(data_buf)[:offs[-1]].tobytes() if data_buf is not None else b''
-        storage = StringStorage.from_raw(raw, offs, _bit_mask(arr))
-        return Vector._from_storage(storage, dtype, name=name)
+        return _wrap_storage(
+            _arrow_storage.string_storage(arr), dtype, name)
 
     if _pa.types.is_int64(t) or _pa.types.is_float64(t):
-        kind, typecode = (int, 'q') if _pa.types.is_int64(t) else (float, 'd')
+        kind = int if _pa.types.is_int64(t) else float
         dtype = _Schema(kind, nullable)
         if n == 0:
             return Vector._from_iterable_known_dtype([], dtype, name=name)
-        data = _pyarray.array(typecode)
-        # Trim the padding before the copy: one memcpy, no boxing.
-        data.frombytes(memoryview(arr.buffers()[1])[:n * 8])
-        storage = ArrayStorage(data, _bit_mask(arr))
-        return Vector._from_storage(storage, dtype, name=name)
+        return _wrap_storage(
+            _arrow_storage.numeric_storage(arr), dtype, name)
 
     if _pa.types.is_decimal(t):
-        # Arrow decimal128 is little-endian; DecimalStorage is big-endian
-        # (Parquet-native), so each 16-byte row is byte-reversed. With numpy
-        # that's one vectorised reshape + reverse over a zero-copy view of
-        # arrow's buffer (all C); without numpy a per-row slice-reverse loop
-        # yields the identical big-endian bytes.
-        scale     = t.scale
-        precision = t.precision
-        dtype     = _Schema(_Decimal, nullable)
-        if n == 0:
-            return Vector._from_storage(
-                DecimalStorage(bytearray(), scale, precision, None),
-                dtype, name=name)
-        le = memoryview(arr.buffers()[1])[:n * 16]
-        if _np is not None:
-            le_rows  = _np.frombuffer(le, dtype=_np.uint8).reshape(n, 16)
-            be_bytes = le_rows[:, ::-1].tobytes()  # reverse each row → big-endian
-        else:
-            le_buf = le.tobytes()
-            be = bytearray(n * 16)
-            for i in range(n):
-                be[i * 16:(i + 1) * 16] = le_buf[i * 16:(i + 1) * 16][::-1]
-            be_bytes = bytes(be)
-        storage = DecimalStorage.from_raw_be(be_bytes, scale, precision,
-                                             _bit_mask(arr))
-        return Vector._from_storage(storage, dtype, name=name)
+        dtype = _Schema(_Decimal, nullable)
+        return _wrap_storage(
+            _arrow_storage.decimal_storage(arr), dtype, name)
 
     if _pa.types.is_boolean(t):
-        # Arrow bools are bit-packed; BoolStorage is byte-packed. One
-        # unpack pass — a single C call with numpy, a bit loop without
-        # (same optional-numpy trade as the decimal byte-swap).
         dtype = _Schema(bool, nullable)
         if n == 0:
             return Vector._from_iterable_known_dtype([], dtype, name=name)
-        bit_buf = arr.buffers()[1]
-        if _np is not None:
-            bits = _np.frombuffer(bit_buf, dtype=_np.uint8)  # zero-copy view
-            data = bytearray(
-                _np.unpackbits(bits, count=n, bitorder='little').tobytes())
-        else:
-            mv   = memoryview(bit_buf)
-            data = bytearray(n)
-            for i in range(n):
-                data[i] = (mv[i >> 3] >> (i & 7)) & 1
-        storage = BoolStorage.from_raw(data, _bit_mask(arr))
-        return Vector._from_storage(storage, dtype, name=name)
+        return _wrap_storage(
+            _arrow_storage.bool_storage(arr), dtype, name)
 
     # date32 / timestamp → TupleStorage of Python objects, the same
     # backend the pure reader builds. arrow's to_pylist() boxes in C with

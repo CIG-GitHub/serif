@@ -348,7 +348,7 @@ def test_unknown_struct_field_with_long_form_header_is_skipped(tmp_path):
 
 def test_multi_row_group_strings_with_nulls(tmp_path):
     """Two row groups on one nullable string column — exercises
-    _concat_string_storages including null-mask combination."""
+    storage-owned concatenation including null-mask combination."""
     group1 = ['aa', None, 'b']
     group2 = ['ccc', None]
 

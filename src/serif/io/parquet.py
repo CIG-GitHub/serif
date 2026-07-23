@@ -36,6 +36,7 @@ from itertools import chain as _chain
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
 from .._vector.nullable import BitMask
@@ -46,6 +47,7 @@ from .._vector.storage import (
     DecimalStorage,
     StringStorage,
     TupleStorage,
+    concatenate_storages,
 )
 
 # ---------------------------------------------------------------------------
@@ -1539,59 +1541,6 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     return BoolStorage(data, mask)
 
 
-def _concat_bool_storages(a: BoolStorage, b: BoolStorage) -> BoolStorage:
-    """Concatenate two BoolStorages (multiple row groups)."""
-    from .._vector.nullable import BitMask
-    new_data = a._data + b._data
-    if a._mask is None and b._mask is None:
-        new_mask = None
-    else:
-        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(len(a))]
-        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(len(b))]
-        all_flags = a_flags + b_flags
-        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
-    return BoolStorage(new_data, new_mask)
-
-
-def _concat_decimal_storages(a: DecimalStorage, b: DecimalStorage) -> DecimalStorage:
-    """Concatenate two DecimalStorages (multiple row groups)."""
-    from .._vector.nullable import BitMask
-    new_buf = a._buf + b._buf
-    if a._mask is None and b._mask is None:
-        new_mask = None
-    else:
-        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(len(a))]
-        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(len(b))]
-        all_flags = a_flags + b_flags
-        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
-    return DecimalStorage(new_buf, a._scale, a._precision, new_mask)
-
-
-def _concat_string_storages(a: StringStorage, b: StringStorage) -> StringStorage:
-    """Concatenate two StringStorages (multiple row groups)."""
-    shift    = len(a._buf)
-    new_buf  = a._buf + b._buf
-    a_len    = len(a)
-    b_len    = len(b)
-
-    # a's offsets + b's offsets each shifted by len(a._buf)
-    new_offs = _pyarray.array('I', a._offsets)
-    for i in range(1, b_len + 1):
-        new_offs.append(b._offsets[i] + shift)
-
-    # Combine null masks
-    if a._mask is None and b._mask is None:
-        new_mask = None
-    else:
-        from .._vector.nullable import BitMask
-        a_flags = [a._mask.is_null(i) if a._mask else False for i in range(a_len)]
-        b_flags = [b._mask.is_null(i) if b._mask else False for i in range(b_len)]
-        all_flags = a_flags + b_flags
-        new_mask = BitMask.from_iterable(all_flags) if any(all_flags) else None
-
-    return StringStorage.from_raw(new_buf, new_offs, new_mask)
-
-
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                         conv_type, is_optional: bool, col_name: str,
                         decimal_scale: int = None,
@@ -1676,7 +1625,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             if values is None:
                 values = page_storage
             elif isinstance(values, StringStorage):
-                values = _concat_string_storages(values, page_storage)
+                values = concatenate_storages((values, page_storage))
             else:
                 values = list(values) if not isinstance(values, list) else values
                 values.extend(page_storage)
@@ -1689,7 +1638,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             if values is None:
                 values = page_storage
             elif isinstance(values, DecimalStorage):
-                values = _concat_decimal_storages(values, page_storage)
+                values = concatenate_storages((values, page_storage))
             else:
                 values = list(values) if not isinstance(values, list) else values
                 values.extend(page_storage)
@@ -1701,7 +1650,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             if values is None:
                 values = page_storage
             elif isinstance(values, BoolStorage):
-                values = _concat_bool_storages(values, page_storage)
+                values = concatenate_storages((values, page_storage))
             else:
                 values = list(values) if not isinstance(values, list) else values
                 values.extend(page_storage)
@@ -1786,19 +1735,6 @@ def _mask_has_true(mask, start, stop):
     return False
 
 
-def _combined_mask(storages):
-    if all(storage._mask is None for storage in storages):
-        return None
-    nulls = []
-    for storage in storages:
-        mask = storage._mask
-        nulls.extend(
-            mask.is_null(i) if mask is not None else False
-            for i in range(len(storage))
-        )
-    return BitMask.from_iterable(nulls) if any(nulls) else None
-
-
 def _combine_columns(columns, meta):
     if not columns:
         return _empty_column(meta)
@@ -1806,43 +1742,22 @@ def _combine_columns(columns, meta):
         return columns[0]
 
     storages = [col._storage for col in columns]
-    first = storages[0]
-    if all(isinstance(storage, ArrayStorage) for storage in storages):
-        data = _pyarray.array(first._data.typecode)
-        for storage in storages:
-            data.extend(storage._data)
-        combined = ArrayStorage(data, _combined_mask(storages))
-    elif all(isinstance(storage, BoolStorage) for storage in storages):
-        data = bytearray()
-        for storage in storages:
-            data.extend(storage._data)
-        combined = BoolStorage.from_raw(data, _combined_mask(storages))
-    elif all(isinstance(storage, StringStorage) for storage in storages):
-        raw_parts = []
-        offsets = _pyarray.array('I', [0])
-        total = 0
-        for storage in storages:
-            raw_parts.append(storage._buf)
-            offsets.extend(total + off for off in storage._offsets[1:])
-            total += len(storage._buf)
-        combined = StringStorage.from_raw(
-            b''.join(raw_parts), offsets, _combined_mask(storages))
-    elif all(isinstance(storage, DecimalStorage) for storage in storages):
-        combined = DecimalStorage(
-            bytearray(b''.join(storage._buf for storage in storages)),
-            first._scale,
-            first._precision,
-            _combined_mask(storages),
-        )
-    elif all(isinstance(storage, TupleStorage) for storage in storages):
-        combined = TupleStorage.from_iterable(
-            _chain.from_iterable(storage._data for storage in storages))
-    else:
+    storage_types = (
+        ArrayStorage,
+        BoolStorage,
+        StringStorage,
+        DecimalStorage,
+        TupleStorage,
+    )
+    if not any(
+            all(isinstance(storage, storage_type) for storage in storages)
+            for storage_type in storage_types):
         return Vector._from_iterable_known_dtype(
             _chain.from_iterable(columns),
             _dtype_for(meta),
             name=meta['name'],
         )
+    combined = concatenate_storages(storages)
     return Vector._from_storage(combined, _dtype_for(meta), name=meta['name'])
 
 
@@ -1939,7 +1854,11 @@ class _ParquetSource:
             masked = segments[0] is not None
             arrow_groups = _arrow_accel.try_read_column(
                 self.path, idx, groups, batched=masked)
-            if arrow_groups is not None:
+            if arrow_groups is not DECLINED:
+                if arrow_groups is None:
+                    raise RuntimeError(
+                        "Arrow Parquet backend returned None instead of "
+                        "column batches or DECLINED")
                 if not masked:
                     return _combine_columns(
                         [piece for group in arrow_groups for piece in group],
@@ -1956,10 +1875,10 @@ class _ParquetSource:
                             piece, segment[cursor:stop]))
                         cursor = stop
                     if cursor != len(segment):
-                        arrow_groups = None
-                        break
-                if arrow_groups is not None:
-                    return _combine_columns(pieces, meta)
+                        raise RuntimeError(
+                            "Arrow column batches did not match the selected "
+                            "Parquet row group")
+                return _combine_columns(pieces, meta)
 
         pieces = []
         with self._open_checked() as handle:
@@ -2159,7 +2078,10 @@ def _read_parquet_eager(path: str):
 
     if _USE_ARROW and _arrow_accel is not None:
         result = _arrow_accel.try_read(path)
-        if result is not None:
+        if result is not DECLINED:
+            if not isinstance(result, Table):
+                raise RuntimeError(
+                    "Arrow Parquet backend returned a non-Table result")
             return result
         # Declined (unsupported column type, parse error, …): fall through
         # to the pure reader, whose errors are the ones users should see.
@@ -2266,12 +2188,13 @@ def _read_parquet_eager(path: str):
             existing = col_values[col_idx]
             if existing is None:
                 col_values[col_idx] = chunk_values
-            elif isinstance(existing, StringStorage) and isinstance(chunk_values, StringStorage):
-                col_values[col_idx] = _concat_string_storages(existing, chunk_values)
-            elif isinstance(existing, DecimalStorage) and isinstance(chunk_values, DecimalStorage):
-                col_values[col_idx] = _concat_decimal_storages(existing, chunk_values)
-            elif isinstance(existing, BoolStorage) and isinstance(chunk_values, BoolStorage):
-                col_values[col_idx] = _concat_bool_storages(existing, chunk_values)
+            elif any(
+                    isinstance(existing, storage_type)
+                    and isinstance(chunk_values, storage_type)
+                    for storage_type in (
+                        StringStorage, DecimalStorage, BoolStorage)):
+                col_values[col_idx] = concatenate_storages(
+                    (existing, chunk_values))
             elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
                 col_values[col_idx] = existing + chunk_values
             else:

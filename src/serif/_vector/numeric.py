@@ -19,23 +19,3 @@ class _Int(Vector):
             return ArrayStorage.from_iterable(data, typecode='q', nullable=nullable)
         except OverflowError:
             return TupleStorage.from_iterable(data, nullable=nullable)
-
-
-# Kind-level promotion for plain Python numeric types.
-# Used by _pre_compute_op_schema in vector.py to resolve output dtype
-# before touching any data.
-_KIND_PROMOTION = {
-    (bool,    bool):    bool,
-    (bool,    int):     int,
-    (int,     bool):    int,
-    (int,     int):     int,
-    (int,     float):   float,
-    (float,   int):     float,
-    (float,   float):   float,
-    (int,     complex): complex,
-    (float,   complex): complex,
-    (complex, int):     complex,
-    (complex, float):   complex,
-    (complex, complex): complex,
-    (str,     str):     str,
-}

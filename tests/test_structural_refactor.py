@@ -1,9 +1,7 @@
-"""
-Pins for behavior changes that ride along with the structural refactor
-(commit 1): dtype/backend preservation through sort/join/window, the
-unified duplicate-name disambiguation rule, and is_na() derivation rules.
-"""
+"""Behavioral and dependency-direction pins for the structural refactor."""
 
+import ast
+from importlib.util import resolve_name
 from pathlib import Path
 import warnings
 
@@ -13,6 +11,104 @@ from serif import Vector, Table
 from serif._vector import Schema
 from serif._vector.categorical import _Category
 from serif._vector.storage import ArrayStorage
+
+
+_SOURCE_ROOT = Path(__file__).parents[1] / 'src' / 'serif'
+
+_FOUNDATION_MODULES = {
+    'serif._execution',
+    'serif._vector.dtype',
+    'serif._vector.nullable',
+    'serif._vector.storage',
+}
+
+_PHYSICAL_ROOTS = (
+    'serif._vector._python',
+    'serif._vector._numpy',
+    'serif._vector._arrow',
+    'serif._table._python',
+    'serif._table._numpy',
+    'serif._table._arrow',
+)
+
+_HYBRID_PHYSICAL_IMPORTS = {
+    ('serif._table._arrow.grouping', 'serif._table._numpy'),
+    ('serif._table._arrow.joins', 'serif._table._numpy'),
+}
+
+
+def _module_name(path):
+    parts = list(path.relative_to(_SOURCE_ROOT).with_suffix('').parts)
+    if parts[-1] == '__init__':
+        parts.pop()
+    return '.'.join(('serif', *parts))
+
+
+def _import_targets(path):
+    module = _module_name(path)
+    package = module if path.name == '__init__.py' else module.rpartition('.')[0]
+    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                relative = '.' * node.level + (node.module or '')
+                target = resolve_name(relative, package)
+            else:
+                target = node.module
+            if target is not None:
+                yield target, node.lineno
+
+
+def _matches_root(module, root):
+    return module == root or module.startswith(root + '.')
+
+
+def _physical_root(module):
+    return next(
+        (root for root in _PHYSICAL_ROOTS if _matches_root(module, root)),
+        None,
+    )
+
+
+def _mechanism(module):
+    for mechanism in ('_python', '_numpy', '_arrow'):
+        if f'.{mechanism}' in module:
+            return mechanism
+    return None
+
+
+def _foundation_import_is_upward(target):
+    if not target.startswith('serif'):
+        return False
+    if target in _FOUNDATION_MODULES:
+        return False
+    return (
+        _physical_root(target) is not None
+        or _matches_root(target, 'serif.io')
+        or _matches_root(target, 'serif.vector')
+        or _matches_root(target, 'serif.table')
+        or _matches_root(target, 'serif._vector')
+        or _matches_root(target, 'serif._table')
+    )
+
+
+def _physical_import_is_upward(target):
+    if not target.startswith('serif'):
+        return False
+    if target in _FOUNDATION_MODULES or _physical_root(target) is not None:
+        return False
+    return (
+        _matches_root(target, 'serif.io')
+        or _matches_root(target, 'serif.vector')
+        or _matches_root(target, 'serif.table')
+        or _matches_root(target, 'serif.errors')
+        or _matches_root(target, 'serif._vector')
+        or _matches_root(target, 'serif._table')
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -77,16 +173,52 @@ def test_arrow_aggregation_backend_does_not_own_public_classes():
     assert 'Table' not in vars(aggregation)
 
 
+def test_foundation_modules_do_not_import_upward():
+    violations = []
+    for module in sorted(_FOUNDATION_MODULES):
+        path = _SOURCE_ROOT.joinpath(*module.split('.')[1:]).with_suffix('.py')
+        for target, line in _import_targets(path):
+            if _foundation_import_is_upward(target):
+                violations.append(f'{module}:{line} imports {target}')
+    assert violations == []
+
+
+def test_physical_modules_follow_dependency_direction():
+    violations = []
+    cross_mechanism_imports = set()
+
+    physical_paths = []
+    for root in _PHYSICAL_ROOTS:
+        directory = _SOURCE_ROOT.joinpath(*root.split('.')[1:])
+        physical_paths.extend(directory.rglob('*.py'))
+
+    for path in sorted(set(physical_paths)):
+        module = _module_name(path)
+        source_mechanism = _mechanism(module)
+        for target, line in _import_targets(path):
+            if _physical_import_is_upward(target):
+                violations.append(f'{module}:{line} imports {target}')
+
+            target_root = _physical_root(target)
+            target_mechanism = _mechanism(target)
+            if (target_root is not None
+                    and source_mechanism != target_mechanism):
+                cross_mechanism_imports.add((module, target_root))
+
+    unexpected_hybrids = cross_mechanism_imports - _HYBRID_PHYSICAL_IMPORTS
+    assert violations == []
+    assert unexpected_hybrids == set()
+
+
 def test_legacy_accel_package_has_no_python_modules_or_callers():
-    source_root = Path(__file__).parents[1] / 'src' / 'serif'
-    legacy_root = source_root / '_accel'
+    legacy_root = _SOURCE_ROOT / '_accel'
     assert not list(legacy_root.glob('*.py'))
 
     callers = []
-    for path in source_root.rglob('*.py'):
+    for path in _SOURCE_ROOT.rglob('*.py'):
         source = path.read_text(encoding='utf-8')
         if '._accel' in source or 'serif._accel' in source:
-            callers.append(path.relative_to(source_root))
+            callers.append(path.relative_to(_SOURCE_ROOT))
     assert callers == []
 
 

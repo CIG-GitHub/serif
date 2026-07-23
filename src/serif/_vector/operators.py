@@ -10,6 +10,7 @@ from ..errors import SerifValueError
 from ._python import operators as _python_ops
 from .dtype import Schema
 from .dtype import infer_dtype
+from .dtype import promote_kinds
 
 
 def _vector_class():
@@ -90,8 +91,6 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
     Returns None when the result type cannot be determined from types alone,
     including object dtype, temporal operations, and unknown right-hand kinds.
     """
-    from .numeric import _KIND_PROMOTION
-
     if lhs_schema is None or lhs_schema.kind is object:
         return None
     lhs_kind = lhs_schema.kind
@@ -103,7 +102,7 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
         rhs_schema = rhs._dtype
         if rhs_schema is None or rhs_schema.kind is object:
             return None
-        result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_schema.kind))
+        result_kind = promote_kinds(lhs_kind, rhs_schema.kind)
         if result_kind is None:
             return None
         if is_truediv and result_kind in (bool, int):
@@ -114,7 +113,7 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
         )
 
     rhs_kind = type(rhs)
-    result_kind = _KIND_PROMOTION.get((lhs_kind, rhs_kind))
+    result_kind = promote_kinds(lhs_kind, rhs_kind)
     if result_kind is None:
         return None
     if is_truediv and result_kind in (bool, int):
