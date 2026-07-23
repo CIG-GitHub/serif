@@ -32,7 +32,6 @@ from __future__ import annotations
 import array as _pyarray
 import os as _os
 import struct as _struct
-from itertools import chain as _chain
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
@@ -1596,17 +1595,43 @@ def _combine_decoded_parts(parts):
 
     if all(isinstance(part, _pyarray.array) for part in parts):
         result = parts[0]
+        typecode = result.typecode
         for part in parts[1:]:
+            if part.typecode != typecode:
+                raise RuntimeError(
+                    "Parquet decoder produced mixed packed array types")
             result.extend(part)
         return result
 
-    # Defensive mixed fallback: fixed Parquet physical types normally make
-    # every decoded part homogeneous, but retain the prior decoded-value
-    # behavior if a future decoder transitions representation.
-    result = []
-    for part in parts:
-        result.extend(part)
-    return result
+    if all(isinstance(part, list) for part in parts):
+        result = []
+        for part in parts:
+            result.extend(part)
+        return result
+
+    raise RuntimeError(
+        "Parquet decoder produced mixed physical representations: "
+        + ", ".join(type(part).__name__ for part in parts))
+
+
+def _empty_chunk_result(kind, phys_type, is_optional,
+                        decimal_scale=None, decimal_precision=None):
+    """Return the physical representation used by non-empty peer chunks."""
+    if kind is str:
+        return StringStorage.from_raw(
+            b'', _pyarray.array('I', [0]), None)
+    if kind is bool:
+        return BoolStorage(bytearray(), None)
+    if kind is _Decimal:
+        return DecimalStorage(
+            bytearray(), decimal_scale, decimal_precision, None)
+    if kind is int and phys_type == _T_INT64:
+        data = _pyarray.array('q')
+        return ArrayStorage(data, None) if is_optional else data
+    if kind is float and phys_type == _T_DOUBLE:
+        data = _pyarray.array('d')
+        return ArrayStorage(data, None) if is_optional else data
+    return []
 
 
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
@@ -1726,6 +1751,14 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             page_results.append(page_result)
         remaining -= page_num_values
 
+    if not page_results:
+        return _empty_chunk_result(
+            kind,
+            phys_type,
+            is_optional,
+            decimal_scale,
+            decimal_precision,
+        )
     return _combine_decoded_parts(page_results)
 
 
@@ -1762,7 +1795,12 @@ def _column_from_raw(meta, raw):
     if isinstance(raw, _pyarray.array):
         return Vector._from_storage(
             ArrayStorage(raw, None), dtype, name=meta['name'])
-    return Vector._from_iterable_known_dtype(raw, dtype, name=meta['name'])
+    if isinstance(raw, list):
+        return Vector._from_iterable_known_dtype(
+            raw, dtype, name=meta['name'])
+    raise RuntimeError(
+        f"Parquet decoder returned unsupported {type(raw).__name__} "
+        f"representation for column '{meta['name']}'")
 
 
 def _filter_column(col, mask):
@@ -1801,11 +1839,9 @@ def _combine_columns(columns, meta):
     if not any(
             all(isinstance(storage, storage_type) for storage in storages)
             for storage_type in storage_types):
-        return Vector._from_iterable_known_dtype(
-            _chain.from_iterable(columns),
-            _dtype_for(meta),
-            name=meta['name'],
-        )
+        raise RuntimeError(
+            f"Parquet column '{meta['name']}' produced mixed storage types: "
+            + ", ".join(type(storage).__name__ for storage in storages))
     combined = concatenate_storages(storages)
     return Vector._from_storage(combined, _dtype_for(meta), name=meta['name'])
 
@@ -2123,7 +2159,6 @@ def _read_parquet_eager(path: str):
     Table
     """
     from ..table import Table
-    from .._vector.dtype import Schema as _Schema
 
     if _USE_ARROW and _arrow_accel is not None:
         result = _arrow_accel.try_read(path)
@@ -2238,31 +2273,11 @@ def _read_parquet_eager(path: str):
 
     result_cols = []
     for col_idx, m in enumerate(col_meta):
-        raw = _combine_decoded_parts(col_chunks[col_idx])
-        dtype = _Schema(m['kind'], m['is_optional'])
-
-        if isinstance(raw, ArrayStorage):
-            # Nullable packed numeric pages already include their sentinels
-            # and validity bitmap.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, StringStorage):
-            # Str fast path: StringStorage already built with raw bytes,
-            # no .decode() has occurred yet.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, DecimalStorage):
-            # Decimal fast path: DecimalStorage built directly from raw bytes.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, BoolStorage):
-            # Bool fast path: BoolStorage bytes unpacked directly from
-            # PLAIN BOOLEAN bits.
-            col = Vector._from_storage(raw, dtype, name=m['name'])
-        elif isinstance(raw, _pyarray.array):
-            # Non-nullable float or int: storage is already a packed C array.
-            # Wrap it directly — zero extra iteration, zero boxing.
-            storage = ArrayStorage(raw, None)
-            col     = Vector._from_storage(storage, dtype, name=m['name'])
+        if col_chunks[col_idx]:
+            raw = _combine_decoded_parts(col_chunks[col_idx])
+            col = _column_from_raw(m, raw)
         else:
-            col = Vector._from_iterable_known_dtype(raw, dtype, name=m['name'])
+            col = _empty_column(m)
 
         result_cols.append(col)
 

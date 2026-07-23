@@ -21,6 +21,9 @@ from serif import Table, Vector
 from serif.errors import SerifTypeError
 from serif.io.parquet import _decode_array_raw
 from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
+from serif._vector.storage import DecimalStorage
+from serif._vector.storage import StringStorage
 
 
 @pytest.fixture(autouse=True)
@@ -263,12 +266,35 @@ def test_column_chunk_concatenates_page_storages_once(
     ]
 
 
-def test_page_result_combiner_preserves_empty_and_mixed_fallback():
+def test_decoded_part_combiner_preserves_empty_and_list_results():
     assert parquet_mod._combine_decoded_parts([]) == []
     assert parquet_mod._combine_decoded_parts([
-        array('q', [1, 2]),
+        [1, 2],
         [None, 4],
     ]) == [1, 2, None, 4]
+
+
+def test_decoded_part_combiner_rejects_mixed_representations():
+    with pytest.raises(RuntimeError, match='mixed physical'):
+        parquet_mod._combine_decoded_parts([
+            array('q', [1, 2]),
+            [None, 4],
+        ])
+
+
+def test_column_combiner_rejects_impossible_mixed_storage_types():
+    with pytest.raises(RuntimeError, match='mixed storage'):
+        parquet_mod._combine_columns(
+            [
+                Vector([1], name='x'),
+                Vector([2**70], name='x'),
+            ],
+            {
+                'name': 'x',
+                'kind': int,
+                'is_optional': False,
+            },
+        )
 
 
 def test_decoded_part_combiner_extends_packed_arrays_in_place():
@@ -281,6 +307,79 @@ def test_decoded_part_combiner_extends_packed_arrays_in_place():
 
     assert result is first
     assert result.tolist() == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    "kind,phys_type,is_optional,options,expected_type,typecode",
+    [
+        (
+            int, parquet_mod._T_INT64, False,
+            {}, array, 'q',
+        ),
+        (
+            int, parquet_mod._T_INT64, True,
+            {}, ArrayStorage, 'q',
+        ),
+        (
+            float, parquet_mod._T_DOUBLE, False,
+            {}, array, 'd',
+        ),
+        (
+            float, parquet_mod._T_DOUBLE, True,
+            {}, ArrayStorage, 'd',
+        ),
+        (
+            int, parquet_mod._T_INT32, False,
+            {}, list, None,
+        ),
+        (
+            str, parquet_mod._T_BYTE_ARRAY, True,
+            {'conv_type': parquet_mod._CT_UTF8}, StringStorage, None,
+        ),
+        (
+            bool, parquet_mod._T_BOOLEAN, True,
+            {}, BoolStorage, None,
+        ),
+        (
+            Decimal, parquet_mod._T_FIXED_LEN_BYTE_ARRAY, True,
+            {'decimal_scale': 2, 'decimal_precision': 4},
+            DecimalStorage, None,
+        ),
+    ],
+    ids=[
+        'required-int64',
+        'optional-int64',
+        'required-double',
+        'optional-double',
+        'int32-list',
+        'string',
+        'boolean',
+        'decimal',
+    ],
+)
+def test_empty_chunk_uses_peer_physical_representation(
+        kind, phys_type, is_optional, options, expected_type, typecode):
+    result = parquet_mod._read_column_chunk(
+        memoryview(b''),
+        {
+            'codec': parquet_mod._CODEC_UNCOMPRESSED,
+            'num_values': 0,
+            'data_page_offset': 0,
+        },
+        kind=kind,
+        phys_type=phys_type,
+        conv_type=options.get('conv_type'),
+        is_optional=is_optional,
+        col_name='x',
+        decimal_scale=options.get('decimal_scale'),
+        decimal_precision=options.get('decimal_precision'),
+    )
+
+    assert type(result) is expected_type
+    if typecode is not None:
+        data = result._data if isinstance(result, ArrayStorage) else result
+        assert data.typecode == typecode
+    assert len(result) == 0
 
 
 class TestNullableRoundtrip:
