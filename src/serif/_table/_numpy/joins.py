@@ -139,7 +139,7 @@ def probe_unique_codes(
             ])
             right_take = _np.concatenate([right_take, unmatched])
 
-    return 'ok', left_take.tolist(), right_take.tolist()
+    return 'ok', left_take, right_take
 
 
 def probe_codes(
@@ -203,5 +203,5 @@ def probe_codes(
             ])
             right_take = _np.concatenate([right_take, unmatched])
 
-    return 'ok', left_take.tolist(), right_take.tolist()
+    return 'ok', left_take, right_take
 
