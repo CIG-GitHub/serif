@@ -31,6 +31,15 @@ from typing import Iterable
 from typing import Iterator
 
 
+def _packed_valid_prefix(length: int) -> bytearray:
+    """Pack ``length`` valid lanes with zeroed high padding bits."""
+    full_bytes, remaining = divmod(length, 8)
+    buf = bytearray(b'\xff' * full_bytes)
+    if remaining:
+        buf.append((1 << remaining) - 1)
+    return buf
+
+
 class BitMask:
     """
     Null bitmap using one packed bit per element (Arrow validity layout).
@@ -63,13 +72,12 @@ class BitMask:
         nulls:
             One True/False per element — True means the element is null.
         """
-        flags = nulls if isinstance(nulls, (list, tuple)) else list(nulls)
-        n   = len(flags)
-        buf = bytearray((n + 7) // 8)          # zero-filled → all bits start null
-        for i, is_null in enumerate(flags):
-            if not is_null:
-                buf[i >> 3] |= 1 << (i & 7)     # valid → set the bit
-        return cls(buf, n)
+        builder = _BitMaskBuilder()
+        for is_null in nulls:
+            builder.append(is_null)
+        mask = builder.finish(force=True)
+        assert mask is not None
+        return mask
 
     @classmethod
     def from_size(cls, n: int) -> BitMask:
@@ -161,3 +169,53 @@ class BitMask:
     def set_valid(self, idx: int) -> None:
         """Mark element idx valid, in place. Caller guarantees ownership."""
         self._buf[idx >> 3] |= 1 << (idx & 7)
+
+
+class _BitMaskBuilder:
+    """Append null flags directly into an optional Arrow-layout bitmap.
+
+    The builder remains buffer-free while every appended lane is valid. The
+    first null allocates and backfills the valid prefix in packed form; later
+    flags land directly in that buffer. ``finish()`` transfers buffer
+    ownership and consumes the builder.
+    """
+
+    __slots__ = ('_buf', '_length', '_finished')
+
+    def __init__(self) -> None:
+        self._buf: bytearray | None = None
+        self._length = 0
+        self._finished = False
+
+    def __len__(self) -> int:
+        return self._length
+
+    def append(self, is_null: bool) -> None:
+        if self._finished:
+            raise RuntimeError('validity builder is already finished')
+
+        index = self._length
+        buf = self._buf
+        if buf is None:
+            if is_null:
+                buf = _packed_valid_prefix(index)
+                if index % 8 == 0:
+                    buf.append(0)
+                self._buf = buf
+        else:
+            if index % 8 == 0:
+                buf.append(0)
+            if not is_null:
+                buf[index >> 3] |= 1 << (index & 7)
+        self._length = index + 1
+
+    def finish(self, *, force: bool = False) -> BitMask | None:
+        if self._finished:
+            raise RuntimeError('validity builder is already finished')
+        self._finished = True
+
+        if self._buf is None:
+            if not force:
+                return None
+            return BitMask(_packed_valid_prefix(self._length), self._length)
+        return BitMask(self._buf, self._length)
