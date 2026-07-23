@@ -486,6 +486,56 @@ def _storage_signature(storage):
     return TupleStorage, storage._data
 
 
+DIRECT_TAKE_CASES = [
+    (
+        "array",
+        lambda values: ArrayStorage.from_iterable(
+            values, 'q', nullable=True),
+        [10, None, 30],
+    ),
+    (
+        "bool",
+        lambda values: BoolStorage.from_iterable(
+            values, nullable=True),
+        [True, None, False],
+    ),
+    (
+        "string",
+        StringStorage.from_iterable,
+        ['α', None, '🐍'],
+    ),
+    (
+        "decimal",
+        lambda values: DecimalStorage.from_iterable(
+            values, scale=2, precision=4, nullable=True),
+        [Decimal('1.25'), None, Decimal('-2.50')],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "factory,values",
+    [case[1:] for case in DIRECT_TAKE_CASES],
+    ids=[case[0] for case in DIRECT_TAKE_CASES],
+)
+def test_physical_take_builds_from_one_pass_indexer(factory, values):
+    source = factory(values)
+    indices = [-1, 1, 1, 0]
+
+    result = source.take(index for index in indices)
+    expected = factory([values[index] for index in indices])
+    assert _storage_signature(result) == _storage_signature(expected)
+
+    dense_indices = [-1, 0]
+    dense = source.take(index for index in dense_indices)
+    expected_dense = factory([values[index] for index in dense_indices])
+    assert _storage_signature(dense) == _storage_signature(expected_dense)
+    assert dense._mask is None
+
+    empty = source.take(iter(()))
+    assert _storage_signature(empty) == _storage_signature(factory([]))
+
+
 PHYSICAL_CONCAT_CASES = [
     (
         "array",
@@ -563,6 +613,26 @@ def test_physical_storage_concatenation_keeps_dense_mask_absent():
         ArrayStorage(array('q', [3, 4])),
     ))
     assert result._mask is None
+
+
+def test_physical_storage_concatenation_repacks_crossing_masks():
+    parts = (
+        ArrayStorage.from_iterable(
+            [0, None, 2, None, 4], 'q', nullable=True),
+        ArrayStorage.from_iterable(
+            [5, 6, 7, 8], 'q', nullable=False),
+        ArrayStorage.from_iterable(
+            [None, 10, None, 12], 'q', nullable=True),
+    )
+    expected = ArrayStorage.from_iterable(
+        [0, None, 2, None, 4, 5, 6, 7, 8, None, 10, None, 12],
+        'q',
+        nullable=True,
+    )
+
+    result = concatenate_storages(parts)
+
+    assert _storage_signature(result) == _storage_signature(expected)
 
 
 def test_physical_storage_concatenation_rejects_invalid_sequences():
