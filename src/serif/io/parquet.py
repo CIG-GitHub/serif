@@ -38,6 +38,7 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 from .._execution import DECLINED
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
+from .._vector.nullable import BitMask
 from .._vector.nullable import _BitMaskBuilder
 from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
@@ -521,6 +522,17 @@ def _enc_file_metadata(schema_elems: list, row_groups: list,
 # Definition level encoding / decoding
 # ---------------------------------------------------------------------------
 
+def _finish_def_levels(packed: bytearray, nrows: int) -> bytes:
+    """Wrap packed definition-level bits in Parquet's bit-packed run."""
+    if nrows == 0:
+        return _struct.pack('<I', 0)
+
+    num_groups = (nrows + 7) // 8
+    run_hdr = _varint_encode((num_groups << 1) | 1)
+    encoded = run_hdr + bytes(packed)
+    return _struct.pack('<I', len(encoded)) + encoded
+
+
 def _encode_def_levels(null_flags: list) -> bytes:
     """
     Encode definition levels for a nullable column using RLE/bit-packing.
@@ -532,21 +544,49 @@ def _encode_def_levels(null_flags: list) -> bytes:
     bit_width = 1  (max def level = 1)
     """
     n = len(null_flags)
-    if n == 0:
-        return _struct.pack('<I', 0)
-
-    num_groups = (n + 7) // 8
-    packed = bytearray(num_groups)
+    packed = bytearray((n + 7) // 8)
 
     for i, is_null in enumerate(null_flags):
         if not is_null:
             # def_level = 1 (present): set the bit at position i
             packed[i >> 3] |= 1 << (i & 7)
 
-    # Bit-packed run header: (num_groups << 1) | 1
-    run_hdr = _varint_encode((num_groups << 1) | 1)
-    encoded = run_hdr + bytes(packed)
-    return _struct.pack('<I', len(encoded)) + encoded
+    return _finish_def_levels(packed, n)
+
+
+def _encode_mask_def_levels(mask: BitMask | None, nrows: int) -> bytes:
+    """Encode definition levels from an Arrow-layout validity bitmap."""
+    num_groups = (nrows + 7) // 8
+    if mask is None:
+        packed = bytearray(b'\xff' * num_groups)
+    else:
+        packed = bytearray(mask._buf)
+
+    # Parquet ignores padding lanes, but the previous encoder emitted them as
+    # zero. BitMask.from_size() uses 0xff in its final byte, so clear the high
+    # padding bits to keep the writer's bytes stable.
+    remaining = nrows & 7
+    if remaining:
+        packed[-1] &= (1 << remaining) - 1
+
+    return _finish_def_levels(packed, nrows)
+
+
+def _encode_storage_def_levels(storage) -> bytes:
+    """Encode validity without materializing one bool per row."""
+    marker = object()
+    mask = getattr(storage, '_mask', marker)
+    if mask is not marker:
+        return _encode_mask_def_levels(mask, len(storage))
+
+    # Dates, datetimes, and source Decimal columns intentionally use
+    # TupleStorage, where None is inline instead of represented by BitMask.
+    nrows = len(storage)
+    packed = bytearray((nrows + 7) // 8)
+    for i, value in enumerate(storage):
+        if value is not None:
+            packed[i >> 3] |= 1 << (i & 7)
+    return _finish_def_levels(packed, nrows)
 
 
 def _decode_def_levels(data, pos: int, nrows: int):
@@ -887,14 +927,11 @@ def write_parquet(table, path: str) -> None:
 
         data_tuple = col._storage.to_tuple()
 
-        # Separate nullability.
-        # to_tuple() already returns None at null positions for both
-        # ArrayStorage (via BitMask) and TupleStorage (inline None).
+        # Stage PLAIN values only. Definition levels are encoded from storage
+        # below; to_tuple() supplies None here solely for value filtering.
         if nullable:
-            null_flags = [v is None for v in data_tuple]
             non_null   = [v for v in data_tuple if v is not None]
         else:
-            null_flags = None
             non_null   = list(data_tuple)
 
         # Encode PLAIN values (non-null only)
@@ -903,7 +940,10 @@ def write_parquet(table, path: str) -> None:
 
         # Build page body: [def_levels?][value_bytes]
         if nullable:
-            page_body = _encode_def_levels(null_flags) + value_bytes
+            page_body = (
+                _encode_storage_def_levels(col._storage)
+                + value_bytes
+            )
         else:
             page_body = value_bytes
 

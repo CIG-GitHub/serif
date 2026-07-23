@@ -21,10 +21,12 @@ from serif import Table, Vector
 from serif.errors import SerifTypeError
 from serif.io.parquet import _decode_array_raw
 from serif._vector.dtype import Schema
+from serif._vector.nullable import BitMask
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
 from serif._vector.storage import DecimalStorage
 from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
 
 
 @pytest.fixture(autouse=True)
@@ -188,6 +190,33 @@ def test_all_valid_optional_packed_page_reuses_array(typecode, values):
 
     assert storage._data is packed
     assert storage._mask is None
+
+
+def test_storage_definition_levels_copy_packed_mask_and_clear_padding():
+    mask = BitMask.from_size(10)
+    for index in (1, 3, 6, 9):
+        mask = mask.mark_null(index)
+
+    class NonIterableArrayStorage(ArrayStorage):
+        def __iter__(self):
+            raise AssertionError('definition levels must not unpack storage')
+
+    storage = NonIterableArrayStorage(array('q', range(10)), mask)
+
+    assert parquet_mod._encode_storage_def_levels(storage) == (
+        b'\x03\x00\x00\x00\x05\xb5\x01')
+
+
+def test_storage_definition_levels_scan_inline_null_fallback():
+    storage = TupleStorage((
+        date(2024, 1, 1),
+        None,
+        date(2025, 1, 1),
+        None,
+    ))
+
+    assert parquet_mod._encode_storage_def_levels(storage) == (
+        b'\x02\x00\x00\x00\x03\x05')
 
 
 def _read_optional_pages(page_values, kind, phys_type, *,
