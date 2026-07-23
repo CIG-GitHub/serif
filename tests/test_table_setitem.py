@@ -130,6 +130,67 @@ class TestColumnAssignment:
 		assert list(t.cols()[0]) == [10, 2, 30, 4, 50]
 
 
+class TestVectorColumnAssignment:
+	"""Assign a Vector to one table-owned column region."""
+
+	def test_assign_filtered_vector_to_boolean_mask(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		values = Vector([10, 20, 30, 40])
+		mask = t.x > 2
+
+		t[mask, 'x'] = values[mask]
+
+		assert list(t.x) == [1, 2, 30, 40]
+
+	def test_assign_vector_to_entire_column(self):
+		t = Table({'x': [1, 2, 3], 'y': [4, 5, 6]})
+
+		t[:, 'x'] = Vector([10, 20, 30])
+
+		assert list(t.x) == [10, 20, 30]
+		assert list(t.y) == [4, 5, 6]
+
+	def test_nullable_mask_excludes_null_rows(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([True, None, False, True])
+
+		t[mask, 'x'] = Vector([10, 40])
+
+		assert list(t.x) == [10, 2, 3, 40]
+
+	def test_vector_length_mismatch_is_atomic(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([True, False, False, True])
+
+		with pytest.raises(
+			SerifValueError,
+			match="number of True mask elements",
+		):
+			t[mask, 'x'] = Vector([10])
+
+		assert list(t.x) == [1, 2, 3, 4]
+
+	def test_vector_rhs_works_inside_batch(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([False, True, True, False])
+
+		with t.batch() as mutable:
+			mutable[mask, 'x'] = Vector([20, 30])
+
+		assert list(t.x) == [1, 20, 30, 4]
+
+	def test_vector_rhs_for_multiple_columns_remains_unsupported(self):
+		t = Table({'x': [1, 2], 'y': [3, 4]})
+
+		with pytest.raises(
+			SerifTypeError,
+			match="Unsupported assignment value type",
+		):
+			t[:, ['x', 'y']] = Vector([10, 20])
+
+		assert t.to_dict() == {'x': [1, 2], 'y': [3, 4]}
+
+
 class TestRectangularAssignment:
 	"""Assign a Table to a rectangular region."""
 	

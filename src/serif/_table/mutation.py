@@ -298,7 +298,15 @@ def setitem(table, key, value):
             table._write_column(col_idx, row_spec, value.cols()[index])
         return
 
-    # CASE D: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
+    # CASE D: Vector Assignment To One Column
+    # A selected Vector is already the canonical 1D value container:
+    # t[mask, 'x'] = values[mask]. Multiple target columns remain ambiguous
+    # and continue to the unsupported-value error below.
+    if isinstance(value, Vector) and len(target_indices) == 1:
+        table._write_column(target_indices[0], row_spec, value)
+        return
+
+    # CASE E: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
     # Ambiguity Trap: Is [[1,2], [3,4]] two rows of two, or two columns of two?
     # Vector standard: "Iterables usually mean columns".
     # If you pass a list of lists, we treat it as list-of-columns to match
