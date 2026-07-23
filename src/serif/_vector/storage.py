@@ -34,6 +34,7 @@ from typing import Any
 from typing import Iterator
 from collections.abc import Iterable
 from .nullable import BitMask
+from .nullable import _BitMaskBuilder
 
 
 class ArrayStorage:
@@ -53,21 +54,13 @@ class ArrayStorage:
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], typecode: str, nullable: bool) -> ArrayStorage:
-        data_list = []
-        null_flags = []
-        has_nulls = False
+        data = array(typecode)
+        validity = _BitMaskBuilder()
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                data_list.append(0)  # sentinel — position is masked
-            else:
-                null_flags.append(False)
-                data_list.append(val)
-
-        data = array(typecode, data_list)  # raises TypeError/OverflowError on bad values
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(data, mask)
+            is_null = val is None
+            data.append(0 if is_null else val)
+            validity.append(is_null)
+        return cls(data, validity.finish())
 
     def __len__(self) -> int:
         return len(self._data)
@@ -93,13 +86,14 @@ class ArrayStorage:
         return ArrayStorage(new_data, new_mask)
 
     def take(self, indices) -> ArrayStorage:
-        new_data = array(self._data.typecode, (self._data[i] for i in indices))
-        if self._mask is not None:
-            null_flags = [self._mask.is_null(i) for i in indices]
-            new_mask = BitMask.from_iterable(null_flags) if any(null_flags) else None
-        else:
-            new_mask = None
-        return ArrayStorage(new_data, new_mask)
+        data = self._data
+        mask = self._mask
+        new_data = array(data.typecode)
+        validity = _BitMaskBuilder()
+        for i in indices:
+            new_data.append(data[i])
+            validity.append(mask is not None and mask.is_null(i))
+        return ArrayStorage(new_data, validity.finish())
 
     def to_tuple(self) -> tuple:
         return tuple(self)
@@ -229,18 +223,12 @@ class BoolStorage:
     @classmethod
     def from_iterable(cls, values: Iterable[Any], nullable: bool = False) -> BoolStorage:
         data = bytearray()
-        null_flags = []
-        has_nulls = False
+        validity = _BitMaskBuilder()
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                data.append(0)  # sentinel — position is masked
-            else:
-                null_flags.append(False)
-                data.append(1 if val else 0)
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(data, mask)
+            is_null = val is None
+            data.append(0 if is_null else (1 if val else 0))
+            validity.append(is_null)
+        return cls(data, validity.finish())
 
     @classmethod
     def from_raw(cls, data: bytearray, mask: BitMask | None = None) -> BoolStorage:
@@ -275,13 +263,14 @@ class BoolStorage:
         return BoolStorage(new_data, new_mask)
 
     def take(self, indices) -> BoolStorage:
-        new_data = bytearray(self._data[i] for i in indices)
-        if self._mask is not None:
-            null_flags = [self._mask.is_null(i) for i in indices]
-            new_mask = BitMask.from_iterable(null_flags) if any(null_flags) else None
-        else:
-            new_mask = None
-        return BoolStorage(new_data, new_mask)
+        data = self._data
+        mask = self._mask
+        new_data = bytearray()
+        validity = _BitMaskBuilder()
+        for i in indices:
+            new_data.append(data[i])
+            validity.append(mask is not None and mask.is_null(i))
+        return BoolStorage(new_data, validity.finish())
 
     def to_tuple(self) -> tuple:
         return tuple(self)
@@ -330,8 +319,8 @@ class StringStorage:
 
     Benefits over TupleStorage for string columns
     ---------------------------------------------
-    - Construction: one b''.join() pass instead of N .encode() calls living as
-      separate heap objects.
+    - Construction: UTF-8 bytes and uint32 offsets append directly to their
+      final-form builders instead of accumulating per-value Python objects.
     - Memory: ~4 bytes/string (offset) + raw UTF-8 bytes vs ~57 bytes/string
       Python str object overhead.
     - Parquet integration: raw BYTE_ARRAY bytes slot directly into _buf;
@@ -359,26 +348,20 @@ class StringStorage:
         Build from any iterable of str | None values.
         One pass: encodes and concatenates all strings, builds offset array.
         """
-        buf_parts:  list[bytes] = []
-        offsets:    list[int]   = [0]
-        null_flags: list[bool]  = []
-        has_nulls = False
+        buf = bytearray()
+        offsets = array('I', [0])
+        validity = _BitMaskBuilder()
 
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                offsets.append(offsets[-1])     # zero-length sentinel for null
-            else:
-                encoded = val.encode('utf-8')
-                buf_parts.append(encoded)
-                null_flags.append(False)
-                offsets.append(offsets[-1] + len(encoded))
+            is_null = val is None
+            if not is_null:
+                buf.extend(val.encode('utf-8'))
+            offsets.append(len(buf))
+            validity.append(is_null)
 
-        buf  = b''.join(buf_parts)
-        arr  = array('I', offsets)
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(buf, arr, mask)
+        # Construction owns the bytearray. Freeze it once so the storage
+        # retains its immutable-buffer contract and Arrow can wrap it directly.
+        return cls(bytes(buf), offsets, validity.finish())
 
     @classmethod
     def from_raw(cls, buf: bytes, offsets: array,
@@ -434,30 +417,27 @@ class StringStorage:
 
         Copies raw byte chunks between buffers — no decode/encode round-trip.
         """
-        buf_parts:  list[bytes] = []
-        new_offs:   list[int]   = [0]
-        null_flags: list[bool]  = []
-        has_nulls = False
-
-        buf     = self._buf
+        buf = self._buf
         offsets = self._offsets
-        mask    = self._mask
+        mask = self._mask
+        length = len(self)
+        new_buf = bytearray()
+        new_offsets = array('I', [0])
+        validity = _BitMaskBuilder()
 
         for i in indices:
+            if i < 0:
+                i += length
+            if not 0 <= i < length:
+                raise IndexError('string index out of range')
             is_null = mask is not None and mask.is_null(i)
-            null_flags.append(is_null)
-            if is_null:
-                has_nulls = True
-                new_offs.append(new_offs[-1])   # zero advance
-            else:
-                chunk = buf[offsets[i]:offsets[i + 1]]
-                buf_parts.append(chunk)
-                new_offs.append(new_offs[-1] + len(chunk))
+            if not is_null:
+                new_buf.extend(buf[offsets[i]:offsets[i + 1]])
+            new_offsets.append(len(new_buf))
+            validity.append(is_null)
 
-        new_buf  = b''.join(buf_parts)
-        new_arr  = array('I', new_offs)
-        new_mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return StringStorage(new_buf, new_arr, new_mask)
+        return StringStorage(
+            bytes(new_buf), new_offsets, validity.finish())
 
     def to_tuple(self) -> tuple:
         return tuple(self)
@@ -509,24 +489,21 @@ class DecimalStorage:
         """
         from decimal import Decimal, ROUND_HALF_EVEN
         buf        = bytearray()
-        null_flags: list[bool] = []
-        has_nulls  = False
+        validity   = _BitMaskBuilder()
         multiplier = Decimal(10) ** scale
 
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
+            is_null = val is None
+            if is_null:
                 buf.extend(b'\x00' * 16)
             else:
                 unscaled = int(
                     (val * multiplier).to_integral_value(rounding=ROUND_HALF_EVEN)
                 )
                 buf.extend(unscaled.to_bytes(16, 'big', signed=True))
-                null_flags.append(False)
+            validity.append(is_null)
 
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(buf, scale, precision, mask)
+        return cls(buf, scale, precision, validity.finish())
 
     @classmethod
     def from_raw_be(cls, buf, scale: int, precision: int,
@@ -584,17 +561,20 @@ class DecimalStorage:
         return DecimalStorage(new_buf, self._scale, self._precision, new_mask)
 
     def take(self, indices) -> 'DecimalStorage':
-        new_buf    = bytearray()
-        null_flags: list[bool] = []
-        has_nulls  = False
+        buf = self._buf
+        mask = self._mask
+        length = len(self)
+        new_buf = bytearray()
+        validity = _BitMaskBuilder()
         for i in indices:
-            new_buf.extend(self._buf[i * 16:(i + 1) * 16])
-            is_null = self._mask is not None and self._mask.is_null(i)
-            null_flags.append(is_null)
-            if is_null:
-                has_nulls = True
-        new_mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return DecimalStorage(new_buf, self._scale, self._precision, new_mask)
+            if i < 0:
+                i += length
+            if not 0 <= i < length:
+                raise IndexError('decimal index out of range')
+            new_buf.extend(buf[i * 16:(i + 1) * 16])
+            validity.append(mask is not None and mask.is_null(i))
+        return DecimalStorage(
+            new_buf, self._scale, self._precision, validity.finish())
 
     def to_tuple(self) -> tuple:
         return tuple(self)
@@ -605,14 +585,16 @@ def _concatenate_masks(storages) -> BitMask | None:
     if all(storage._mask is None for storage in storages):
         return None
 
-    nulls = []
+    validity = _BitMaskBuilder()
     for storage in storages:
         mask = storage._mask
-        nulls.extend(
-            mask.is_null(index) if mask is not None else False
-            for index in range(len(storage))
-        )
-    return BitMask.from_iterable(nulls) if any(nulls) else None
+        if mask is None:
+            for _ in range(len(storage)):
+                validity.append(False)
+        else:
+            for is_null in mask:
+                validity.append(is_null)
+    return validity.finish()
 
 
 def concatenate_storages(storages):

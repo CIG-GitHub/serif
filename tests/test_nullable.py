@@ -14,6 +14,7 @@ import pytest
 
 from serif import Vector
 from serif._vector.nullable import BitMask
+from serif._vector.nullable import _BitMaskBuilder
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +36,41 @@ def test_multi_byte_layout():
     # byte 1: bit0(elem8)=1, bit1(elem9)=0, padding 0 -> 0b00000001 == 0x01
     assert bytes(m._buf) == bytes([0xFE, 0x01])
     assert len(m) == 10
+
+
+def test_builder_omits_empty_and_all_valid_masks():
+    empty = _BitMaskBuilder()
+    assert empty.finish() is None
+
+    valid = _BitMaskBuilder()
+    for _ in range(17):
+        valid.append(False)
+    assert len(valid) == 17
+    assert valid.finish() is None
+
+
+def test_builder_backfills_late_null_in_arrow_layout():
+    nulls = [False] * 9 + [True, False, True]
+    builder = _BitMaskBuilder()
+    for is_null in nulls:
+        builder.append(is_null)
+
+    mask = builder.finish()
+
+    assert isinstance(mask, BitMask)
+    assert bytes(mask._buf) == bytes([0xFF, 0b00000101])
+    assert list(mask) == nulls
+
+
+def test_builder_finish_transfers_ownership_once():
+    builder = _BitMaskBuilder()
+    builder.append(True)
+    assert isinstance(builder.finish(), BitMask)
+
+    with pytest.raises(RuntimeError, match='already finished'):
+        builder.append(False)
+    with pytest.raises(RuntimeError, match='already finished'):
+        builder.finish()
 
 
 def test_buffer_length_is_ceil_n_over_8():

@@ -20,14 +20,29 @@ from serif._vector.storage import BoolStorage
 # ---------------------------------------------------------------------------
 
 def test_from_iterable_dense_and_nullable():
-    dense = BoolStorage.from_iterable([True, False, True])
+    dense = BoolStorage.from_iterable(
+        value for value in [True, False, True]
+    )
     assert bytes(dense._data) == b'\x01\x00\x01'
     assert dense._mask is None
 
-    nullable = BoolStorage.from_iterable([True, None, False])
+    nullable = BoolStorage.from_iterable(
+        value for value in [True, None, False]
+    )
     assert bytes(nullable._data) == b'\x01\x00\x00'  # null slot = 0 sentinel
     assert nullable._mask is not None
+    assert bytes(nullable._mask._buf) == b'\x05'
     assert list(nullable) == [True, None, False]
+
+
+def test_from_iterable_preserves_non_null_truthiness():
+    storage = BoolStorage.from_iterable(
+        value for value in [1, 0, 'yes', '']
+    )
+
+    assert bytes(storage._data) == b'\x01\x00\x01\x00'
+    assert storage._mask is None
+    assert list(storage) == [True, False, True, False]
 
 
 def test_getitem_returns_real_python_bools():

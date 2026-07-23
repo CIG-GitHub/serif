@@ -99,6 +99,97 @@ def test_expected_backend(case_id, factory):
     assert isinstance(v._storage, EXPECTED_BACKEND[case_id])
 
 
+@pytest.mark.parametrize(
+    "values,typecode,raw_values,mask_bytes",
+    [
+        ([1, None, -3, None, 5], 'q', [1, 0, -3, 0, 5], b'\x15'),
+        ([1.5, None, -2.25], 'd', [1.5, 0.0, -2.25], b'\x05'),
+    ],
+    ids=['int', 'float'],
+)
+def test_array_storage_builds_generator_directly(
+        values, typecode, raw_values, mask_bytes):
+    storage = ArrayStorage.from_iterable(
+        (value for value in values),
+        typecode,
+        nullable=True,
+    )
+
+    assert list(storage) == values
+    assert storage._data.tolist() == raw_values
+    assert bytes(storage._mask._buf) == mask_bytes
+
+
+def test_array_storage_all_valid_generator_omits_mask():
+    storage = ArrayStorage.from_iterable(
+        (value for value in [1, 2, 3]),
+        'q',
+        nullable=False,
+    )
+
+    assert storage._data.tolist() == [1, 2, 3]
+    assert storage._mask is None
+
+
+def test_array_storage_preserves_native_value_errors_and_vector_fallback():
+    with pytest.raises(OverflowError):
+        ArrayStorage.from_iterable([2**63], 'q', nullable=False)
+    with pytest.raises(TypeError):
+        ArrayStorage.from_iterable([object()], 'q', nullable=False)
+
+    vector = Vector([2**63])
+    assert type(vector._storage) is TupleStorage
+    assert list(vector) == [2**63]
+
+
+def test_decimal_storage_builds_generator_directly():
+    values = [Decimal('1.25'), None, Decimal('-2.50')]
+    storage = DecimalStorage.from_iterable(
+        (value for value in values),
+        scale=2,
+        precision=4,
+        nullable=True,
+    )
+
+    assert list(storage) == values
+    assert len(storage._buf) == 3 * 16
+    assert storage._buf[16:32] == b'\x00' * 16
+    assert bytes(storage._mask._buf) == b'\x05'
+
+
+def test_decimal_storage_preserves_half_even_rounding_and_dense_mask():
+    storage = DecimalStorage.from_iterable(
+        (value for value in [Decimal('1.245'), Decimal('1.255')]),
+        scale=2,
+        precision=4,
+        nullable=False,
+    )
+
+    assert list(storage) == [Decimal('1.24'), Decimal('1.26')]
+    assert storage._mask is None
+
+
+def test_string_storage_builds_generator_directly():
+    values = ['hé', None, '', '🐍']
+    storage = StringStorage.from_iterable(value for value in values)
+
+    assert list(storage) == values
+    assert type(storage._buf) is bytes
+    assert storage._buf == 'hé🐍'.encode('utf-8')
+    assert tuple(storage._offsets) == (0, 3, 3, 3, 7)
+    assert bytes(storage._mask._buf) == b'\x0d'
+
+
+def test_string_storage_all_valid_generator_omits_mask():
+    storage = StringStorage.from_iterable(
+        value for value in ['', '日本語']
+    )
+
+    assert storage._buf == '日本語'.encode('utf-8')
+    assert tuple(storage._offsets) == (0, 0, 9)
+    assert storage._mask is None
+
+
 # ---------------------------------------------------------------------------
 # Read path
 # ---------------------------------------------------------------------------
@@ -395,6 +486,56 @@ def _storage_signature(storage):
     return TupleStorage, storage._data
 
 
+DIRECT_TAKE_CASES = [
+    (
+        "array",
+        lambda values: ArrayStorage.from_iterable(
+            values, 'q', nullable=True),
+        [10, None, 30],
+    ),
+    (
+        "bool",
+        lambda values: BoolStorage.from_iterable(
+            values, nullable=True),
+        [True, None, False],
+    ),
+    (
+        "string",
+        StringStorage.from_iterable,
+        ['α', None, '🐍'],
+    ),
+    (
+        "decimal",
+        lambda values: DecimalStorage.from_iterable(
+            values, scale=2, precision=4, nullable=True),
+        [Decimal('1.25'), None, Decimal('-2.50')],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "factory,values",
+    [case[1:] for case in DIRECT_TAKE_CASES],
+    ids=[case[0] for case in DIRECT_TAKE_CASES],
+)
+def test_physical_take_builds_from_one_pass_indexer(factory, values):
+    source = factory(values)
+    indices = [-1, 1, 1, 0]
+
+    result = source.take(index for index in indices)
+    expected = factory([values[index] for index in indices])
+    assert _storage_signature(result) == _storage_signature(expected)
+
+    dense_indices = [-1, 0]
+    dense = source.take(index for index in dense_indices)
+    expected_dense = factory([values[index] for index in dense_indices])
+    assert _storage_signature(dense) == _storage_signature(expected_dense)
+    assert dense._mask is None
+
+    empty = source.take(iter(()))
+    assert _storage_signature(empty) == _storage_signature(factory([]))
+
+
 PHYSICAL_CONCAT_CASES = [
     (
         "array",
@@ -472,6 +613,26 @@ def test_physical_storage_concatenation_keeps_dense_mask_absent():
         ArrayStorage(array('q', [3, 4])),
     ))
     assert result._mask is None
+
+
+def test_physical_storage_concatenation_repacks_crossing_masks():
+    parts = (
+        ArrayStorage.from_iterable(
+            [0, None, 2, None, 4], 'q', nullable=True),
+        ArrayStorage.from_iterable(
+            [5, 6, 7, 8], 'q', nullable=False),
+        ArrayStorage.from_iterable(
+            [None, 10, None, 12], 'q', nullable=True),
+    )
+    expected = ArrayStorage.from_iterable(
+        [0, None, 2, None, 4, 5, 6, 7, 8, None, 10, None, 12],
+        'q',
+        nullable=True,
+    )
+
+    result = concatenate_storages(parts)
+
+    assert _storage_signature(result) == _storage_signature(expected)
 
 
 def test_physical_storage_concatenation_rejects_invalid_sequences():
