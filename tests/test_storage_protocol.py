@@ -142,6 +142,33 @@ def test_array_storage_preserves_native_value_errors_and_vector_fallback():
     assert list(vector) == [2**63]
 
 
+def test_decimal_storage_builds_generator_directly():
+    values = [Decimal('1.25'), None, Decimal('-2.50')]
+    storage = DecimalStorage.from_iterable(
+        (value for value in values),
+        scale=2,
+        precision=4,
+        nullable=True,
+    )
+
+    assert list(storage) == values
+    assert len(storage._buf) == 3 * 16
+    assert storage._buf[16:32] == b'\x00' * 16
+    assert bytes(storage._mask._buf) == b'\x05'
+
+
+def test_decimal_storage_preserves_half_even_rounding_and_dense_mask():
+    storage = DecimalStorage.from_iterable(
+        (value for value in [Decimal('1.245'), Decimal('1.255')]),
+        scale=2,
+        precision=4,
+        nullable=False,
+    )
+
+    assert list(storage) == [Decimal('1.24'), Decimal('1.26')]
+    assert storage._mask is None
+
+
 # ---------------------------------------------------------------------------
 # Read path
 # ---------------------------------------------------------------------------

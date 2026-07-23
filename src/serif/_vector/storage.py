@@ -222,18 +222,12 @@ class BoolStorage:
     @classmethod
     def from_iterable(cls, values: Iterable[Any], nullable: bool = False) -> BoolStorage:
         data = bytearray()
-        null_flags = []
-        has_nulls = False
+        validity = _BitMaskBuilder()
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                data.append(0)  # sentinel — position is masked
-            else:
-                null_flags.append(False)
-                data.append(1 if val else 0)
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(data, mask)
+            is_null = val is None
+            data.append(0 if is_null else (1 if val else 0))
+            validity.append(is_null)
+        return cls(data, validity.finish())
 
     @classmethod
     def from_raw(cls, data: bytearray, mask: BitMask | None = None) -> BoolStorage:
@@ -502,24 +496,21 @@ class DecimalStorage:
         """
         from decimal import Decimal, ROUND_HALF_EVEN
         buf        = bytearray()
-        null_flags: list[bool] = []
-        has_nulls  = False
+        validity   = _BitMaskBuilder()
         multiplier = Decimal(10) ** scale
 
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
+            is_null = val is None
+            if is_null:
                 buf.extend(b'\x00' * 16)
             else:
                 unscaled = int(
                     (val * multiplier).to_integral_value(rounding=ROUND_HALF_EVEN)
                 )
                 buf.extend(unscaled.to_bytes(16, 'big', signed=True))
-                null_flags.append(False)
+            validity.append(is_null)
 
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(buf, scale, precision, mask)
+        return cls(buf, scale, precision, validity.finish())
 
     @classmethod
     def from_raw_be(cls, buf, scale: int, precision: int,
