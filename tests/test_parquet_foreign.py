@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import serif.io.parquet as parquet_mod
 from serif import Table, read_parquet, write_parquet
 from serif.errors import SerifTypeError, SerifValueError
 from serif._vector.storage import ArrayStorage
@@ -397,15 +398,17 @@ def test_unknown_struct_field_with_long_form_header_is_skipped(tmp_path):
 # Multiple row groups
 # ---------------------------------------------------------------------------
 
-def test_multi_row_group_strings_with_nulls(tmp_path):
-    """Two row groups on one nullable string column — exercises
+def test_multi_row_group_strings_with_nulls(tmp_path, monkeypatch):
+    """Three row groups on one nullable string column — exercises
     storage-owned concatenation including null-mask combination."""
     group1 = ['aa', None, 'b']
     group2 = ['ccc', None]
+    group3 = ['', 'dddd']
+    groups = (group1, group2, group3)
 
     buf = bytearray(_MAGIC)
     row_groups = []
-    for values in (group1, group2):
+    for values in groups:
         body = _string_page(values)
         dph = _enc_data_page_header(len(values))
         ph = _enc_page_header(len(body), len(body), dph)
@@ -422,7 +425,8 @@ def test_multi_row_group_strings_with_nulls(tmp_path):
         _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=1),
         _enc_schema_element('x', _T_BYTE_ARRAY, _CT_UTF8, _REP_OPTIONAL),
     ]
-    footer = _enc_file_metadata(schema, row_groups, len(group1) + len(group2))
+    footer = _enc_file_metadata(
+        schema, row_groups, sum(map(len, groups)))
     buf += footer
     buf += struct.pack('<I', len(footer))
     buf += _MAGIC
@@ -431,9 +435,26 @@ def test_multi_row_group_strings_with_nulls(tmp_path):
     p.write_bytes(bytes(buf))
 
     t = read_parquet(str(p))
-    assert list(t['x']) == ['aa', None, 'b', 'ccc', None]
+    expected = ['aa', None, 'b', 'ccc', None, '', 'dddd']
+    assert list(t['x']) == expected
     assert t['x'].schema().kind is str
     assert t['x'].schema().nullable is True
+
+    calls = []
+    original = parquet_mod.concatenate_storages
+
+    def recording_concatenate(storages):
+        storages = tuple(storages)
+        calls.append(storages)
+        return original(storages)
+
+    monkeypatch.setattr(
+        parquet_mod, 'concatenate_storages', recording_concatenate)
+    eager = parquet_mod._read_parquet_eager(str(p))
+
+    assert list(eager['x']) == expected
+    assert len(calls) == 1
+    assert len(calls[0]) == len(groups)
 
 
 # ---------------------------------------------------------------------------

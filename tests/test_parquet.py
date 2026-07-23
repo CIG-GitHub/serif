@@ -264,11 +264,23 @@ def test_column_chunk_concatenates_page_storages_once(
 
 
 def test_page_result_combiner_preserves_empty_and_mixed_fallback():
-    assert parquet_mod._combine_page_results([]) == []
-    assert parquet_mod._combine_page_results([
+    assert parquet_mod._combine_decoded_parts([]) == []
+    assert parquet_mod._combine_decoded_parts([
         array('q', [1, 2]),
         [None, 4],
     ]) == [1, 2, None, 4]
+
+
+def test_decoded_part_combiner_extends_packed_arrays_in_place():
+    first = array('q', [1, 2])
+    result = parquet_mod._combine_decoded_parts([
+        first,
+        array('q', [3]),
+        array('q', [4, 5]),
+    ])
+
+    assert result is first
+    assert result.tolist() == [1, 2, 3, 4, 5]
 
 
 class TestNullableRoundtrip:

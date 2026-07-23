@@ -1582,30 +1582,30 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     return BoolStorage(data, mask)
 
 
-def _combine_page_results(page_results):
-    """Combine completed page results once, preserving physical storage."""
-    if not page_results:
+def _combine_decoded_parts(parts):
+    """Combine completed decoded parts once, preserving physical storage."""
+    if not parts:
         return []
-    if len(page_results) == 1:
-        return page_results[0]
+    if len(parts) == 1:
+        return parts[0]
 
     for storage_type in (
             ArrayStorage, BoolStorage, StringStorage, DecimalStorage):
-        if all(isinstance(page, storage_type) for page in page_results):
-            return concatenate_storages(page_results)
+        if all(isinstance(part, storage_type) for part in parts):
+            return concatenate_storages(parts)
 
-    if all(isinstance(page, _pyarray.array) for page in page_results):
-        result = page_results[0]
-        for page in page_results[1:]:
-            result.extend(page)
+    if all(isinstance(part, _pyarray.array) for part in parts):
+        result = parts[0]
+        for part in parts[1:]:
+            result.extend(part)
         return result
 
     # Defensive mixed fallback: fixed Parquet physical types normally make
-    # every page homogeneous, but retain the prior decoded-value behavior if
-    # a future page decoder transitions representation within a chunk.
+    # every decoded part homogeneous, but retain the prior decoded-value
+    # behavior if a future decoder transitions representation.
     result = []
-    for page in page_results:
-        result.extend(page)
+    for part in parts:
+        result.extend(part)
     return result
 
 
@@ -1726,7 +1726,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             page_results.append(page_result)
         remaining -= page_num_values
 
-    return _combine_page_results(page_results)
+    return _combine_decoded_parts(page_results)
 
 
 # ---------------------------------------------------------------------------
@@ -2188,10 +2188,10 @@ def _read_parquet_eager(path: str):
             'decimal_precision': s.get('precision'),
         })
 
-    # Accumulate values per schema-leaf POSITION (not name): duplicate
+    # Accumulate chunks per schema-leaf POSITION (not name): duplicate
     # column names are legal in both Parquet and serif (invariant #6), and
     # a name-keyed accumulator would silently merge them.
-    col_values = [None] * len(col_meta)
+    col_chunks = [[] for _ in col_meta]
     name_to_indices = {}
     for i, m in enumerate(col_meta):
         name_to_indices.setdefault(m['name'], []).append(i)
@@ -2234,27 +2234,11 @@ def _read_parquet_eager(path: str):
                 raise SerifValueError(
                     f"'{path}': truncated or corrupt Parquet data for "
                     f"column '{col_name}'") from e
-            existing = col_values[col_idx]
-            if existing is None:
-                col_values[col_idx] = chunk_values
-            elif any(
-                    isinstance(existing, storage_type)
-                    and isinstance(chunk_values, storage_type)
-                    for storage_type in (
-                        ArrayStorage, StringStorage,
-                        DecimalStorage, BoolStorage)):
-                col_values[col_idx] = concatenate_storages(
-                    (existing, chunk_values))
-            elif isinstance(existing, _pyarray.array) and isinstance(chunk_values, _pyarray.array):
-                col_values[col_idx] = existing + chunk_values
-            else:
-                if isinstance(existing, _pyarray.array):
-                    col_values[col_idx] = list(existing)
-                col_values[col_idx].extend(chunk_values)
+            col_chunks[col_idx].append(chunk_values)
 
     result_cols = []
     for col_idx, m in enumerate(col_meta):
-        raw   = col_values[col_idx] or []
+        raw = _combine_decoded_parts(col_chunks[col_idx])
         dtype = _Schema(m['kind'], m['is_optional'])
 
         if isinstance(raw, ArrayStorage):
