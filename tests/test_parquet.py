@@ -10,12 +10,15 @@ Coverage targets:
 """
 import os
 import tempfile
+from array import array
 from datetime import date, datetime
 
 import pytest
 
 from serif import Table, Vector
 from serif.errors import SerifTypeError
+from serif.io.parquet import _decode_array_raw
+from serif._vector.storage import ArrayStorage
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +99,76 @@ class TestNonNullableRoundtrip:
 # Nullable columns — null position fidelity
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize(
+    "typecode,packed,null_flags,raw_values,values,mask_bytes",
+    [
+        (
+            'q',
+            [10, -3],
+            [False, True, False, True],
+            [10, 0, -3, 0],
+            [10, None, -3, None],
+            b'\x05',
+        ),
+        (
+            'd',
+            [1.5, -2.25],
+            [False, True, False, True],
+            [1.5, 0.0, -2.25, 0.0],
+            [1.5, None, -2.25, None],
+            b'\x05',
+        ),
+        (
+            'q',
+            [],
+            [True, True, True],
+            [0, 0, 0],
+            [None, None, None],
+            b'\x00',
+        ),
+        (
+            'd',
+            [],
+            [True, True, True],
+            [0.0, 0.0, 0.0],
+            [None, None, None],
+            b'\x00',
+        ),
+    ],
+    ids=['int64-mixed', 'double-mixed', 'int64-all-null', 'double-all-null'],
+)
+def test_nullable_packed_page_builds_array_storage(
+        typecode, packed, null_flags, raw_values, values, mask_bytes):
+    storage = _decode_array_raw(array(typecode, packed), null_flags)
+
+    assert type(storage) is ArrayStorage
+    assert storage._data.typecode == typecode
+    assert storage._data.tolist() == raw_values
+    assert list(storage) == values
+    assert bytes(storage._mask._buf) == mask_bytes
+
+
+@pytest.mark.parametrize(
+    "typecode,values",
+    [('q', [1, -2]), ('d', [1.5, -2.25])],
+    ids=['int64', 'double'],
+)
+def test_all_valid_optional_packed_page_reuses_array(typecode, values):
+    packed = array(typecode, values)
+    storage = _decode_array_raw(packed, [False] * len(values))
+
+    assert storage._data is packed
+    assert storage._mask is None
+
+
 class TestNullableRoundtrip:
+
+    def test_nullable_int_nulls_in_right_slots(self):
+        t = Table({'i': [1, None, -3, None]})
+        t2 = roundtrip(t)
+        result = t2['i']
+        assert type(result._storage) is ArrayStorage
+        assert list(result) == [1, None, -3, None]
 
     def test_nullable_string_nulls_in_right_slots(self):
         t = Table({'s': ['alice', None, 'carol', None]})
@@ -110,11 +182,9 @@ class TestNullableRoundtrip:
     def test_nullable_float_nulls_in_right_slots(self):
         t = Table({'f': [1.5, None, 3.5, None]})
         t2 = roundtrip(t)
-        result = col(t2, 'f')
-        assert result[0] == 1.5
-        assert result[1] is None
-        assert result[2] == 3.5
-        assert result[3] is None
+        result = t2['f']
+        assert type(result._storage) is ArrayStorage
+        assert list(result) == [1.5, None, 3.5, None]
 
     def test_nullable_bool_nulls_in_right_slots(self):
         t = Table({'b': [True, None, False, None]})

@@ -23,6 +23,7 @@ import pytest
 
 from serif import Table, read_parquet, write_parquet
 from serif.errors import SerifTypeError, SerifValueError
+from serif._vector.storage import ArrayStorage
 from serif.io.parquet import (
     _MAGIC,
     _CODEC_GZIP,
@@ -141,6 +142,42 @@ def test_float32_physical_reads_as_float(tmp_path):
     assert t['x'].schema().kind is float
 
 
+def test_optional_int64_all_valid_keeps_nullable_schema(tmp_path):
+    flags = [False, False]
+    body = _encode_def_levels(flags) + array('q', [1, -2]).tobytes()
+    p = tmp_path / "optional_i64_dense.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=len(flags),
+        page_body=body,
+    )
+
+    col = read_parquet(str(p))['x']
+    assert type(col._storage) is ArrayStorage
+    assert col._storage._mask is None
+    assert col.schema().nullable is True
+    assert list(col) == [1, -2]
+
+
+def test_optional_int64_all_null_builds_array_storage(tmp_path):
+    flags = [True, True, True]
+    p = tmp_path / "optional_i64_all_null.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=len(flags),
+        page_body=_encode_def_levels(flags),
+    )
+
+    col = read_parquet(str(p))['x']
+    assert type(col._storage) is ArrayStorage
+    assert col._storage._data.tolist() == [0, 0, 0]
+    assert list(col) == [None, None, None]
+
+
 def test_timestamp_millis_reads_as_datetime(tmp_path):
     dt = datetime(2024, 1, 2, 3, 4, 5, 678000)
     ms = (dt - _EPOCH) // timedelta(milliseconds=1)
@@ -256,6 +293,20 @@ def test_data_page_v2_raises(tmp_path):
     _single_column_file(p, phys=_T_INT64, num_values=2, page_body=raw,
                         page_header=w.stop())
     with pytest.raises(SerifValueError, match='V2'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_short_definition_levels_raise(tmp_path):
+    p = tmp_path / "short_definition_levels.parquet"
+    _single_column_file(
+        p,
+        phys=_T_INT64,
+        optional=True,
+        num_values=3,
+        page_body=struct.pack('<I', 0),
+    )
+
+    with pytest.raises(SerifValueError, match='definition levels'):
         list(read_parquet(str(p))['x'])
 
 
