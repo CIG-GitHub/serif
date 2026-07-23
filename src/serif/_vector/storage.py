@@ -34,6 +34,7 @@ from typing import Any
 from typing import Iterator
 from collections.abc import Iterable
 from .nullable import BitMask
+from .nullable import _BitMaskBuilder
 
 
 class ArrayStorage:
@@ -53,21 +54,13 @@ class ArrayStorage:
 
     @classmethod
     def from_iterable(cls, values: Iterable[Any], typecode: str, nullable: bool) -> ArrayStorage:
-        data_list = []
-        null_flags = []
-        has_nulls = False
+        data = array(typecode)
+        validity = _BitMaskBuilder()
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                data_list.append(0)  # sentinel — position is masked
-            else:
-                null_flags.append(False)
-                data_list.append(val)
-
-        data = array(typecode, data_list)  # raises TypeError/OverflowError on bad values
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(data, mask)
+            is_null = val is None
+            data.append(0 if is_null else val)
+            validity.append(is_null)
+        return cls(data, validity.finish())
 
     def __len__(self) -> int:
         return len(self._data)

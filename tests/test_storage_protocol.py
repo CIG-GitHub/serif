@@ -99,6 +99,49 @@ def test_expected_backend(case_id, factory):
     assert isinstance(v._storage, EXPECTED_BACKEND[case_id])
 
 
+@pytest.mark.parametrize(
+    "values,typecode,raw_values,mask_bytes",
+    [
+        ([1, None, -3, None, 5], 'q', [1, 0, -3, 0, 5], b'\x15'),
+        ([1.5, None, -2.25], 'd', [1.5, 0.0, -2.25], b'\x05'),
+    ],
+    ids=['int', 'float'],
+)
+def test_array_storage_builds_generator_directly(
+        values, typecode, raw_values, mask_bytes):
+    storage = ArrayStorage.from_iterable(
+        (value for value in values),
+        typecode,
+        nullable=True,
+    )
+
+    assert list(storage) == values
+    assert storage._data.tolist() == raw_values
+    assert bytes(storage._mask._buf) == mask_bytes
+
+
+def test_array_storage_all_valid_generator_omits_mask():
+    storage = ArrayStorage.from_iterable(
+        (value for value in [1, 2, 3]),
+        'q',
+        nullable=False,
+    )
+
+    assert storage._data.tolist() == [1, 2, 3]
+    assert storage._mask is None
+
+
+def test_array_storage_preserves_native_value_errors_and_vector_fallback():
+    with pytest.raises(OverflowError):
+        ArrayStorage.from_iterable([2**63], 'q', nullable=False)
+    with pytest.raises(TypeError):
+        ArrayStorage.from_iterable([object()], 'q', nullable=False)
+
+    vector = Vector([2**63])
+    assert type(vector._storage) is TupleStorage
+    assert list(vector) == [2**63]
+
+
 # ---------------------------------------------------------------------------
 # Read path
 # ---------------------------------------------------------------------------
