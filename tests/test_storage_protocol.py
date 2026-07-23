@@ -169,6 +169,27 @@ def test_decimal_storage_preserves_half_even_rounding_and_dense_mask():
     assert storage._mask is None
 
 
+def test_string_storage_builds_generator_directly():
+    values = ['hé', None, '', '🐍']
+    storage = StringStorage.from_iterable(value for value in values)
+
+    assert list(storage) == values
+    assert type(storage._buf) is bytes
+    assert storage._buf == 'hé🐍'.encode('utf-8')
+    assert tuple(storage._offsets) == (0, 3, 3, 3, 7)
+    assert bytes(storage._mask._buf) == b'\x0d'
+
+
+def test_string_storage_all_valid_generator_omits_mask():
+    storage = StringStorage.from_iterable(
+        value for value in ['', '日本語']
+    )
+
+    assert storage._buf == '日本語'.encode('utf-8')
+    assert tuple(storage._offsets) == (0, 0, 9)
+    assert storage._mask is None
+
+
 # ---------------------------------------------------------------------------
 # Read path
 # ---------------------------------------------------------------------------

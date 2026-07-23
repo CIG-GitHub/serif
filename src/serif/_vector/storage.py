@@ -346,26 +346,20 @@ class StringStorage:
         Build from any iterable of str | None values.
         One pass: encodes and concatenates all strings, builds offset array.
         """
-        buf_parts:  list[bytes] = []
-        offsets:    list[int]   = [0]
-        null_flags: list[bool]  = []
-        has_nulls = False
+        buf = bytearray()
+        offsets = array('I', [0])
+        validity = _BitMaskBuilder()
 
         for val in values:
-            if val is None:
-                has_nulls = True
-                null_flags.append(True)
-                offsets.append(offsets[-1])     # zero-length sentinel for null
-            else:
-                encoded = val.encode('utf-8')
-                buf_parts.append(encoded)
-                null_flags.append(False)
-                offsets.append(offsets[-1] + len(encoded))
+            is_null = val is None
+            if not is_null:
+                buf.extend(val.encode('utf-8'))
+            offsets.append(len(buf))
+            validity.append(is_null)
 
-        buf  = b''.join(buf_parts)
-        arr  = array('I', offsets)
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        return cls(buf, arr, mask)
+        # Construction owns the bytearray. Freeze it once so the storage
+        # retains its immutable-buffer contract and Arrow can wrap it directly.
+        return cls(bytes(buf), offsets, validity.finish())
 
     @classmethod
     def from_raw(cls, buf: bytes, offsets: array,
