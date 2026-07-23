@@ -1582,6 +1582,33 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     return BoolStorage(data, mask)
 
 
+def _combine_page_results(page_results):
+    """Combine completed page results once, preserving physical storage."""
+    if not page_results:
+        return []
+    if len(page_results) == 1:
+        return page_results[0]
+
+    for storage_type in (
+            ArrayStorage, BoolStorage, StringStorage, DecimalStorage):
+        if all(isinstance(page, storage_type) for page in page_results):
+            return concatenate_storages(page_results)
+
+    if all(isinstance(page, _pyarray.array) for page in page_results):
+        result = page_results[0]
+        for page in page_results[1:]:
+            result.extend(page)
+        return result
+
+    # Defensive mixed fallback: fixed Parquet physical types normally make
+    # every page homogeneous, but retain the prior decoded-value behavior if
+    # a future page decoder transitions representation within a chunk.
+    result = []
+    for page in page_results:
+        result.extend(page)
+    return result
+
+
 def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                         conv_type, is_optional: bool, col_name: str,
                         decimal_scale: int = None,
@@ -1599,7 +1626,7 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
     # starting from data_page_offset skips it implicitly.
     pos = data_page_off
 
-    values    = None   # May become storage, list, or array.array.
+    page_results = []
     remaining = num_values
 
     while remaining > 0:
@@ -1668,38 +1695,20 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             # No .decode() calls — offsets built from length prefixes, raw
             # UTF-8 bytes copied into a single contiguous buffer.
             page_storage = _decode_str_raw(page_body, body_pos, null_flags, non_null_count)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, StringStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         elif kind is _Decimal:
             # Decimal fast path: build DecimalStorage directly from raw bytes.
             # Each value is exactly 16 bytes big-endian — no boxing, no loop.
             page_storage = _decode_decimal_raw(
                 page_body, body_pos, null_flags, non_null_count,
                 decimal_scale, decimal_precision)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, DecimalStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         elif kind is bool:
             # Bool fast path: unpack PLAIN BOOLEAN bits straight into a
             # BoolStorage bytearray — no interned-bool boxing.
             page_storage = _decode_bool_raw(page_body, body_pos,
                                             null_flags, non_null_count)
-            if values is None:
-                values = page_storage
-            elif isinstance(values, BoolStorage):
-                values = concatenate_storages((values, page_storage))
-            else:
-                values = list(values) if not isinstance(values, list) else values
-                values.extend(page_storage)
+            page_results.append(page_storage)
         else:
             page_values, _ = _decode_plain(
                 page_body, body_pos, kind, phys_type, non_null_count, conv_type
@@ -1707,39 +1716,17 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
 
             if (null_flags is not None
                     and isinstance(page_values, _pyarray.array)):
-                page_storage = _decode_array_raw(page_values, null_flags)
-                if values is None:
-                    values = page_storage
-                elif isinstance(values, ArrayStorage):
-                    values = concatenate_storages((values, page_storage))
-                else:
-                    values = (
-                        list(values) if not isinstance(values, list)
-                        else values)
-                    values.extend(page_storage)
+                page_result = _decode_array_raw(page_values, null_flags)
             elif null_flags is not None:
                 it = iter(page_values)
                 page_result = [None if f else next(it) for f in null_flags]
             else:
                 page_result = page_values  # packed DOUBLE/INT64 fast path
 
-            if not (null_flags is not None
-                    and isinstance(page_values, _pyarray.array)):
-                # Accumulate — keep array.array alive to avoid boxing.
-                if values is None:
-                    values = (page_result
-                              if isinstance(page_result, _pyarray.array)
-                              else list(page_result))
-                elif (isinstance(values, _pyarray.array)
-                      and isinstance(page_result, _pyarray.array)):
-                    values += page_result
-                else:
-                    if isinstance(values, _pyarray.array):
-                        values = list(values)
-                    values.extend(page_result)
+            page_results.append(page_result)
         remaining -= page_num_values
 
-    return values if values is not None else []
+    return _combine_page_results(page_results)
 
 
 # ---------------------------------------------------------------------------
