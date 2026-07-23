@@ -179,6 +179,29 @@ def test_original_names_resolve_in_every_two_axis_form():
 	}
 
 
+def test_original_names_resolve_in_column_list_selection():
+	t = Table({
+		'price ($)': [10, 20, 30],
+		'count@time': [1, 2, 3],
+		'other': [7, 8, 9],
+	})
+	mask = Vector([True, None, True])
+
+	selected = t[['count@time', 'price ($)']]
+	masked = t[mask, ['count@time', 'price ($)']]
+
+	assert selected.column_names() == ['count@time', 'price ($)']
+	assert selected.to_dict() == {
+		'count@time': [1, 2, 3],
+		'price ($)': [10, 20, 30],
+	}
+	assert masked.column_names() == ['count@time', 'price ($)']
+	assert masked.to_dict() == {
+		'count@time': [1, 3],
+		'price ($)': [10, 30],
+	}
+
+
 def test_row_missing_original_name_raises_key_error():
 	t = Table({'price ($)': [10]})
 	with pytest.raises(KeyError, match="missing"):

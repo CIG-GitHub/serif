@@ -17,6 +17,14 @@ def _table_class():
     return Table
 
 
+def _is_column_name_sequence(key):
+    return (
+        isinstance(key, (list, tuple))
+        and bool(key)
+        and all(isinstance(item, str) for item in key)
+    )
+
+
 class _BatchScope:
     """
     Context manager behind Table.batch() — the bulk-edit fast path.
@@ -187,7 +195,12 @@ def setitem(table, key, value):
     row_spec, col_spec = None, None
 
     # --- 1. Normalize Key ---
-    if isinstance(key, tuple):
+    if _is_column_name_sequence(key):
+        # Mirror projection syntax: t[['a', 'b']] = value and
+        # t['a', 'b'] = value both mean every row of those columns.
+        row_spec = slice(None)
+        col_spec = key
+    elif isinstance(key, tuple):
         # t[row, col]
         if len(key) != 2:
             raise SerifKeyError(
@@ -196,11 +209,7 @@ def setitem(table, key, value):
         row_spec, col_spec = key
         first_is_columns = (
             isinstance(row_spec, str)
-            or (
-                isinstance(row_spec, (list, tuple))
-                and row_spec
-                and all(isinstance(item, str) for item in row_spec)
-            )
+            or _is_column_name_sequence(row_spec)
         )
         if first_is_columns:
             row_spec, col_spec = col_spec, row_spec
@@ -298,7 +307,15 @@ def setitem(table, key, value):
             table._write_column(col_idx, row_spec, value.cols()[index])
         return
 
-    # CASE D: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
+    # CASE D: Vector Assignment To One Column
+    # A selected Vector is already the canonical 1D value container:
+    # t[mask, 'x'] = values[mask]. Multiple target columns remain ambiguous
+    # and continue to the unsupported-value error below.
+    if isinstance(value, Vector) and len(target_indices) == 1:
+        table._write_column(target_indices[0], row_spec, value)
+        return
+
+    # CASE E: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
     # Ambiguity Trap: Is [[1,2], [3,4]] two rows of two, or two columns of two?
     # Vector standard: "Iterables usually mean columns".
     # If you pass a list of lists, we treat it as list-of-columns to match

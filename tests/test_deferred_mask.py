@@ -176,15 +176,27 @@ def test_gathered_column_is_cached(tier):
     assert q.b is q.b  # same object, one gather — like eager t.b is t.b
 
 
-def test_multi_column_selection_stays_deferred(tier):
+@pytest.mark.parametrize("columns", [('a', 'b'), ['a', 'b']])
+def test_multi_column_selection_stays_deferred(tier, columns):
     t = make_table()
     mask = t.a > 3
     q = t[mask]
-    r = q[('a', 'b')]
+    r = q[columns]
     assert type(r) is Table
     assert_same_table(r, eager(t, mask)[('a', 'b')])
     assert q._mat is None
     assert set(q._gathered) == {0, 1}
+
+
+def test_mask_and_column_list_returns_plain_table(tier):
+    t = make_table()
+    mask = t.a > 3
+
+    result = t[mask, ['s', 'b']]
+    expected = eager(t, mask)[('s', 'b')]
+
+    assert type(result) is Table
+    assert_same_table(result, expected)
 
 
 def test_positional_cols_access_gathers_one(tier):

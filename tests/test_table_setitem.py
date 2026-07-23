@@ -130,6 +130,67 @@ class TestColumnAssignment:
 		assert list(t.cols()[0]) == [10, 2, 30, 4, 50]
 
 
+class TestVectorColumnAssignment:
+	"""Assign a Vector to one table-owned column region."""
+
+	def test_assign_filtered_vector_to_boolean_mask(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		values = Vector([10, 20, 30, 40])
+		mask = t.x > 2
+
+		t[mask, 'x'] = values[mask]
+
+		assert list(t.x) == [1, 2, 30, 40]
+
+	def test_assign_vector_to_entire_column(self):
+		t = Table({'x': [1, 2, 3], 'y': [4, 5, 6]})
+
+		t[:, 'x'] = Vector([10, 20, 30])
+
+		assert list(t.x) == [10, 20, 30]
+		assert list(t.y) == [4, 5, 6]
+
+	def test_nullable_mask_excludes_null_rows(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([True, None, False, True])
+
+		t[mask, 'x'] = Vector([10, 40])
+
+		assert list(t.x) == [10, 2, 3, 40]
+
+	def test_vector_length_mismatch_is_atomic(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([True, False, False, True])
+
+		with pytest.raises(
+			SerifValueError,
+			match="number of True mask elements",
+		):
+			t[mask, 'x'] = Vector([10])
+
+		assert list(t.x) == [1, 2, 3, 4]
+
+	def test_vector_rhs_works_inside_batch(self):
+		t = Table({'x': [1, 2, 3, 4]})
+		mask = Vector([False, True, True, False])
+
+		with t.batch() as mutable:
+			mutable[mask, 'x'] = Vector([20, 30])
+
+		assert list(t.x) == [1, 20, 30, 4]
+
+	def test_vector_rhs_for_multiple_columns_remains_unsupported(self):
+		t = Table({'x': [1, 2], 'y': [3, 4]})
+
+		with pytest.raises(
+			SerifTypeError,
+			match="Unsupported assignment value type",
+		):
+			t[:, ['x', 'y']] = Vector([10, 20])
+
+		assert t.to_dict() == {'x': [1, 2], 'y': [3, 4]}
+
+
 class TestRectangularAssignment:
 	"""Assign a Table to a rectangular region."""
 	
@@ -190,6 +251,97 @@ class TestListOfColumnsAssignment:
 		t = Table({'a': [1, 2], 'b': [3, 4]})
 		with pytest.raises(SerifValueError, match="Shape mismatch"):
 			t[:, :] = [[1, 2], [3, 4], [5, 6]]  # Too many columns
+
+
+class TestNamedColumnSequenceAssignment:
+	"""Named-column sequences mean the same thing in reads and writes."""
+
+	@pytest.mark.parametrize(
+		"columns",
+		[
+			['col 1', 'col 2'],
+			('col 1', 'col 2'),
+		],
+	)
+	def test_assign_table_to_named_columns_for_every_row(self, columns):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [9, 10, 11, 12],
+		})
+		source = Table({
+			'left': [20, 30, 40, 50],
+			'right': [90, 100, 110, 120],
+		})
+
+		t[columns] = source
+
+		assert t.column_names() == ['col 1', 'keep', 'col 2']
+		assert t.to_dict() == {
+			'col 1': [20, 30, 40, 50],
+			'keep': [5, 6, 7, 8],
+			'col 2': [90, 100, 110, 120],
+		}
+
+	@pytest.mark.parametrize(
+		"columns",
+		[
+			['col 1', 'col 2'],
+			('col 1', 'col 2'),
+		],
+	)
+	def test_assign_table_to_named_columns_under_mask(self, columns):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [9, 10, 11, 12],
+		})
+		mask = Vector([True, False, True, False])
+		source = Table({
+			'left': [20, 40],
+			'right': [90, 110],
+		})
+
+		t[mask, columns] = source
+
+		assert t.to_dict() == {
+			'col 1': [20, 2, 40, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [90, 10, 110, 12],
+		}
+
+	def test_assign_table_to_named_columns_under_empty_reverse_slice(self):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		})
+		source = Table({'left': [], 'right': []})
+
+		t[1:3:-7, ['col 1', 'col 2']] = source
+
+		assert t.to_dict() == {
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		}
+
+	def test_masked_table_assignment_row_mismatch_is_atomic(self):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		})
+		mask = Vector([True, False, True, False])
+		source = Table({'left': [20], 'right': [50]})
+
+		with pytest.raises(
+			SerifValueError,
+			match="number of True mask elements",
+		):
+			t[mask, ['col 1', 'col 2']] = source
+
+		assert t.to_dict() == {
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		}
 
 
 class TestSliceEdgeCases:
