@@ -98,14 +98,18 @@ def _gather(storage, indexer, source_length, pad=None):
         if not total:
             new_buffer = b''
         elif total >= output_length * _JOIN_SPAN_BYTES:
-            buffer = storage._buf
-            new_buffer = b''.join([
-                buffer[start:end]
-                for start, end in zip(
-                    starts.tolist(),
-                    source_ends.tolist(),
+            source_buffer = memoryview(storage._buf)
+            target_buffer = bytearray(total)
+            target_offset = 0
+            for start, end in zip(starts, source_ends):
+                start = int(start)
+                end = int(end)
+                next_offset = target_offset + end - start
+                target_buffer[target_offset:next_offset] = (
+                    source_buffer[start:end]
                 )
-            ])
+                target_offset = next_offset
+            new_buffer = bytes(target_buffer)
         else:
             span_shift = _np.repeat(
                 starts.astype(_np.int64)

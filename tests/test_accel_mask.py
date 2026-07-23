@@ -128,7 +128,7 @@ def test_string_filter_never_decodes():
 def test_string_filter_both_copy_strategies_conform():
     # The copy strategy is picked by average span length (_JOIN_SPAN_BYTES):
     # short spans take the per-byte ragged gather, long spans the
-    # slice-and-join. Both must be invisible.
+    # preallocated span copy. Both must be invisible.
     short = Vector([f's{i}' for i in range(64)], name='v')        # ~3 B/span
     long_ = Vector(['x' * 100 + str(i) for i in range(64)], name='v')
     mask = Vector([i % 3 == 0 for i in range(64)])

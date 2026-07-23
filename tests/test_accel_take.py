@@ -104,6 +104,41 @@ def test_dupes_of_null_slots_stay_null():
     assert [out[i] for i in range(4)] == [None, None, None, 10]
 
 
+def test_large_string_spans_copy_directly():
+    storage = Vector([
+        'α' * 40,
+        '',
+        None,
+        '🎉' * 50,
+        'tail' * 30,
+    ])._storage
+
+    indices = [4, 3, 0, 3, 1, 2]
+    fast = mask_mod.take_storage(storage, indices)
+    pure = storage.take(indices)
+    assert type(fast._buf) is bytes
+    assert list(fast) == list(pure)
+    assert [
+        fast.is_null(index)
+        for index in range(len(fast))
+    ] == [
+        pure.is_null(index)
+        for index in range(len(pure))
+    ]
+
+    padded_indices = [3, -1, 0, 3, 1, 2]
+    padded = mask_mod.take_pad_storage(storage, padded_indices)
+    assert type(padded._buf) is bytes
+    assert list(padded) == [
+        '🎉' * 50,
+        None,
+        'α' * 40,
+        '🎉' * 50,
+        '',
+        None,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Public-path conformance: sort / dropna / table sort / aggregate
 # ---------------------------------------------------------------------------

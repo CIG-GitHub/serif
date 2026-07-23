@@ -2,10 +2,10 @@
 
 import pytest
 
-pytest.importorskip("numpy")
+np = pytest.importorskip("numpy")
 pytest.importorskip("pyarrow")
 
-from serif import Table
+from serif import Table, Vector
 from serif._execution import DECLINED
 from serif._table._arrow import joins as arrow_join_mod
 from serif._table._numpy import joins as join_mod
@@ -71,7 +71,7 @@ def test_string_hash_probe_conforms(flavor):
     _assert_tables_identical(_without_string_hash_probe(run), run())
 
 
-def test_dense_take_lists_preserve_join_order():
+def test_dense_take_arrays_preserve_join_order():
     left = Table({'key': [3, 1, 2, 4]})
     right = Table({'key': [2, 3, 5]})
 
@@ -79,17 +79,25 @@ def test_dense_take_lists_preserve_join_order():
         left.key._storage, right.key._storage,
         False, True, False, False)
     assert inner[0] == 'ok'
-    assert inner[1] == [0, 2]
-    assert inner[2] == [1, 0]
+    assert all(
+        isinstance(indexer, np.ndarray) and indexer.dtype == np.intp
+        for indexer in inner[1:]
+    )
+    assert inner[1].tolist() == [0, 2]
+    assert inner[2].tolist() == [1, 0]
 
     full = join_mod.probe_int64_dense(
         left.key._storage, right.key._storage,
         False, True, True, True)
-    assert full[1] == [0, 1, 2, 3, -1]
-    assert full[2] == [1, -1, 0, -1, 2]
+    assert all(
+        isinstance(indexer, np.ndarray) and indexer.dtype == np.intp
+        for indexer in full[1:]
+    )
+    assert full[1].tolist() == [0, 1, 2, 3, -1]
+    assert full[2].tolist() == [1, -1, 0, -1, 2]
 
 
-def test_sorted_int_probe_returns_python_outcome():
+def test_sorted_int_probe_returns_numpy_indexers():
     left = Table({'key': [2, 1, 2]})
     right = Table({'key': [2, 2, 1]})
 
@@ -101,8 +109,30 @@ def test_sorted_int_probe_returns_python_outcome():
         False,
         False,
     )
-    assert result == ('ok', [0, 0, 1, 2, 2], [0, 1, 2, 0, 1])
-    assert all(type(index) is int for take in result[1:] for index in take)
+    assert result[0] == 'ok'
+    assert all(
+        isinstance(indexer, np.ndarray) and indexer.dtype == np.intp
+        for indexer in result[1:]
+    )
+    assert result[1].tolist() == [0, 0, 1, 2, 2]
+    assert result[2].tolist() == [0, 1, 2, 0, 1]
+
+
+def test_numpy_indexers_drive_object_payload_fallback():
+    left = Table([
+        Vector([2, 1], name='key'),
+        Vector([[2], [1]], name='left_object').to_object(),
+    ])
+    right = Table([
+        Vector([1, 3], name='key'),
+        Vector([{'value': 1}, {'value': 3}], name='right_object').to_object(),
+    ])
+
+    result = left.full_join(right, 'key', 'key')
+
+    assert list(result.key) == [2, 1, None]
+    assert list(result.left_object) == [[2], [1], None]
+    assert list(result.right_object) == [None, {'value': 1}, {'value': 3}]
 
 
 def test_signed_extreme_compact_range_uses_dense_probe():
@@ -112,8 +142,12 @@ def test_signed_extreme_compact_range_uses_dense_probe():
     result = join_mod.probe_int64_dense(
         left.key._storage, right.key._storage,
         False, True, False, False)
-    assert result[1] == [0, 2]
-    assert result[2] == [1, 0]
+    assert all(
+        isinstance(indexer, np.ndarray) and indexer.dtype == np.intp
+        for indexer in result[1:]
+    )
+    assert result[1].tolist() == [0, 2]
+    assert result[2].tolist() == [1, 0]
 
 
 def test_sparse_int_range_declines():

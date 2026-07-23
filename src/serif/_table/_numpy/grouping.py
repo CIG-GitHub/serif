@@ -28,7 +28,7 @@ def group_indices(storage):
 
     appearance = _np.argsort(first_indices, kind='stable')
     return {
-        (keys[code],): groups[code].tolist()
-        for code in appearance.tolist()
+        (keys[code],): groups[code]
+        for code in appearance
     }
 

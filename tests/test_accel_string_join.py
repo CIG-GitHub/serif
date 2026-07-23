@@ -23,7 +23,7 @@ installed; _pure() toggles the Arrow join switch.
 
 import pytest
 
-pytest.importorskip("numpy")
+np = pytest.importorskip("numpy")
 pytest.importorskip("pyarrow")
 
 from serif import Table, Vector
@@ -199,7 +199,7 @@ def test_mixed_key_kinds_decline():
         False, False, True, False) is DECLINED
 
 
-def test_string_probe_returns_python_outcome():
+def test_string_probe_returns_numpy_indexers():
     left = Table({'key': ['b', 'a']})
     right = Table({'key': ['a', 'b']})
 
@@ -211,8 +211,13 @@ def test_string_probe_returns_python_outcome():
         False,
         False,
     )
-    assert result == ('ok', [0, 1], [1, 0])
-    assert all(type(index) is int for take in result[1:] for index in take)
+    assert result[0] == 'ok'
+    assert all(
+        isinstance(indexer, np.ndarray) and indexer.dtype == np.intp
+        for indexer in result[1:]
+    )
+    assert result[1].tolist() == [0, 1]
+    assert result[2].tolist() == [1, 0]
 
 
 # ---------------------------------------------------------------------------
