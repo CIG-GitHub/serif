@@ -1,6 +1,7 @@
 import pytest
 from serif import Vector
 from serif import Table
+from serif.errors import SerifKeyError, SerifTypeError
 
 
 def test_name_initialization():
@@ -173,6 +174,67 @@ def test_Table_multi_column_selection():
 	for col in t3._storage:
 		assert col._name == 'a'
 		assert list(col) == [1, 2, 3]
+
+
+def test_Table_multi_column_list_selection():
+	t = Table({
+		'a': [1, 2, 3],
+		'b': [4, 5, 6],
+		'c': [7, 8, 9],
+	})
+
+	selected = t[['c', 'a']]
+
+	assert type(selected) is Table
+	assert selected.column_names() == ['c', 'a']
+	assert selected.to_dict() == {
+		'c': [7, 8, 9],
+		'a': [1, 2, 3],
+	}
+
+
+def test_Table_mask_and_multi_column_list_selection():
+	t = Table({
+		'a': [1, 2, 3, 4],
+		'b': [10, 20, 30, 40],
+		'c': ['w', 'x', 'y', 'z'],
+	})
+	mask = t.a > 2
+
+	selected = t[mask, ['c', 'a']]
+	reversed_axes = t[['c', 'a'], mask]
+	tuple_columns = t[mask, ('c', 'a')]
+
+	for result in (selected, reversed_axes, tuple_columns):
+		assert type(result) is Table
+		assert result.column_names() == ['c', 'a']
+		assert result.to_dict() == {
+			'c': ['y', 'z'],
+			'a': [3, 4],
+		}
+
+
+def test_Table_column_list_preserves_duplicate_warning():
+	t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
+
+	with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
+		selected = t[['a', 'a']]
+
+	assert selected.shape == (3, 2)
+	assert all(list(column) == [1, 2, 3] for column in selected.cols())
+
+
+def test_Table_empty_and_positional_lists_remain_invalid_projections():
+	t = Table({'a': [1, 2], 'b': [3, 4]})
+
+	with pytest.raises(SerifTypeError):
+		t[[]]
+	with pytest.raises(SerifTypeError):
+		t[[0, 1]]
+	with pytest.raises(SerifTypeError):
+		t[['a', 1]]
+	with pytest.raises(SerifKeyError):
+		t[:, []]
 
 
 def test_Table_operations_on_named_columns():

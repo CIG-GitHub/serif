@@ -21,6 +21,28 @@ def _masked_table_class():
     return MaskedTable
 
 
+def _is_boolean_mask(key):
+    if isinstance(key, Vector):
+        return key.schema().kind == bool
+    return (
+        isinstance(key, list)
+        and {type(element) for element in key} == {bool}
+    )
+
+
+def _is_column_name_sequence(key):
+    # Preserve the existing empty-tuple projection, but do not assign a new
+    # meaning to []: it is ambiguous with the list-mask spelling.
+    return (
+        isinstance(key, tuple)
+        and all(isinstance(element, str) for element in key)
+    ) or (
+        isinstance(key, list)
+        and bool(key)
+        and all(isinstance(element, str) for element in key)
+    )
+
+
 def getitem(table, key):
     """Select columns, rows, or cells with Table's existing precedence."""
     key = table._check_duplicate(key)
@@ -31,8 +53,8 @@ def getitem(table, key):
             _columns.resolve_column_key(table._storage, key)
         ]
 
-    # Handle tuple of strings for multi-column selection
-    if isinstance(key, tuple) and all(isinstance(k, str) for k in key):
+    # Handle tuple/list of strings for multi-column selection.
+    if _is_column_name_sequence(key):
         # Reuse the single-column lookup above for each name so selection
         # semantics stay identical (exact / sanitized / disambiguated /
         # unnamed) and a missing name raises SerifKeyError instead of being
@@ -58,10 +80,13 @@ def getitem(table, key):
         # Support both [rows, cols] and [cols, rows] by checking types
         row_spec, col_spec = key
 
-        # Determine which is rows and which is columns
-        # Rows: int or slice
-        # Cols: int, slice, str, or tuple of strings
-        row_is_first = isinstance(row_spec, (int, slice))
+        # Determine which is rows and which is columns. Boolean masks are
+        # unambiguously row selectors; recognizing them here permits both
+        # t[mask, ['a', 'b']] and the legacy columns-first spelling.
+        row_is_first = (
+            isinstance(row_spec, (int, slice))
+            or _is_boolean_mask(row_spec)
+        )
 
         if not row_is_first:
             # Swap if columns came first:
@@ -76,6 +101,8 @@ def getitem(table, key):
         elif isinstance(row_spec, int):
             # Single row -> return Row, then index into it
             return table[row_spec][col_spec]
+        elif _is_boolean_mask(row_spec):
+            row_sliced = table[row_spec]
         else:
             raise SerifKeyError(f"Invalid row specifier: {type(row_spec)}")
 
@@ -91,10 +118,7 @@ def getitem(table, key):
         if isinstance(col_spec, str):
             # Single column by name
             return row_sliced[col_spec]
-        if (
-            isinstance(col_spec, tuple)
-            and all(isinstance(k, str) for k in col_spec)
-        ):
+        if _is_column_name_sequence(col_spec):
             # Multiple columns by name
             return row_sliced[col_spec]
         raise SerifKeyError(f"Invalid column specifier: {type(col_spec)}")
@@ -103,7 +127,7 @@ def getitem(table, key):
         # A single integer returns a row value rather than another Table.
         return Row(table, key)
 
-    if isinstance(key, Vector) and key.schema().kind == bool:
+    if isinstance(key, Vector) and _is_boolean_mask(key):
         # Nullable masks allowed: null entries exclude the row.
         if len(table) != len(key):
             raise SerifValueError(
@@ -118,7 +142,7 @@ def getitem(table, key):
         MaskedTable = _masked_table_class()
         return MaskedTable(table, key)
 
-    if isinstance(key, list) and {type(element) for element in key} == {bool}:
+    if isinstance(key, list) and _is_boolean_mask(key):
         if len(table) != len(key):
             raise SerifValueError(
                 f"Boolean mask length mismatch: {len(table)} != {len(key)}"
