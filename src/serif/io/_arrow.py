@@ -58,6 +58,7 @@ import pyarrow.parquet as _pq
 from datetime import date as _date, datetime as _datetime
 from decimal import Decimal as _Decimal
 
+from .._execution import DECLINED
 from ..vector import Vector
 from .._vector.dtype import Schema as _Schema
 from .._vector.nullable import BitMask
@@ -66,7 +67,7 @@ from .._vector.storage import ArrayStorage, StringStorage, DecimalStorage, BoolS
 
 def _target_type(t):
     """
-    Map an arrow column type to the type to DECODE AS; None means DECLINE.
+    Map an arrow column type to the type to decode as, or `DECLINED`.
 
     Identity for the types serif's writer emits. A handful of foreign types
     additionally widen to a supported type — legal because the widening is
@@ -85,12 +86,13 @@ def _target_type(t):
                                        pure reader surfaces plain values
 
     Types serif REJECTS (nanosecond timestamps, uint32/64, decimal256)
-    return None: the whole file declines, and the pure reader's refusal is
-    what users see, with pyarrow installed or not.
+    return `DECLINED`: the whole file declines, and the pure reader's refusal
+    is what users see, with pyarrow installed or not.
     """
     if _pa.types.is_dictionary(t):
         vt = t.value_type
-        return _target_type(vt) if not _pa.types.is_dictionary(vt) else None
+        return (_target_type(vt)
+                if not _pa.types.is_dictionary(vt) else DECLINED)
     if (_pa.types.is_int64(t) or _pa.types.is_float64(t)
             or _pa.types.is_string(t) or _pa.types.is_boolean(t)
             or _pa.types.is_date32(t)):
@@ -111,15 +113,15 @@ def _target_type(t):
     # decimal128 only; decimal256 declines (serif has no 256-bit backend).
     if _pa.types.is_decimal(t) and t.bit_width == 128:
         return t
-    return None
+    return DECLINED
 
 
 def try_read(path):
     """
     Read `path` via pyarrow if every column type is supported.
 
-    Returns a Table, or None to DECLINE — whole-file fallback to the pure
-    reader. Declining covers unsupported column types (semantics stay
+    Returns a Table or `DECLINED` for whole-file fallback to the pure reader.
+    Declining covers unsupported column types (semantics stay
     serif's: the pure reader raises its own loud errors) and any pyarrow
     parse failure (so corrupt files surface serif's messages, not arrow's).
     """
@@ -129,18 +131,18 @@ def try_read(path):
     # BEFORE decoding any data.
     try:
         pf = _pq.ParquetFile(path)
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     schema  = pf.schema_arrow
     targets = [_target_type(field.type) for field in schema]
-    if not all(t is not None for t in targets):
-        return None
+    if any(target is DECLINED for target in targets):
+        return DECLINED
 
     try:
         table = pf.read()
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     # Arrow-layer failures during conversion (cast overflow, string concat
     # past 2 GB, …) decline like any other pyarrow failure — the pure
@@ -161,11 +163,11 @@ def try_read(path):
             if arr.offset != 0:
                 # The buffer math below assumes offset 0. Fresh reads always
                 # are; decline rather than risk a misread.
-                return None
+                return DECLINED
             cols.append(_to_vector(arr, field.name, field.nullable))
         return Table._from_columns_nocopy(cols)
-    except _pa.ArrowException:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
 
 def try_read_column(path, column_index, row_groups, batched=False):
@@ -175,23 +177,23 @@ def try_read_column(path, column_index, row_groups, batched=False):
     With ``batched=True``, the result is grouped by row group and split into
     bounded batches so the caller can apply Serif's byte masks without
     retaining a whole unfiltered payload column. Returns nested Vector
-    pieces, or None to decline to the pure reader.
+    pieces, or `DECLINED` to fall through to the pure reader.
     """
     try:
         pf = _pq.ParquetFile(path)
-    except Exception:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
     schema = pf.schema_arrow
     targets = [_target_type(field.type) for field in schema]
-    if not all(target is not None for target in targets):
-        return None
+    if any(target is DECLINED for target in targets):
+        return DECLINED
 
     field = schema.field(column_index)
     # ParquetFile projection is name-based; duplicate names are legal in
     # Serif, so decline rather than risk selecting the wrong occurrence.
     if schema.names.count(field.name) != 1:
-        return None
+        return DECLINED
 
     try:
         target = targets[column_index]
@@ -207,7 +209,7 @@ def try_read_column(path, column_index, row_groups, batched=False):
             else:
                 arr = _pa.concat_arrays(chunked.chunks)
             if arr.offset != 0:
-                return None
+                return DECLINED
             return [[_to_vector(arr, field.name, field.nullable)]]
 
         groups = []
@@ -219,12 +221,12 @@ def try_read_column(path, column_index, row_groups, batched=False):
                 if arr.type != target:
                     arr = arr.cast(target)
                 if arr.offset != 0:
-                    return None
+                    return DECLINED
                 vectors.append(_to_vector(arr, field.name, field.nullable))
             groups.append(vectors)
         return groups
-    except _pa.ArrowException:
-        return None
+    except (_pa.ArrowException, OSError):
+        return DECLINED
 
 
 def _bit_mask(arr):

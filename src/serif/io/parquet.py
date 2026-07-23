@@ -36,6 +36,7 @@ from itertools import chain as _chain
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
 from .._vector.nullable import BitMask
@@ -1939,7 +1940,11 @@ class _ParquetSource:
             masked = segments[0] is not None
             arrow_groups = _arrow_accel.try_read_column(
                 self.path, idx, groups, batched=masked)
-            if arrow_groups is not None:
+            if arrow_groups is not DECLINED:
+                if arrow_groups is None:
+                    raise RuntimeError(
+                        "Arrow Parquet backend returned None instead of "
+                        "column batches or DECLINED")
                 if not masked:
                     return _combine_columns(
                         [piece for group in arrow_groups for piece in group],
@@ -1956,10 +1961,10 @@ class _ParquetSource:
                             piece, segment[cursor:stop]))
                         cursor = stop
                     if cursor != len(segment):
-                        arrow_groups = None
-                        break
-                if arrow_groups is not None:
-                    return _combine_columns(pieces, meta)
+                        raise RuntimeError(
+                            "Arrow column batches did not match the selected "
+                            "Parquet row group")
+                return _combine_columns(pieces, meta)
 
         pieces = []
         with self._open_checked() as handle:
@@ -2159,7 +2164,10 @@ def _read_parquet_eager(path: str):
 
     if _USE_ARROW and _arrow_accel is not None:
         result = _arrow_accel.try_read(path)
-        if result is not None:
+        if result is not DECLINED:
+            if not isinstance(result, Table):
+                raise RuntimeError(
+                    "Arrow Parquet backend returned a non-Table result")
             return result
         # Declined (unsupported column type, parse error, …): fall through
         # to the pure reader, whose errors are the ones users should see.
