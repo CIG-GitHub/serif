@@ -29,7 +29,7 @@ def group_strings(storage):
     )
     keys = encoded.dictionary.to_pylist()
     return {
-        (keys[code],): groups[code].tolist()
+        (keys[code],): groups[code]
         for code in range(key_count)
     }
 

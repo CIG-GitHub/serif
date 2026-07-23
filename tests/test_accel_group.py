@@ -18,7 +18,7 @@ from datetime import date
 
 import pytest
 
-pytest.importorskip("numpy")
+np = pytest.importorskip("numpy")
 
 from serif import Table, Vector
 from serif._execution import DECLINED
@@ -100,14 +100,15 @@ def test_group_indices_matches_pure_dict(vals):
     fast = group_mod.group_indices(Vector(vals)._storage)
     pure = _pure_partition(vals)
     assert fast is not DECLINED
-    assert fast == pure
-    assert all(type(bucket) is list for bucket in fast.values())
-    assert all(
-        type(index) is int
-        for bucket in fast.values()
-        for index in bucket
-    )
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
+    assert all(
+        isinstance(bucket, np.ndarray) and bucket.dtype == np.intp
+        for bucket in fast.values()
+    )
+    assert {
+        key: bucket.tolist()
+        for key, bucket in fast.items()
+    } == pure
 
 
 def test_group_indices_declines_unsupported():
@@ -264,6 +265,21 @@ def test_aggregate_int_groupby_conforms():
     fast, pure = run(), _pure(run)
     _assert_tables_identical(pure, fast)
     assert list(fast.cols(0)) == [3, 1, 2]  # first-appearance order pinned
+
+
+def test_group_index_arrays_drive_object_slicing():
+    table = Table([
+        Vector([2, 1, 2], name='g'),
+        Vector([['a'], ['b'], ['c']], name='payload').to_object(),
+    ])
+
+    result = table.aggregate(
+        groupby='g',
+        aggregations={'size': lambda group: len(group.payload)},
+    )
+
+    assert list(result.g) == [2, 1]
+    assert list(result['size']) == [2, 1]
 
 
 def test_window_int_groupby_conforms():

@@ -17,7 +17,7 @@ toggles the Arrow switches, isolating this commit's tier.
 
 import pytest
 
-pytest.importorskip("numpy")
+np = pytest.importorskip("numpy")
 pytest.importorskip("pyarrow")
 
 from serif import Table, Vector
@@ -100,14 +100,15 @@ def test_group_strings_matches_pure_dict(vals):
     fast = group_mod.group_strings(Vector(vals)._storage)
     pure = _pure_partition(vals)
     assert fast is not DECLINED
-    assert fast == pure
-    assert all(type(bucket) is list for bucket in fast.values())
-    assert all(
-        type(index) is int
-        for bucket in fast.values()
-        for index in bucket
-    )
     assert list(fast.keys()) == list(pure.keys())    # first-appearance order
+    assert all(
+        isinstance(bucket, np.ndarray) and bucket.dtype == np.intp
+        for bucket in fast.values()
+    )
+    assert {
+        key: bucket.tolist()
+        for key, bucket in fast.items()
+    } == pure
     assert all(type(k[0]) is str for k in fast.keys())   # python out
 
 
