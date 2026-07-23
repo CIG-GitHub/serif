@@ -253,6 +253,97 @@ class TestListOfColumnsAssignment:
 			t[:, :] = [[1, 2], [3, 4], [5, 6]]  # Too many columns
 
 
+class TestNamedColumnSequenceAssignment:
+	"""Named-column sequences mean the same thing in reads and writes."""
+
+	@pytest.mark.parametrize(
+		"columns",
+		[
+			['col 1', 'col 2'],
+			('col 1', 'col 2'),
+		],
+	)
+	def test_assign_table_to_named_columns_for_every_row(self, columns):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [9, 10, 11, 12],
+		})
+		source = Table({
+			'left': [20, 30, 40, 50],
+			'right': [90, 100, 110, 120],
+		})
+
+		t[columns] = source
+
+		assert t.column_names() == ['col 1', 'keep', 'col 2']
+		assert t.to_dict() == {
+			'col 1': [20, 30, 40, 50],
+			'keep': [5, 6, 7, 8],
+			'col 2': [90, 100, 110, 120],
+		}
+
+	@pytest.mark.parametrize(
+		"columns",
+		[
+			['col 1', 'col 2'],
+			('col 1', 'col 2'),
+		],
+	)
+	def test_assign_table_to_named_columns_under_mask(self, columns):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [9, 10, 11, 12],
+		})
+		mask = Vector([True, False, True, False])
+		source = Table({
+			'left': [20, 40],
+			'right': [90, 110],
+		})
+
+		t[mask, columns] = source
+
+		assert t.to_dict() == {
+			'col 1': [20, 2, 40, 4],
+			'keep': [5, 6, 7, 8],
+			'col 2': [90, 10, 110, 12],
+		}
+
+	def test_assign_table_to_named_columns_under_empty_reverse_slice(self):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		})
+		source = Table({'left': [], 'right': []})
+
+		t[1:3:-7, ['col 1', 'col 2']] = source
+
+		assert t.to_dict() == {
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		}
+
+	def test_masked_table_assignment_row_mismatch_is_atomic(self):
+		t = Table({
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		})
+		mask = Vector([True, False, True, False])
+		source = Table({'left': [20], 'right': [50]})
+
+		with pytest.raises(
+			SerifValueError,
+			match="number of True mask elements",
+		):
+			t[mask, ['col 1', 'col 2']] = source
+
+		assert t.to_dict() == {
+			'col 1': [1, 2, 3, 4],
+			'col 2': [5, 6, 7, 8],
+		}
+
+
 class TestSliceEdgeCases:
 	"""Edge cases and boundary conditions."""
 	

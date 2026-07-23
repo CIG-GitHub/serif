@@ -17,6 +17,14 @@ def _table_class():
     return Table
 
 
+def _is_column_name_sequence(key):
+    return (
+        isinstance(key, (list, tuple))
+        and bool(key)
+        and all(isinstance(item, str) for item in key)
+    )
+
+
 class _BatchScope:
     """
     Context manager behind Table.batch() — the bulk-edit fast path.
@@ -187,7 +195,12 @@ def setitem(table, key, value):
     row_spec, col_spec = None, None
 
     # --- 1. Normalize Key ---
-    if isinstance(key, tuple):
+    if _is_column_name_sequence(key):
+        # Mirror projection syntax: t[['a', 'b']] = value and
+        # t['a', 'b'] = value both mean every row of those columns.
+        row_spec = slice(None)
+        col_spec = key
+    elif isinstance(key, tuple):
         # t[row, col]
         if len(key) != 2:
             raise SerifKeyError(
@@ -196,11 +209,7 @@ def setitem(table, key, value):
         row_spec, col_spec = key
         first_is_columns = (
             isinstance(row_spec, str)
-            or (
-                isinstance(row_spec, (list, tuple))
-                and row_spec
-                and all(isinstance(item, str) for item in row_spec)
-            )
+            or _is_column_name_sequence(row_spec)
         )
         if first_is_columns:
             row_spec, col_spec = col_spec, row_spec
