@@ -1,21 +1,30 @@
 """Column name sanitization and uniquification utilities."""
 
 from __future__ import annotations
+import keyword
 import re
 
 
 def _get_reserved_names():
-    """Get all public methods and properties from Vector and Table classes.
+    """Get Python keywords and public Vector/Table methods and properties.
 
-    Computed from dir() rather than hardcoded so the set tracks the classes
-    as they evolve, then cached for the life of the process — anything that
-    adds methods after first use must invalidate _get_reserved_names._cache.
+    Python hard keywords are included only when their normalized lowercase
+    spelling is itself a keyword. Thus ``class`` is reserved because
+    ``t.class`` cannot be parsed, while ``False`` normalizes to the reachable
+    attribute ``false``. Public class names are computed from dir() rather
+    than hardcoded so the set tracks the classes as they evolve, then cached
+    for the life of the process — anything that adds methods after first use
+    must invalidate _get_reserved_names._cache.
     """
     if not hasattr(_get_reserved_names, '_cache'):
         from .vector import Vector
         from .table import Table
         
-        reserved = set()
+        reserved = {
+            name.lower()
+            for name in keyword.kwlist
+            if keyword.iskeyword(name.lower())
+        }
         
         # Collect all public attributes from both classes
         for cls in (Vector, Table):
@@ -78,8 +87,8 @@ def _normalize_name(name) -> str | None:
 
 def _sanitize_user_name(name) -> str | None:
     """Sanitize a column name to a valid Python identifier, appending '_' when
-    it would collide with a reserved method/attribute name. Returns None if
-    empty after sanitization.
+    it would collide with a Python keyword or reserved method/attribute name.
+    Returns None if empty after sanitization.
     """
     sanitized = _normalize_name(name)
     if sanitized is None:
@@ -93,14 +102,22 @@ def _sanitize_user_name(name) -> str | None:
 
 
 def _reserved_collision(name) -> str | None:
-    """Return the reserved method/attribute name a column name collides with,
-    or None. When non-None, dot access `t.<name>` resolves to the method, not
-    the column — the column is reachable as `t.<name>_` or `t['<original>']`.
+    """Return the reserved name a column name collides with, or None.
+
+    A collision is either a Python hard keyword, which cannot be parsed after
+    a dot, or a public method/property, which wins normal attribute lookup.
+    In both cases the column remains reachable as ``t.<name>_`` or by its
+    exact original bracket key.
     """
     sanitized = _normalize_name(name)
     if sanitized is not None and sanitized in _get_reserved_names():
         return sanitized
     return None
+
+
+def _is_python_keyword(name: str) -> bool:
+    """Return whether a normalized name is unreachable after a Python dot."""
+    return keyword.iskeyword(name)
 
 
 def _disambiguate(base: str, idx: int) -> str:
