@@ -29,6 +29,28 @@ nullable : bool
 """
 
 
+_KIND_PROMOTION = {
+    (bool,    bool):    bool,
+    (bool,    int):     int,
+    (int,     bool):    int,
+    (int,     int):     int,
+    (int,     float):   float,
+    (float,   int):     float,
+    (float,   float):   float,
+    (int,     complex): complex,
+    (float,   complex): complex,
+    (complex, int):     complex,
+    (complex, float):   complex,
+    (complex, complex): complex,
+    (str,     str):     str,
+}
+
+
+def promote_kinds(left_kind: Type, right_kind: Type) -> Optional[Type]:
+    """Return the statically promoted kind, or None when it is unknown."""
+    return _KIND_PROMOTION.get((left_kind, right_kind))
+
+
 def is_numeric_kind(kind: Type) -> bool:
     """True if kind is bool, int, float, or complex."""
     try:
