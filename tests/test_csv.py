@@ -34,10 +34,12 @@ def _read(text, **kwargs):
 # ---------------------------------------------------------------------------
 
 def test_read_from_file_object():
-    t = _read("a,b\n1,x\n2,y\n")
+    file_obj = io.StringIO("a,b\n1,x\n2,y\n")
+    t = read_csv(file_obj)
     assert t.column_names() == ['a', 'b']
     assert list(t.a) == [1, 2]
     assert list(t.b) == ['x', 'y']
+    assert file_obj.closed is False
 
 
 def test_read_from_path(tmp_path):
@@ -53,6 +55,14 @@ def test_bom_not_in_header_names(tmp_path):
     p.write_bytes(b'\xef\xbb\xbfa,b\n1,2\n')
     t = read_csv(str(p))
     assert t.column_names() == ['a', 'b']
+
+
+def test_bom_not_in_first_value_without_header(tmp_path):
+    p = tmp_path / "bom-no-header.csv"
+    p.write_bytes(b'\xef\xbb\xbf1,2\n3,4\n')
+    t = read_csv(str(p), has_header=False)
+    assert list(t['col_0']) == [1, 3]
+    assert list(t['col_1']) == [2, 4]
 
 
 def test_delimiter():
@@ -86,16 +96,32 @@ def test_header_only_returns_empty_columns():
     t = _read("a,b\n")
     assert t.column_names() == ['a', 'b']
     assert len(t) == 0
+    assert list(t.a) == []
+    assert list(t.b) == []
 
 
 def test_short_rows_pad_with_none():
-    t = _read("a,b,c\n1,2,3\n4,5\n")
-    assert list(t.c) == [3, None]
+    t = _read("a,b,c\n1,2,3\n4,5\n6\n")
+    assert list(t.a) == [1, 4, 6]
+    assert list(t.b) == [2, 5, None]
+    assert list(t.c) == [3, None, None]
 
 
-def test_long_rows_raise():
-    with pytest.raises(SerifValueError, match=r'[Rr]ow 3'):
-        _read("a,b\n1,2\n1,2,3\n")
+@pytest.mark.parametrize(
+    ("text", "has_header", "physical_row"),
+    [
+        ("a,b\n1,2\n3,4,5\n", True, 3),
+        ("1,2\n3,4,5\n", False, 2),
+    ],
+)
+def test_long_rows_raise_with_physical_row_number(
+    text, has_header, physical_row
+):
+    message = (
+        rf"Row {physical_row} has 3 fields, but the header has 2 columns\."
+    )
+    with pytest.raises(SerifValueError, match=message):
+        _read(text, has_header=has_header)
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +146,12 @@ def test_scientific_notation_is_float():
     assert t.a.schema().kind is float
 
 
+def test_trailing_decimal_and_signed_exponent_are_float():
+    t = _read("a\n3.\n+4.5e+1\n")
+    assert list(t.a) == [3.0, 45.0]
+    assert t.a.schema().kind is float
+
+
 def test_mixed_int_float_promotes_to_float():
     t = _read("a\n1\n2.5\n")
     assert list(t.a) == [1.0, 2.5]
@@ -129,6 +161,19 @@ def test_mixed_int_float_promotes_to_float():
 def test_whitespace_around_numbers_is_trimmed():
     t = _read("a\n 42 \n")
     assert list(t.a) == [42]
+
+
+def test_whitespace_around_strings_is_trimmed():
+    t = _read("a\n  café  \n")
+    assert list(t.a) == ['café']
+    assert t.a.schema().kind is str
+
+
+def test_unicode_header_and_values():
+    t = _read("café,emoji\nnaïve,🙂\n")
+    assert t.column_names() == ['café', 'emoji']
+    assert list(t['café']) == ['naïve']
+    assert list(t.emoji) == ['🙂']
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +188,13 @@ def test_leading_zero_identifiers_stay_strings():
     # failure).
     t = _read("zip\n01234\n90210\n")
     assert list(t.zip) == ['01234', '90210']
+    assert t.zip.schema().kind is str
+
+
+@pytest.mark.filterwarnings("error")
+def test_late_leading_zero_marks_the_whole_column_as_identifiers():
+    t = _read("zip\n90210\n10001\n01234\n")
+    assert list(t.zip) == ['90210', '10001', '01234']
     assert t.zip.schema().kind is str
 
 
