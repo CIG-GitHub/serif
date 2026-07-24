@@ -38,6 +38,7 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 from .._execution import DECLINED
 from ..errors import SerifTypeError, SerifValueError
 from ..vector import Vector
+from .._vector.nullable import BitMask
 from .._vector.nullable import _BitMaskBuilder
 from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
@@ -521,6 +522,17 @@ def _enc_file_metadata(schema_elems: list, row_groups: list,
 # Definition level encoding / decoding
 # ---------------------------------------------------------------------------
 
+def _finish_def_levels(packed: bytearray, nrows: int) -> bytes:
+    """Wrap packed definition-level bits in Parquet's bit-packed run."""
+    if nrows == 0:
+        return _struct.pack('<I', 0)
+
+    num_groups = (nrows + 7) // 8
+    run_hdr = _varint_encode((num_groups << 1) | 1)
+    encoded = run_hdr + bytes(packed)
+    return _struct.pack('<I', len(encoded)) + encoded
+
+
 def _encode_def_levels(null_flags: list) -> bytes:
     """
     Encode definition levels for a nullable column using RLE/bit-packing.
@@ -532,21 +544,49 @@ def _encode_def_levels(null_flags: list) -> bytes:
     bit_width = 1  (max def level = 1)
     """
     n = len(null_flags)
-    if n == 0:
-        return _struct.pack('<I', 0)
-
-    num_groups = (n + 7) // 8
-    packed = bytearray(num_groups)
+    packed = bytearray((n + 7) // 8)
 
     for i, is_null in enumerate(null_flags):
         if not is_null:
             # def_level = 1 (present): set the bit at position i
             packed[i >> 3] |= 1 << (i & 7)
 
-    # Bit-packed run header: (num_groups << 1) | 1
-    run_hdr = _varint_encode((num_groups << 1) | 1)
-    encoded = run_hdr + bytes(packed)
-    return _struct.pack('<I', len(encoded)) + encoded
+    return _finish_def_levels(packed, n)
+
+
+def _encode_mask_def_levels(mask: BitMask | None, nrows: int) -> bytes:
+    """Encode definition levels from an Arrow-layout validity bitmap."""
+    num_groups = (nrows + 7) // 8
+    if mask is None:
+        packed = bytearray(b'\xff' * num_groups)
+    else:
+        packed = bytearray(mask._buf)
+
+    # Parquet ignores padding lanes, but the previous encoder emitted them as
+    # zero. BitMask.from_size() uses 0xff in its final byte, so clear the high
+    # padding bits to keep the writer's bytes stable.
+    remaining = nrows & 7
+    if remaining:
+        packed[-1] &= (1 << remaining) - 1
+
+    return _finish_def_levels(packed, nrows)
+
+
+def _encode_storage_def_levels(storage) -> bytes:
+    """Encode validity without materializing one bool per row."""
+    marker = object()
+    mask = getattr(storage, '_mask', marker)
+    if mask is not marker:
+        return _encode_mask_def_levels(mask, len(storage))
+
+    # Dates, datetimes, and source Decimal columns intentionally use
+    # TupleStorage, where None is inline instead of represented by BitMask.
+    nrows = len(storage)
+    packed = bytearray((nrows + 7) // 8)
+    for i, value in enumerate(storage):
+        if value is not None:
+            packed[i >> 3] |= 1 << (i & 7)
+    return _finish_def_levels(packed, nrows)
 
 
 def _decode_def_levels(data, pos: int, nrows: int):
@@ -596,9 +636,159 @@ _EPOCH_ORD  = _date(1970, 1, 1).toordinal()
 _EPOCH_DT   = _datetime(1970, 1, 1)
 
 
+def _copy_valid_fixed_width(raw, width: int, mask: BitMask | None,
+                            nrows: int) -> bytes:
+    """Copy valid fixed-width lanes without decoding their scalar values."""
+    if mask is None:
+        return bytes(raw)
+
+    encoded = bytearray()
+    run_start = None
+    for i in range(nrows):
+        if not mask.is_null(i):
+            if run_start is None:
+                run_start = i
+        elif run_start is not None:
+            encoded.extend(raw[run_start * width:i * width])
+            run_start = None
+    if run_start is not None:
+        encoded.extend(raw[run_start * width:nrows * width])
+    return bytes(encoded)
+
+
+def _encode_array_storage_plain(storage: ArrayStorage) -> bytes:
+    """Encode an ArrayStorage from its native fixed-width data buffer."""
+    raw = memoryview(storage._data).cast('B')
+    return _copy_valid_fixed_width(
+        raw, storage._data.itemsize, storage._mask, len(storage))
+
+
+def _encode_string_storage_plain(storage: StringStorage) -> bytes:
+    """Encode StringStorage from offsets and its existing UTF-8 buffer."""
+    encoded = bytearray()
+    raw = storage._buf
+    offsets = storage._offsets
+    mask = storage._mask
+    for i in range(len(storage)):
+        if mask is not None and mask.is_null(i):
+            continue
+        start = offsets[i]
+        end = offsets[i + 1]
+        encoded.extend(_struct.pack('<I', end - start))
+        encoded.extend(raw[start:end])
+    return bytes(encoded)
+
+
+def _encode_bool_storage_plain(storage: BoolStorage) -> bytes:
+    """Pack valid BoolStorage bytes directly into Parquet BOOLEAN bits."""
+    encoded = bytearray()
+    mask = storage._mask
+    out_index = 0
+    for i, value in enumerate(storage._data):
+        if mask is not None and mask.is_null(i):
+            continue
+        if (out_index & 7) == 0:
+            encoded.append(0)
+        if value:
+            encoded[-1] |= 1 << (out_index & 7)
+        out_index += 1
+    return bytes(encoded)
+
+
+def _encode_decimal_storage_plain(storage: DecimalStorage) -> bytes:
+    """Encode decimal128 from its Parquet-compatible big-endian buffer."""
+    return _copy_valid_fixed_width(
+        storage._buf, 16, storage._mask, len(storage))
+
+
+def _encode_object_storage_plain(storage, kind: type, col_name: str,
+                                 decimal_scale: int = None) -> bytes:
+    """Encode intentionally object-backed storage without value staging."""
+    if kind is _date:
+        days = _pyarray.array('i')
+        for value in storage:
+            if value is not None:
+                days.append(value.toordinal() - _EPOCH_ORD)
+        return days.tobytes()
+
+    if kind is _datetime:
+        micros = _pyarray.array('q')
+        for value in storage:
+            if value is None:
+                continue
+            delta = value - _EPOCH_DT
+            micros.append(
+                (delta.days * 86_400_000_000)
+                + (delta.seconds * 1_000_000)
+                + delta.microseconds
+            )
+        return micros.tobytes()
+
+    if kind is _Decimal:
+        multiplier = _Decimal(10) ** decimal_scale
+        encoded = bytearray()
+        for value in storage:
+            if value is None:
+                continue
+            unscaled = int(
+                (value * multiplier).to_integral_value(
+                    rounding=_ROUND_HALF_EVEN)
+            )
+            encoded.extend(unscaled.to_bytes(16, 'big', signed=True))
+        return bytes(encoded)
+
+    raise SerifTypeError(
+        f"Column '{col_name}': unsupported type '{kind.__name__}' "
+        "for object-backed Parquet PLAIN encoding"
+    )
+
+
+def _encode_storage_plain(storage, kind: type, col_name: str,
+                          decimal_scale: int = None) -> bytes:
+    """Dispatch a validated column to its physical-storage encoder."""
+    if kind in (int, float) and isinstance(storage, ArrayStorage):
+        return _encode_array_storage_plain(storage)
+    if kind is str and isinstance(storage, StringStorage):
+        return _encode_string_storage_plain(storage)
+    if kind is bool and isinstance(storage, BoolStorage):
+        return _encode_bool_storage_plain(storage)
+    if kind is _Decimal and isinstance(storage, DecimalStorage):
+        return _encode_decimal_storage_plain(storage)
+    if isinstance(storage, TupleStorage) and kind in (
+            _date, _datetime, _Decimal):
+        return _encode_object_storage_plain(
+            storage, kind, col_name, decimal_scale)
+
+    raise SerifTypeError(
+        f"Column '{col_name}': unsupported storage "
+        f"'{type(storage).__name__}' for Parquet PLAIN encoding "
+        f"of '{kind.__name__}'"
+    )
+
+
+def _validate_storage_plain(storage, kind: type,
+                            decimal_scale: int = None) -> None:
+    """Surface value-dependent encoding failures before opening the file."""
+    if kind is not _Decimal or isinstance(storage, DecimalStorage):
+        return
+
+    multiplier = _Decimal(10) ** decimal_scale
+    for value in storage:
+        if value is None:
+            continue
+        unscaled = int(
+            (value * multiplier).to_integral_value(
+                rounding=_ROUND_HALF_EVEN)
+        )
+        unscaled.to_bytes(16, 'big', signed=True)
+
+
 def _encode_plain(values: list, kind: type, col_name: str,
                    decimal_scale: int = None) -> bytes:
-    """Encode a list of non-null values as PLAIN bytes."""
+    """Encode an already-materialized non-null list as PLAIN bytes.
+
+    Retained for synthetic-page helpers; the writer uses storage dispatch.
+    """
     if not values:
         return b''
 
@@ -793,22 +983,34 @@ def _col_parquet_type(col, col_name: str):
             scale     = st._scale
             precision = st._precision
         else:
-            # TupleStorage: infer scale from the max decimal places across values
-            non_nulls = [v for v in st if v is not None]
-            if not non_nulls:
+            # TupleStorage: infer scale and precision without retaining a
+            # second full-column collection of the existing Decimal objects.
+            scale = 0
+            found_value = False
+            for value in st:
+                if value is None:
+                    continue
+                found_value = True
+                exponent = value.as_tuple().exponent
+                if exponent < 0:
+                    scale = max(scale, -exponent)
+
+            if not found_value:
                 raise SerifTypeError(
                     f"Column '{col_name}': empty Decimal column has no values "
                     "to determine scale and precision from."
                 )
-            scale     = max(-v.as_tuple().exponent for v in non_nulls
-                           if v.as_tuple().exponent < 0) if any(
-                               v.as_tuple().exponent < 0 for v in non_nulls) else 0
+
             # Digits needed: significant digits + any extra scale padding
-            precision = max(
-                len(v.as_tuple().digits) + max(0, scale + v.as_tuple().exponent)
-                for v in non_nulls
-            )
-            precision = max(precision, 1)
+            precision = 1
+            for value in st:
+                if value is None:
+                    continue
+                parts = value.as_tuple()
+                precision = max(
+                    precision,
+                    len(parts.digits) + max(0, scale + parts.exponent),
+                )
         return _T_FIXED_LEN_BYTE_ARRAY, _CT_DECIMAL, rep, scale, precision
 
     if kind is object:
@@ -872,109 +1074,121 @@ def write_parquet(table, path: str) -> None:
             'decimal_precision': dec_prec,
         })
 
-    # ------------------------------------------------------------------
-    # 2. Build the file in a bytearray; track offsets as we go
-    # ------------------------------------------------------------------
-    buf = bytearray(_MAGIC)
-
-    page_records = []
-
+    # Preserve the established validation order: every column's type is
+    # checked before any value-dependent encoding error can surface.
     for info in col_infos:
-        col      = info['col']
-        kind     = info['kind']
-        nullable = info['nullable']
-        n        = len(col)
-
-        data_tuple = col._storage.to_tuple()
-
-        # Separate nullability.
-        # to_tuple() already returns None at null positions for both
-        # ArrayStorage (via BitMask) and TupleStorage (inline None).
-        if nullable:
-            null_flags = [v is None for v in data_tuple]
-            non_null   = [v for v in data_tuple if v is not None]
-        else:
-            null_flags = None
-            non_null   = list(data_tuple)
-
-        # Encode PLAIN values (non-null only)
-        value_bytes = _encode_plain(non_null, kind, info['name'],
-                                    info.get('decimal_scale'))
-
-        # Build page body: [def_levels?][value_bytes]
-        if nullable:
-            page_body = _encode_def_levels(null_flags) + value_bytes
-        else:
-            page_body = value_bytes
-
-        uncompressed = len(page_body)
-
-        # Build page: PageHeader + body
-        dph        = _enc_data_page_header(n)
-        ph         = _enc_page_header(uncompressed, uncompressed, dph)
-        full_page  = ph + page_body
-        total_size = len(full_page)   # header + body, as required by spec
-
-        # Record offset of this page's first byte BEFORE appending
-        page_offset = len(buf)
-        buf.extend(full_page)
-
-        page_records.append({
-            **info,
-            'data_page_offset':  page_offset,
-            'num_values':        n,
-            'total_size':        total_size,
-            'uncompressed_body': uncompressed,
-        })
+        _validate_storage_plain(
+            info['col']._storage,
+            info['kind'],
+            info.get('decimal_scale'),
+        )
 
     # ------------------------------------------------------------------
-    # 3. Build schema: root element + one leaf per column
+    # 2. Build schema metadata before touching the destination
     # ------------------------------------------------------------------
     schema_elems = [
-        _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=ncols)
+        _enc_schema_element(
+            'schema', None, None, _REP_REQUIRED, num_children=ncols)
     ]
-    for r in page_records:
-        if r['kind'] is _Decimal:
+    for info in col_infos:
+        if info['kind'] is _Decimal:
             schema_elems.append(
-                _enc_decimal_schema_element(r['name'], r['rep_type'],
-                                             r['decimal_scale'], r['decimal_precision'])
+                _enc_decimal_schema_element(
+                    info['name'],
+                    info['rep_type'],
+                    info['decimal_scale'],
+                    info['decimal_precision'],
+                )
             )
         else:
             schema_elems.append(
-                _enc_schema_element(r['name'], r['phys_type'], r['conv_type'], r['rep_type'])
+                _enc_schema_element(
+                    info['name'],
+                    info['phys_type'],
+                    info['conv_type'],
+                    info['rep_type'],
+                )
             )
 
     # ------------------------------------------------------------------
-    # 4. Build column chunks and row group
+    # 3. Stream one column page at a time; retain footer metadata only
     # ------------------------------------------------------------------
-    col_chunk_bytes = []
-    total_rg_bytes  = 0
-
-    for r in page_records:
-        meta = _enc_column_metadata(
-            phys_type        = r['phys_type'],
-            conv_type        = r['conv_type'],
-            col_name         = r['name'],
-            codec            = _CODEC_UNCOMPRESSED,
-            num_values       = r['num_values'],
-            total_uncompressed = r['total_size'],
-            total_compressed   = r['total_size'],
-            data_page_offset = r['data_page_offset'],
-            nullable         = r['nullable'],
-        )
-        chunk = _enc_column_chunk(meta, r['data_page_offset'])
-        col_chunk_bytes.append(chunk)
-        total_rg_bytes += r['total_size']
-
-    rg     = _enc_row_group(col_chunk_bytes, total_rg_bytes, nrows)
-    footer = _enc_file_metadata(schema_elems, [rg], nrows)
-
-    buf.extend(footer)
-    buf.extend(_struct.pack('<I', len(footer)))
-    buf.extend(_MAGIC)
-
+    page_records = []
+    # Characterization locks direct-write failure behavior: after wb opens,
+    # an I/O error may leave a partial destination. Semantic failures that
+    # must preserve an existing file have already surfaced above.
     with open(path, 'wb') as f:
-        f.write(buf)
+        f.write(_MAGIC)
+        file_offset = len(_MAGIC)
+
+        for info in col_infos:
+            col      = info['col']
+            kind     = info['kind']
+            nullable = info['nullable']
+            n        = len(col)
+
+            # Encode PLAIN values directly from physical storage.
+            value_bytes = _encode_storage_plain(
+                col._storage,
+                kind,
+                info['name'],
+                info.get('decimal_scale'),
+            )
+
+            # Build page body: [def_levels?][value_bytes]
+            if nullable:
+                page_body = (
+                    _encode_storage_def_levels(col._storage)
+                    + value_bytes
+                )
+            else:
+                page_body = value_bytes
+
+            uncompressed = len(page_body)
+            dph = _enc_data_page_header(n)
+            ph = _enc_page_header(uncompressed, uncompressed, dph)
+            full_page = ph + page_body
+            total_size = len(full_page)
+            page_offset = file_offset
+
+            f.write(full_page)
+            file_offset += total_size
+
+            page_records.append({
+                'name':              info['name'],
+                'phys_type':         info['phys_type'],
+                'conv_type':         info['conv_type'],
+                'nullable':          nullable,
+                'data_page_offset':  page_offset,
+                'num_values':        n,
+                'total_size':        total_size,
+            })
+            del value_bytes, page_body, full_page
+
+        col_chunk_bytes = []
+        total_rg_bytes = 0
+        for record in page_records:
+            meta = _enc_column_metadata(
+                phys_type=record['phys_type'],
+                conv_type=record['conv_type'],
+                col_name=record['name'],
+                codec=_CODEC_UNCOMPRESSED,
+                num_values=record['num_values'],
+                total_uncompressed=record['total_size'],
+                total_compressed=record['total_size'],
+                data_page_offset=record['data_page_offset'],
+                nullable=record['nullable'],
+            )
+            chunk = _enc_column_chunk(
+                meta, record['data_page_offset'])
+            col_chunk_bytes.append(chunk)
+            total_rg_bytes += record['total_size']
+
+        rg = _enc_row_group(col_chunk_bytes, total_rg_bytes, nrows)
+        footer = _enc_file_metadata(schema_elems, [rg], nrows)
+        f.write(footer)
+        f.write(_struct.pack('<I', len(footer)))
+        f.write(_MAGIC)
 
 
 def _write_empty_parquet(path: str, nrows: int) -> None:

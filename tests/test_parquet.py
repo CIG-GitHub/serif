@@ -20,10 +20,13 @@ import serif.io.parquet as parquet_mod
 from serif import Table, Vector
 from serif.errors import SerifTypeError
 from serif.io.parquet import _decode_array_raw
+from serif._vector.dtype import Schema
+from serif._vector.nullable import BitMask
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
 from serif._vector.storage import DecimalStorage
 from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +60,119 @@ def roundtrip(t: Table) -> Table:
 def col(t: Table, name: str) -> list:
     """Extract a column as a plain list for easy assertion."""
     return list(t[name])
+
+
+def writer_metadata(path):
+    """Return the raw file and parsed footer written by serif."""
+    data = memoryview(path.read_bytes())
+    assert bytes(data[:4]) == parquet_mod._MAGIC
+    assert bytes(data[-4:]) == parquet_mod._MAGIC
+    footer_size = int.from_bytes(data[-8:-4], 'little')
+    footer_start = len(data) - 8 - footer_size
+    metadata, footer_end = parquet_mod._parse_file_metadata(
+        data, footer_start)
+    assert footer_end == len(data) - 8
+    return data, metadata
+
+
+def empty_vector(kind, nullable):
+    """Build an empty vector carrying all metadata the writer needs."""
+    schema = Schema(kind, nullable)
+    if kind is Decimal:
+        storage = DecimalStorage.from_iterable(
+            [], scale=2, precision=1, nullable=nullable)
+        return Vector._from_storage(storage, schema)
+    return Vector([], dtype=schema)
+
+
+# ---------------------------------------------------------------------------
+# Storage-aware PLAIN encoding
+# ---------------------------------------------------------------------------
+
+def _forbid_storage_materialization(monkeypatch, storage_type):
+    def fail(*args, **kwargs):
+        raise AssertionError('storage values must not be materialized')
+
+    monkeypatch.setattr(storage_type, 'to_tuple', fail)
+    monkeypatch.setattr(storage_type, '__iter__', fail)
+
+
+@pytest.mark.parametrize(
+    'typecode,values,expected_values',
+    [
+        ('q', [10, None, -3, 0], [10, -3, 0]),
+        ('d', [1.5, None, -2.25, 0.0], [1.5, -2.25, 0.0]),
+    ],
+    ids=['int64', 'double'],
+)
+def test_array_storage_plain_uses_raw_fixed_width_buffer(
+        monkeypatch, typecode, values, expected_values):
+    storage = ArrayStorage.from_iterable(
+        values, typecode=typecode, nullable=True)
+    expected = array(typecode, expected_values).tobytes()
+    _forbid_storage_materialization(monkeypatch, ArrayStorage)
+
+    assert parquet_mod._encode_array_storage_plain(storage) == expected
+
+
+def test_string_storage_plain_uses_offsets_and_raw_utf8(monkeypatch):
+    values = ['café', None, '日本語', '']
+    storage = StringStorage.from_iterable(values)
+    encoded_values = [
+        'café'.encode('utf-8'),
+        '日本語'.encode('utf-8'),
+        b'',
+    ]
+    expected = b''.join(
+        len(value).to_bytes(4, 'little') + value
+        for value in encoded_values
+    )
+    _forbid_storage_materialization(monkeypatch, StringStorage)
+
+    assert parquet_mod._encode_string_storage_plain(storage) == expected
+
+
+def test_bool_storage_plain_packs_valid_bytes_without_bool_objects(monkeypatch):
+    storage = BoolStorage.from_iterable(
+        [
+            True, None, False, True, None, False,
+            True, True, False, None, True, False,
+        ],
+        nullable=True,
+    )
+    _forbid_storage_materialization(monkeypatch, BoolStorage)
+
+    assert parquet_mod._encode_bool_storage_plain(storage) == b'\xb5\x00'
+
+
+def test_decimal_storage_plain_copies_valid_fixed_width_lanes(monkeypatch):
+    values = [Decimal('1.25'), None, Decimal('-2.50')]
+    storage = DecimalStorage.from_iterable(
+        values, scale=2, precision=3, nullable=True)
+    expected = (
+        (125).to_bytes(16, 'big', signed=True)
+        + (-250).to_bytes(16, 'big', signed=True)
+    )
+    _forbid_storage_materialization(monkeypatch, DecimalStorage)
+
+    assert parquet_mod._encode_decimal_storage_plain(storage) == expected
+
+
+def test_storage_plain_encoders_emit_no_values_for_all_null_storage():
+    assert parquet_mod._encode_array_storage_plain(
+        ArrayStorage.from_iterable(
+            [None, None], typecode='q', nullable=True)
+    ) == b''
+    assert parquet_mod._encode_string_storage_plain(
+        StringStorage.from_iterable([None, None])
+    ) == b''
+    assert parquet_mod._encode_bool_storage_plain(
+        BoolStorage.from_iterable([None, None], nullable=True)
+    ) == b''
+    assert parquet_mod._encode_decimal_storage_plain(
+        DecimalStorage.from_iterable(
+            [None, None], scale=2, precision=1, nullable=True)
+    ) == b''
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +280,33 @@ def test_all_valid_optional_packed_page_reuses_array(typecode, values):
 
     assert storage._data is packed
     assert storage._mask is None
+
+
+def test_storage_definition_levels_copy_packed_mask_and_clear_padding():
+    mask = BitMask.from_size(10)
+    for index in (1, 3, 6, 9):
+        mask = mask.mark_null(index)
+
+    class NonIterableArrayStorage(ArrayStorage):
+        def __iter__(self):
+            raise AssertionError('definition levels must not unpack storage')
+
+    storage = NonIterableArrayStorage(array('q', range(10)), mask)
+
+    assert parquet_mod._encode_storage_def_levels(storage) == (
+        b'\x03\x00\x00\x00\x05\xb5\x01')
+
+
+def test_storage_definition_levels_scan_inline_null_fallback():
+    storage = TupleStorage((
+        date(2024, 1, 1),
+        None,
+        date(2025, 1, 1),
+        None,
+    ))
+
+    assert parquet_mod._encode_storage_def_levels(storage) == (
+        b'\x02\x00\x00\x00\x03\x05')
 
 
 def _read_optional_pages(page_values, kind, phys_type, *,
@@ -620,6 +763,434 @@ class TestDecimalRoundtrip:
         assert isinstance(st, DecimalStorage)
         assert st._scale == 2
         assert st._precision == 5
+
+
+# ---------------------------------------------------------------------------
+# Writer output and failure semantics
+# ---------------------------------------------------------------------------
+
+class TestWriterCharacterization:
+
+    def test_physical_schema_and_repetition_metadata(self, tmp_path):
+        table = Table({
+            'bool_required': [True, False],
+            'bool_optional': [True, None],
+            'int_required': [1, -2],
+            'int_optional': [1, None],
+            'float_required': [1.5, -2.25],
+            'float_optional': [1.5, None],
+            'string_required': ['café', '日本語'],
+            'string_optional': ['emoji 🎉', None],
+            'date_required': [date(1970, 1, 1), date(2024, 6, 15)],
+            'date_optional': [date(1969, 12, 31), None],
+            'datetime_required': [
+                datetime(1969, 12, 31, 23, 59, 59, 999999),
+                datetime(2200, 6, 15, 12, 34, 56, 123457),
+            ],
+            'datetime_optional': [
+                datetime(2024, 3, 15, 10, 30, 45, 123456),
+                None,
+            ],
+            'decimal_required': [Decimal('12.34'), Decimal('-0.01')],
+            'decimal_optional': [Decimal('1.20'), None],
+        })
+        path = tmp_path / 'schema.parquet'
+
+        table.to_parquet(str(path))
+        _, metadata = writer_metadata(path)
+
+        expected = [
+            ('bool_required', parquet_mod._T_BOOLEAN, None,
+             parquet_mod._REP_REQUIRED, None, None, None),
+            ('bool_optional', parquet_mod._T_BOOLEAN, None,
+             parquet_mod._REP_OPTIONAL, None, None, None),
+            ('int_required', parquet_mod._T_INT64, None,
+             parquet_mod._REP_REQUIRED, None, None, None),
+            ('int_optional', parquet_mod._T_INT64, None,
+             parquet_mod._REP_OPTIONAL, None, None, None),
+            ('float_required', parquet_mod._T_DOUBLE, None,
+             parquet_mod._REP_REQUIRED, None, None, None),
+            ('float_optional', parquet_mod._T_DOUBLE, None,
+             parquet_mod._REP_OPTIONAL, None, None, None),
+            ('string_required', parquet_mod._T_BYTE_ARRAY,
+             parquet_mod._CT_UTF8, parquet_mod._REP_REQUIRED,
+             None, None, None),
+            ('string_optional', parquet_mod._T_BYTE_ARRAY,
+             parquet_mod._CT_UTF8, parquet_mod._REP_OPTIONAL,
+             None, None, None),
+            ('date_required', parquet_mod._T_INT32,
+             parquet_mod._CT_DATE, parquet_mod._REP_REQUIRED,
+             None, None, None),
+            ('date_optional', parquet_mod._T_INT32,
+             parquet_mod._CT_DATE, parquet_mod._REP_OPTIONAL,
+             None, None, None),
+            ('datetime_required', parquet_mod._T_INT64,
+             parquet_mod._CT_TIMESTAMP_MICROS, parquet_mod._REP_REQUIRED,
+             None, None, None),
+            ('datetime_optional', parquet_mod._T_INT64,
+             parquet_mod._CT_TIMESTAMP_MICROS, parquet_mod._REP_OPTIONAL,
+             None, None, None),
+            ('decimal_required', parquet_mod._T_FIXED_LEN_BYTE_ARRAY,
+             parquet_mod._CT_DECIMAL, parquet_mod._REP_REQUIRED,
+             16, 2, 4),
+            ('decimal_optional', parquet_mod._T_FIXED_LEN_BYTE_ARRAY,
+             parquet_mod._CT_DECIMAL, parquet_mod._REP_OPTIONAL,
+             16, 2, 3),
+        ]
+
+        assert metadata['version'] == 2
+        assert metadata['num_rows'] == 2
+        assert len(metadata['row_groups']) == 1
+        root, *leaves = metadata['schema']
+        assert root['name'] == 'schema'
+        assert root['repetition_type'] == parquet_mod._REP_REQUIRED
+        assert root['num_children'] == len(expected)
+
+        chunks = metadata['row_groups'][0]['columns']
+        assert len(chunks) == len(expected)
+        for leaf, chunk, expected_column in zip(
+                leaves, chunks, expected, strict=True):
+            name, phys, conv, rep, type_length, scale, precision = (
+                expected_column)
+            assert (
+                leaf['name'],
+                leaf['type'],
+                leaf['converted_type'],
+                leaf['repetition_type'],
+                leaf['type_length'],
+                leaf['scale'],
+                leaf['precision'],
+            ) == expected_column
+
+            column_metadata = chunk['meta_data']
+            assert column_metadata['path_in_schema'] == [name]
+            assert column_metadata['type'] == phys
+            assert column_metadata['num_values'] == 2
+            assert column_metadata['codec'] == parquet_mod._CODEC_UNCOMPRESSED
+            expected_encodings = [parquet_mod._ENC_PLAIN]
+            if rep == parquet_mod._REP_OPTIONAL:
+                expected_encodings.append(parquet_mod._ENC_RLE)
+            assert column_metadata['encodings'] == expected_encodings
+
+    def test_nullable_definition_level_bytes(self, tmp_path):
+        values = [1, None, 3, None, 5, 6, None, 8, 9, None]
+        path = tmp_path / 'definition-levels.parquet'
+        Table({'x': values}).to_parquet(str(path))
+
+        data, metadata = writer_metadata(path)
+        column_metadata = (
+            metadata['row_groups'][0]['columns'][0]['meta_data'])
+        page, body_start = parquet_mod._parse_page_header(
+            data, column_metadata['data_page_offset'])
+
+        assert page['type'] == parquet_mod._PAGE_DATA
+        assert page['data_page_header'] == {
+            'num_values': len(values),
+            'encoding': parquet_mod._ENC_PLAIN,
+            'definition_level_encoding': parquet_mod._ENC_RLE,
+            'repetition_level_encoding': parquet_mod._ENC_RLE,
+        }
+        assert bytes(data[body_start:body_start + 7]) == (
+            b'\x03\x00\x00\x00\x05\xb5\x01')
+
+    def test_writer_dispatches_canonical_storage_without_materializing(
+            self, tmp_path, monkeypatch):
+        decimal_values = [
+            Decimal('1.25'),
+            None,
+            Decimal('-2.50'),
+        ]
+        decimal_storage = DecimalStorage.from_iterable(
+            decimal_values, scale=2, precision=3, nullable=True)
+        table = Table({
+            'i': [1, None, -3],
+            'f': [1.5, None, -2.25],
+            's': ['café', None, '日本語'],
+            'b': [True, None, False],
+            'amount': Vector._from_storage(
+                decimal_storage, Schema(Decimal, True)),
+        })
+        path = tmp_path / 'storage-dispatch.parquet'
+
+        def fail(*args, **kwargs):
+            raise AssertionError('writer used an object-backed encoder')
+
+        with monkeypatch.context() as patcher:
+            for storage_type in (
+                    ArrayStorage, StringStorage, BoolStorage, DecimalStorage):
+                _forbid_storage_materialization(patcher, storage_type)
+            patcher.setattr(parquet_mod, '_encode_plain', fail)
+            patcher.setattr(
+                parquet_mod, '_encode_object_storage_plain', fail)
+            table.to_parquet(str(path))
+
+        result = Table.from_parquet(str(path))
+        result.cols()
+        assert col(result, 'i') == [1, None, -3]
+        assert col(result, 'f') == [1.5, None, -2.25]
+        assert col(result, 's') == ['café', None, '日本語']
+        assert col(result, 'b') == [True, None, False]
+        assert col(result, 'amount') == decimal_values
+
+    def test_writer_streams_intentional_object_backed_storage(
+            self, tmp_path, monkeypatch):
+        expected = {
+            'd': [date(1969, 12, 31), None, date(2024, 6, 15)],
+            'ts': [
+                datetime(1969, 12, 31, 23, 59, 59, 999999),
+                None,
+                datetime(2200, 6, 15, 12, 34, 56, 123457),
+            ],
+            'amount': [Decimal('1.25'), None, Decimal('-2.50')],
+        }
+        table = Table(expected)
+        assert all(
+            type(table[name]._storage) is TupleStorage
+            for name in expected
+        )
+        path = tmp_path / 'object-backed.parquet'
+        calls = []
+        original = parquet_mod._encode_object_storage_plain
+
+        def fail_to_tuple(*args, **kwargs):
+            raise AssertionError('writer called TupleStorage.to_tuple()')
+
+        def recording_encoder(storage, kind, col_name, decimal_scale=None):
+            calls.append((type(storage), kind, col_name, decimal_scale))
+            return original(storage, kind, col_name, decimal_scale)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(TupleStorage, 'to_tuple', fail_to_tuple)
+            patcher.setattr(parquet_mod, '_encode_plain', fail_to_tuple)
+            patcher.setattr(
+                parquet_mod,
+                '_encode_object_storage_plain',
+                recording_encoder,
+            )
+            table.to_parquet(str(path))
+
+        assert [(kind, name) for _, kind, name, _ in calls] == [
+            (date, 'd'),
+            (datetime, 'ts'),
+            (Decimal, 'amount'),
+        ]
+        result = Table.from_parquet(str(path))
+        result.cols()
+        for name, values in expected.items():
+            assert col(result, name) == values
+
+    def test_writer_writes_magic_then_individual_pages_and_footer(
+            self, tmp_path, monkeypatch):
+        expected = {
+            'i': [1, None, -3],
+            's': ['café', None, '日本語'],
+            'b': [True, None, False],
+        }
+        table = Table(expected)
+        path = tmp_path / 'streamed.parquet'
+        writes = []
+        real_open = open
+
+        class RecordingWriter:
+            def __init__(self, file, mode):
+                self._handle = real_open(file, mode)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return self._handle.__exit__(exc_type, exc, traceback)
+
+            def write(self, data):
+                writes.append(len(data))
+                return self._handle.write(data)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(
+                parquet_mod, 'open', RecordingWriter, raising=False)
+            table.to_parquet(str(path))
+
+        assert writes[0] == len(parquet_mod._MAGIC)
+        assert len(writes) == len(expected) + 4
+        assert writes[-2:] == [4, len(parquet_mod._MAGIC)]
+
+        result = Table.from_parquet(str(path))
+        result.cols()
+        for name, values in expected.items():
+            assert col(result, name) == values
+
+    def test_all_column_types_validate_before_decimal_value_encoding(
+            self, tmp_path):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+        table = Table({
+            'too_wide': [Decimal('1e100')],
+            'unsupported': [1 + 2j],
+        })
+
+        with pytest.raises(
+                SerifTypeError, match="unsupported type 'complex'"):
+            table.to_parquet(str(path))
+
+        assert path.read_bytes() == original
+
+    def test_empty_table_roundtrips(self):
+        result = roundtrip(Table())
+        assert result.shape == (0, 0)
+        assert result.column_names() == []
+
+    @pytest.mark.parametrize(
+        'kind',
+        [bool, int, float, str, date, datetime, Decimal],
+        ids=['bool', 'int', 'float', 'str', 'date', 'datetime', 'decimal'],
+    )
+    @pytest.mark.parametrize(
+        'nullable',
+        [False, True],
+        ids=['required', 'optional'],
+    )
+    def test_empty_typed_column_roundtrips(self, kind, nullable):
+        table = Table({'empty': empty_vector(kind, nullable)})
+
+        result = roundtrip(table)
+
+        assert result.column_names() == ['empty']
+        assert list(result['empty']) == []
+        assert result['empty'].schema() == Schema(kind, nullable)
+
+    @pytest.mark.parametrize(
+        'values,nullable',
+        [
+            (
+                [Decimal('123.45'), Decimal('-0.01')],
+                False,
+            ),
+            (
+                [Decimal('1.50'), None, Decimal('-2.25')],
+                True,
+            ),
+        ],
+        ids=['required', 'optional'],
+    )
+    def test_decimal_storage_roundtrips(self, values, nullable):
+        storage = DecimalStorage.from_iterable(
+            values, scale=2, precision=5, nullable=nullable)
+        vector = Vector._from_storage(
+            storage, Schema(Decimal, nullable), name='amount')
+
+        result = roundtrip(Table([vector]))
+
+        assert list(result['amount']) == values
+        assert result['amount'].schema() == Schema(Decimal, nullable)
+        assert type(result['amount']._storage) is DecimalStorage
+        assert result['amount']._storage._scale == 2
+        assert result['amount']._storage._precision == 5
+
+    @pytest.mark.parametrize(
+        'table_factory,error_type,message',
+        [
+            pytest.param(
+                lambda: Table({'empty': []}),
+                SerifTypeError,
+                'cannot write untyped',
+                id='untyped-empty-column',
+            ),
+            pytest.param(
+                lambda: Table({
+                    'empty': Vector([], dtype=Decimal),
+                }),
+                SerifTypeError,
+                'empty Decimal column',
+                id='decimal-empty-without-scale',
+            ),
+            pytest.param(
+                lambda: Table({'too_wide': [2 ** 63]}),
+                SerifTypeError,
+                'must be backed by',
+                id='oversized-int',
+            ),
+            pytest.param(
+                lambda: Table({'unsupported': [1 + 2j]}),
+                SerifTypeError,
+                "unsupported type 'complex'",
+                id='complex',
+            ),
+            pytest.param(
+                lambda: Table({'unsupported': [b'bytes']}),
+                SerifTypeError,
+                "unsupported type 'bytes'",
+                id='bytes',
+            ),
+            pytest.param(
+                lambda: Table({
+                    'valid_first': [1],
+                    'too_wide': [Decimal('1e100')],
+                }),
+                OverflowError,
+                'too big',
+                id='oversized-decimal-after-valid-column',
+            ),
+        ],
+    )
+    def test_value_failure_preserves_existing_destination(
+            self, tmp_path, table_factory, error_type, message):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+
+        with pytest.raises(error_type, match=message):
+            table_factory().to_parquet(str(path))
+
+        assert path.read_bytes() == original
+
+    def test_open_failure_preserves_existing_destination(
+            self, tmp_path, monkeypatch):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+
+        def failing_open(file, mode):
+            assert os.fspath(file) == str(path)
+            assert mode == 'wb'
+            raise OSError('simulated open failure')
+
+        monkeypatch.setattr(
+            parquet_mod, 'open', failing_open, raising=False)
+
+        with pytest.raises(OSError, match='simulated open failure'):
+            Table({'x': [1]}).to_parquet(str(path))
+
+        assert path.read_bytes() == original
+
+    def test_write_failure_after_open_does_not_preserve_destination(
+            self, tmp_path, monkeypatch):
+        path = tmp_path / 'existing.parquet'
+        path.write_bytes(b'existing destination contents')
+        real_open = open
+
+        class FailingWriter:
+            def __init__(self, file, mode):
+                self._handle = real_open(file, mode)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                self._handle.close()
+
+            def write(self, data):
+                self._handle.write(data[:4])
+                self._handle.flush()
+                raise OSError('simulated write failure')
+
+        monkeypatch.setattr(
+            parquet_mod, 'open', FailingWriter, raising=False)
+
+        with pytest.raises(OSError, match='simulated write failure'):
+            Table({'x': [1]}).to_parquet(str(path))
+
+        assert path.read_bytes() == parquet_mod._MAGIC
 
 
 # ---------------------------------------------------------------------------
