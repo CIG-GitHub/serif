@@ -16,23 +16,53 @@ class _String(Vector):
         """
         if not args and not kwargs:
             return super().count()
-        return Vector(tuple((s.count(*args, **kwargs) if s is not None else None) for s in self._storage))
+        return Vector._from_iterable_known_kind(
+            (
+                s.count(*args, **kwargs) if s is not None else None
+                for s in self._storage
+            ),
+            int,
+        )
 
     def before(self, sep):
         """Return the part of each string before the first occurrence of sep."""
-        return Vector(tuple((s.partition(sep)[0] if s is not None else None) for s in self._storage))
+        return Vector._from_iterable_known_kind(
+            (
+                s.partition(sep)[0] if s is not None else None
+                for s in self._storage
+            ),
+            str,
+        )
 
     def after(self, sep):
         """Return the part of each string after the first occurrence of sep."""
-        return Vector(tuple((s.partition(sep)[2] if s is not None else None) for s in self._storage))
+        return Vector._from_iterable_known_kind(
+            (
+                s.partition(sep)[2] if s is not None else None
+                for s in self._storage
+            ),
+            str,
+        )
 
     def before_last(self, sep):
         """Return the part of each string before the last occurrence of sep."""
-        return Vector(tuple((s.rpartition(sep)[0] if s is not None else None) for s in self._storage))
+        return Vector._from_iterable_known_kind(
+            (
+                s.rpartition(sep)[0] if s is not None else None
+                for s in self._storage
+            ),
+            str,
+        )
 
     def after_last(self, sep):
         """Return the part of each string after the last occurrence of sep."""
-        return Vector(tuple((s.rpartition(sep)[2] if s is not None else None) for s in self._storage))
+        return Vector._from_iterable_known_kind(
+            (
+                s.rpartition(sep)[2] if s is not None else None
+                for s in self._storage
+            ),
+            str,
+        )
 
     def categorize(self, categories=None):
         """
@@ -97,6 +127,54 @@ _STR_PROXY_METHODS = (
     'upper', 'zfill',
 )
 
+_STR_PROXY_KINDS = {
+    'capitalize': str,
+    'casefold': str,
+    'center': str,
+    'encode': bytes,
+    'endswith': bool,
+    'expandtabs': str,
+    'find': int,
+    'format': str,
+    'format_map': str,
+    'index': int,
+    'isalnum': bool,
+    'isalpha': bool,
+    'isascii': bool,
+    'isdecimal': bool,
+    'isdigit': bool,
+    'isidentifier': bool,
+    'islower': bool,
+    'isnumeric': bool,
+    'isprintable': bool,
+    'isspace': bool,
+    'istitle': bool,
+    'isupper': bool,
+    'join': str,
+    'ljust': str,
+    'lower': str,
+    'lstrip': str,
+    'partition': tuple,
+    'removeprefix': str,
+    'removesuffix': str,
+    'replace': str,
+    'rfind': int,
+    'rindex': int,
+    'rjust': str,
+    'rpartition': tuple,
+    'rsplit': list,
+    'rstrip': str,
+    'split': list,
+    'splitlines': list,
+    'startswith': bool,
+    'strip': str,
+    'swapcase': str,
+    'title': str,
+    'translate': str,
+    'upper': str,
+    'zfill': str,
+}
+
 for _m in _STR_PROXY_METHODS:
-    setattr(_String, _m, _elementwise_proxy(_m))
+    setattr(_String, _m, _elementwise_proxy(_m, _STR_PROXY_KINDS.get(_m)))
 del _m

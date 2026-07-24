@@ -44,36 +44,42 @@ def cast(vector, target_type):
     else:
         caster = target_type
 
-    output = []
-    has_none = False
-    for index, element in enumerate(vector._storage):
-        if element is None:
-            output.append(None)
-            has_none = True
-            continue
+    def converted_values():
+        for index, element in enumerate(vector._storage):
+            if element is None:
+                yield None
+                continue
 
-        try:
-            if isinstance(element, Vector):
-                output.append(element.cast(target_type))
-            else:
-                output.append(caster(element))
-        except Exception as exc:
-            type_name = getattr(
-                py_target_type,
-                "__name__",
-                repr(py_target_type),
-            )
-            raise SerifValueError(
-                f"Cast failed at index {index}: {element!r} cannot be "
-                f"converted to {type_name}"
-            ) from exc
+            try:
+                if isinstance(element, Vector):
+                    converted = element.cast(target_type)
+                else:
+                    converted = caster(element)
+            except Exception as exc:
+                type_name = getattr(
+                    py_target_type,
+                    "__name__",
+                    repr(py_target_type),
+                )
+                raise SerifValueError(
+                    f"Cast failed at index {index}: {element!r} cannot be "
+                    f"converted to {type_name}"
+                ) from exc
+            yield converted
 
     if isinstance(py_target_type, type):
-        new_dtype = Schema(py_target_type, has_none)
-    else:
-        new_dtype = infer_dtype(output)
+        return Vector._from_iterable_known_kind(
+            converted_values(),
+            py_target_type,
+            name=vector._name,
+        )
 
-    return Vector(output, dtype=new_dtype, name=vector._name)
+    output = list(converted_values())
+    return Vector(
+        output,
+        dtype=infer_dtype(output),
+        name=vector._name,
+    )
 
 
 def to_object(vector):
@@ -97,15 +103,30 @@ def fillna(vector, value):
         except TypeError:
             required_dtype = infer_dtype([value])
             try:
-                result = vector._clone(vector._storage)
-                result._promote(required_dtype.kind)
-                output = tuple(
-                    value if item is None else item
-                    for item in result._storage
-                )
-                return Vector(
-                    output,
-                    dtype=Schema(required_dtype.kind, False),
+                source_kind = dtype.kind
+                target_kind = required_dtype.kind
+                if target_kind is float and source_kind is int:
+                    promote = float
+                elif (
+                    target_kind is complex
+                    and source_kind in (int, float)
+                ):
+                    promote = complex
+                elif target_kind is datetime and source_kind is date:
+                    def promote(item):
+                        return datetime.combine(item, datetime.min.time())
+                else:
+                    raise SerifTypeError(
+                        f'Cannot convert Vector from '
+                        f'{source_kind.__name__} to '
+                        f'{target_kind.__name__}.'
+                    )
+                return Vector._from_iterable_known_dtype(
+                    (
+                        value if item is None else promote(item)
+                        for item in vector._storage
+                    ),
+                    Schema(target_kind, False),
                     name=vector._name,
                 )
             except SerifTypeError:
@@ -115,15 +136,21 @@ def fillna(vector, value):
                     f"{dtype.kind.__name__} vector. Promotion not supported."
                 )
 
-    output = tuple(
-        value if item is None else item
-        for item in vector._storage
-    )
     new_nullable = value is None and (
         vector._dtype.nullable if vector._dtype is not None else True
     )
     new_dtype = None if dtype is None else Schema(dtype.kind, new_nullable)
-    return Vector(output, dtype=new_dtype, name=vector._name)
+    values = (
+        value if item is None else item
+        for item in vector._storage
+    )
+    if new_dtype is not None:
+        return Vector._from_iterable_known_dtype(
+            values,
+            new_dtype,
+            name=vector._name,
+        )
+    return Vector(tuple(values), dtype=None, name=vector._name)
 
 
 def dropna(vector):

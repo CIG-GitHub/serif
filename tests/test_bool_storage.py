@@ -11,7 +11,14 @@ file pins what's specific to bools: which operations EMIT the backend,
 the python-out boundary, and the Parquet fast paths on both readers.
 """
 
+import operator
+
+import pytest
+
 from serif import Table, Vector
+from serif import SerifValueError
+from serif._vector import operators as vector_ops
+from serif._vector._python import operators as python_ops
 from serif._vector.storage import BoolStorage
 
 
@@ -63,6 +70,38 @@ def test_comparisons_emit_bool_storage():
     assert isinstance((v == 2)._storage, BoolStorage)
 
 
+def test_pure_comparison_kernels_return_bool_storage_directly():
+    left = Vector([1, None, 3])._storage
+    right = Vector([1, 2, 4])._storage
+
+    vector_result = python_ops.compare_vector(left, right, operator.eq)
+    scalar_result = python_ops.compare_scalar(left, 2, operator.gt)
+
+    assert isinstance(vector_result, BoolStorage)
+    assert list(vector_result) == [True, None, False]
+    assert isinstance(scalar_result, BoolStorage)
+    assert list(scalar_result) == [False, None, True]
+
+
+def test_iterable_comparison_uses_storage_mask_for_nullable_schema():
+    result = Vector([1, 2, 3]) == [1, None, 4]
+    dense = Vector([1, 2, 3]) == [1, 0, 3]
+
+    assert isinstance(result._storage, BoolStorage)
+    assert result.schema().kind is bool
+    assert result.schema().nullable is True
+    assert list(result) == [True, None, False]
+    assert dense.schema().nullable is False
+    assert list(dense) == [True, False, True]
+
+
+def test_comparison_length_errors_precede_storage_construction():
+    with pytest.raises(SerifValueError, match="Length mismatch: 2 != 1"):
+        Vector([1, 2]) == Vector([1])
+    with pytest.raises(SerifValueError, match="Length mismatch: 2 != 1"):
+        Vector([1, 2]) == [1]
+
+
 def test_is_na_emits_bool_storage():
     assert isinstance(Vector([1, None, 3]).is_na()._storage, BoolStorage)
     assert isinstance(Vector(['a', 'b']).is_na()._storage, BoolStorage)
@@ -75,6 +114,30 @@ def test_kleene_logic_emits_bool_storage():
     both = a & b
     assert isinstance(both._storage, BoolStorage)
     assert list(both) == [True, None, False]  # False & None = False (Kleene)
+
+
+def test_pure_kleene_kernels_return_bool_storage_directly():
+    left = Vector([True, None, False])._storage
+    right = Vector([None, True, None])._storage
+
+    vector_result = python_ops.logical_vector(
+        left,
+        right,
+        vector_ops._kleene_and,
+    )
+    scalar_result = python_ops.logical_scalar(
+        left,
+        True,
+        vector_ops._kleene_or,
+    )
+    inverted = python_ops.invert_bool(left)
+
+    assert isinstance(vector_result, BoolStorage)
+    assert list(vector_result) == [None, None, False]
+    assert isinstance(scalar_result, BoolStorage)
+    assert list(scalar_result) == [True, True, True]
+    assert isinstance(inverted, BoolStorage)
+    assert list(inverted) == [False, None, True]
 
 
 def test_mask_filter_roundtrip():

@@ -117,6 +117,17 @@ class Vector():
         )
 
 
+    @classmethod
+    def _from_iterable_known_kind(cls, iterable, kind, *, name=None):
+        """Build final storage for a known kind and derive its nullability."""
+        return _construction.from_iterable_known_kind(
+            cls,
+            iterable,
+            kind,
+            name=name,
+        )
+
+
 
     @property
     def shape(self):

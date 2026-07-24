@@ -27,6 +27,7 @@ from serif._vector._numpy import reductions as numpy_reductions
 from serif._vector._numpy import selection as numpy_selection
 from serif._vector._python import reductions as python_reductions
 from serif._vector._python import selection as python_selection
+from serif._vector.storage import ArrayStorage
 
 
 def test_declined_has_one_identity_and_is_not_none():
@@ -205,9 +206,14 @@ def test_declined_backends_reach_mandatory_python_path(monkeypatch):
         lambda *args: execution.DECLINED,
     )
 
-    def python_scalar(storage, other, op_func):
+    def python_scalar(storage, other, op_func, result_kind):
         calls.append('python')
-        return (4, 5)
+        assert result_kind is int
+        return ArrayStorage.from_iterable(
+            [4, 5],
+            typecode='q',
+            nullable=False,
+        )
 
     monkeypatch.setattr(
         vector_ops._python_ops,

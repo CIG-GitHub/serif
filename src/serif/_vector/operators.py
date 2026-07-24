@@ -11,6 +11,7 @@ from ._python import operators as _python_ops
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import promote_kinds
+from .storage import BoolStorage
 
 
 def _vector_class():
@@ -227,7 +228,7 @@ def elementwise_compare(vector, other, op):
         fast = _dispatch_compare(vector._storage, other._storage, op)
         if fast is not DECLINED:
             return _wrap_storage(fast, Schema(bool, nullable))
-        return Vector._from_iterable_known_dtype(
+        return _wrap_storage(
             _python_ops.compare_vector(vector, other, op),
             Schema(bool, nullable),
         )
@@ -240,10 +241,11 @@ def elementwise_compare(vector, other, op):
             raise SerifValueError(
                 f"Length mismatch: {len(vector)} != {len(other)}"
             )
-        values = _python_ops.compare_vector(vector, other, op)
-        return Vector._from_iterable_known_dtype(
-            values,
-            Schema(bool, any(value is None for value in values)),
+        storage = _python_ops.compare_vector(vector, other, op)
+        assert isinstance(storage, BoolStorage)
+        return _wrap_storage(
+            storage,
+            Schema(bool, storage._mask is not None),
         )
 
     if other is None and op in (operator.eq, operator.ne):
@@ -259,7 +261,7 @@ def elementwise_compare(vector, other, op):
     fast = _dispatch_compare(vector._storage, other, op)
     if fast is not DECLINED:
         return _wrap_storage(fast, Schema(bool, nullable))
-    return Vector._from_iterable_known_dtype(
+    return _wrap_storage(
         _python_ops.compare_scalar(vector._storage, other, op),
         Schema(bool, nullable),
     )
@@ -317,7 +319,7 @@ def logical_elementwise(vector, other, kleene_func):
                     fast,
                     Schema(bool, fast._mask is not None),
                 )
-        values = _python_ops.logical_vector(vector, other, kleene_func)
+        storage = _python_ops.logical_vector(vector, other, kleene_func)
     else:
         if op_name is not None and (other is None or type(other) is bool):
             fast = _dispatch_logical(vector._storage, other, op_name)
@@ -326,14 +328,15 @@ def logical_elementwise(vector, other, kleene_func):
                     fast,
                     Schema(bool, fast._mask is not None),
                 )
-        values = _python_ops.logical_scalar(
+        storage = _python_ops.logical_scalar(
             vector._storage,
             other,
             kleene_func,
         )
-    return Vector._from_iterable_known_dtype(
-        values,
-        Schema(bool, any(value is None for value in values)),
+    assert isinstance(storage, BoolStorage)
+    return _wrap_storage(
+        storage,
+        Schema(bool, storage._mask is not None),
     )
 
 
@@ -420,12 +423,18 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
             if fast is not DECLINED:
                 return _wrap_storage(fast, result_dtype)
         try:
-            result_values = _python_ops.binary_vector(
+            result = _python_ops.binary_vector(
                 vector,
                 other,
                 op_func,
+                result_dtype.kind if result_dtype is not None else None,
             )
-        except TypeError:
+        except TypeError as error:
+            if (
+                result_dtype is not None
+                and not isinstance(error, _python_ops._BinaryOperationTypeError)
+            ):
+                raise
             lhs = (
                 vector._dtype.kind.__name__
                 if vector._dtype is not None
@@ -442,8 +451,9 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
                 f"Vector<{lhs}> and Vector<{rhs}>."
             )
         if result_dtype is None:
-            result_dtype = infer_dtype(result_values)
-        return Vector(result_values, dtype=result_dtype, name=None)
+            result_dtype = infer_dtype(result)
+            return Vector(result, dtype=result_dtype, name=None)
+        return _wrap_storage(result, result_dtype)
 
     if isinstance(other, Iterable) and not isinstance(
         other,
@@ -484,14 +494,16 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
         if fast is not DECLINED:
             return _wrap_storage(fast, result_dtype)
     try:
-        result_values = _python_ops.binary_scalar(
+        result = _python_ops.binary_scalar(
             vector._storage,
             other,
             op_func,
+            result_dtype.kind if result_dtype is not None else None,
         )
         if result_dtype is None:
-            result_dtype = infer_dtype(result_values)
-        return Vector(result_values, dtype=result_dtype, name=None)
+            result_dtype = infer_dtype(result)
+            return Vector(result, dtype=result_dtype, name=None)
+        return _wrap_storage(result, result_dtype)
     except TypeError:
         lhs = (
             vector._dtype.kind.__name__
@@ -544,8 +556,7 @@ def invert(vector):
                 fast,
                 Schema(bool, vector._dtype.nullable),
             )
-        Vector = _vector_class()
-        return Vector._from_iterable_known_dtype(
+        return _wrap_storage(
             _python_ops.invert_bool(vector),
             Schema(bool, vector._dtype.nullable),
         )
