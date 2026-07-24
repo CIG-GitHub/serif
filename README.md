@@ -40,7 +40,15 @@ t
 pip install serif
 ```
 
-Zero dependencies — `pip freeze` in a fresh environment shows exactly one line.
+Serif has no required runtime dependencies. Its pure-Python implementation defines the result.
+
+NumPy and PyArrow are used when available, but only when they preserve the same Python values and behavior. Otherwise, Serif falls back to pure Python.
+
+```bash
+pip install "serif[numpy]"
+pip install "serif[pyarrow]"
+pip install "serif[numpy,pyarrow]"
+```
 
 ## Quickstart
 

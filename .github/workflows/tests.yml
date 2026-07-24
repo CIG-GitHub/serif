@@ -21,27 +21,27 @@ jobs:
             pins: numpy==1.24.0
           - python-version: "3.10"
             accelerators: Arrow only
-            extras: dev,arrow
+            extras: dev,pyarrow
             pins: pyarrow==25.0.0
           - python-version: "3.10"
             accelerators: NumPy + Arrow
-            extras: dev,numpy,arrow
+            extras: dev,numpy,pyarrow
             pins: numpy==1.24.0 pyarrow==25.0.0
           - python-version: "3.11"
             accelerators: NumPy + Arrow
-            extras: dev,numpy,arrow
+            extras: dev,numpy,pyarrow
             pins: ""
           - python-version: "3.12"
             accelerators: NumPy + Arrow
-            extras: dev,numpy,arrow
+            extras: dev,numpy,pyarrow
             pins: ""
           - python-version: "3.13"
             accelerators: NumPy + Arrow
-            extras: dev,numpy,arrow
+            extras: dev,numpy,pyarrow
             pins: ""
           - python-version: "3.14"
             accelerators: NumPy + Arrow
-            extras: dev,numpy,arrow
+            extras: dev,numpy,pyarrow
             pins: ""
 
     steps:
