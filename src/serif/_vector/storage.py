@@ -608,6 +608,21 @@ def _int_storage_from_known_iterable(values):
     return ArrayStorage(data, validity.finish())
 
 
+def storage_from_dense_materialized(values, kind):
+    """Bulk-build inferred, non-null numeric storage in compiled code."""
+    if kind is bool:
+        return BoolStorage(bytearray(values))
+    if kind is int:
+        try:
+            return ArrayStorage(array('q', values))
+        except OverflowError:
+            # Python integers remain exact when they do not fit int64.
+            return TupleStorage.from_iterable(values)
+    if kind is float:
+        return ArrayStorage(array('d', values))
+    raise TypeError(f"unsupported dense storage kind: {kind!r}")
+
+
 def storage_from_known_iterable(values, kind):
     """Build canonical storage in one pass when the result kind is known."""
     if kind is bool:

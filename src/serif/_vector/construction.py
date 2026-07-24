@@ -11,6 +11,7 @@ from .storage import ArrayStorage
 from .storage import BoolStorage
 from .storage import StringStorage
 from .storage import TupleStorage
+from .storage import storage_from_dense_materialized
 from .storage import storage_from_known_iterable
 
 
@@ -21,16 +22,18 @@ def _vector_class():
 
 
 def _collect_and_infer(iterable, dtype_hint):
-    """Collect once while detecting Table candidates and inferring dtype."""
+    """Infer dtype, collecting only inputs that cannot be replayed safely."""
     Vector = _vector_class()
-    data = []
+    materialized = type(iterable) in (list, tuple)
+    data = iterable if materialized else []
     all_vectors = True
     dtype = dtype_hint
     saw_none = False
     saw_vector = False
 
     for value in iterable:
-        data.append(value)
+        if not materialized:
+            data.append(value)
         if isinstance(value, Vector):
             # Columns do not inform a scalar dtype. If the collection later
             # proves mixed, inference is repeated over the collected values.
@@ -147,7 +150,18 @@ def new(cls, initial=(), dtype=None, name=None, **kwargs):
     instance._name = name
     instance._wild = True
     nullable = dtype.nullable if dtype is not None else True
-    instance._storage = instance._build_storage(data, nullable)
+    if (
+        dtype_hint is None
+        and dtype is not None
+        and not dtype.nullable
+        and dtype.kind in (bool, int, float)
+    ):
+        instance._storage = storage_from_dense_materialized(
+            data,
+            dtype.kind,
+        )
+    else:
+        instance._storage = instance._build_storage(data, nullable)
     return instance
 
 

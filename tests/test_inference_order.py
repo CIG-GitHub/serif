@@ -17,8 +17,9 @@ from datetime import date
 import pytest
 
 from serif import Table, Vector, read_csv
+from serif._vector import construction
 from serif._vector.dtype import infer_dtype
-from serif._vector.storage import ArrayStorage, StringStorage
+from serif._vector.storage import ArrayStorage, BoolStorage, StringStorage
 
 
 def test_null_first_and_null_last_infer_identically():
@@ -76,6 +77,102 @@ def test_null_first_string_gets_string_backend():
     v = Vector([None, 'a', 'b'])
     assert isinstance(v._storage, StringStorage)
     assert list(v) == [None, 'a', 'b']
+
+
+@pytest.mark.parametrize('values', [
+    [None, 1, 2.5],
+    (None, 1, 2.5),
+])
+def test_materialized_inference_reuses_plain_sequence(values):
+    data, is_table, dtype = construction._collect_and_infer(values, None)
+
+    assert data is values
+    assert is_table is False
+    assert dtype.kind is float
+    assert dtype.nullable is True
+
+
+def test_one_shot_inference_still_collects_once():
+    visited = []
+
+    def values():
+        for value in (None, 1, 2):
+            visited.append(value)
+            yield value
+
+    data, is_table, dtype = construction._collect_and_infer(values(), None)
+
+    assert data == [None, 1, 2]
+    assert visited == [None, 1, 2]
+    assert is_table is False
+    assert dtype.kind is int
+    assert dtype.nullable is True
+
+
+def test_iterable_subclasses_keep_snapshot_semantics():
+    class CustomList(list):
+        pass
+
+    values = CustomList([1, 2, 3])
+    data, is_table, dtype = construction._collect_and_infer(values, None)
+
+    assert data == values
+    assert data is not values
+    assert type(data) is list
+    assert is_table is False
+    assert dtype.kind is int
+
+
+@pytest.mark.parametrize(
+    'values,kind,storage_type',
+    [
+        ([True, False, True], bool, BoolStorage),
+        ([1, 2, 3], int, ArrayStorage),
+        ([1, 2.5, 3], float, ArrayStorage),
+    ],
+)
+def test_dense_inferred_numeric_uses_bulk_storage(
+    monkeypatch,
+    values,
+    kind,
+    storage_type,
+):
+    calls = []
+    original = construction.storage_from_dense_materialized
+
+    def tracked(data, result_kind):
+        calls.append((data, result_kind))
+        return original(data, result_kind)
+
+    monkeypatch.setattr(
+        construction,
+        'storage_from_dense_materialized',
+        tracked,
+    )
+
+    result = Vector(values)
+
+    assert calls == [(values, kind)]
+    assert isinstance(result._storage, storage_type)
+    assert result._storage._mask is None
+    assert list(result) == values
+
+
+def test_nullable_inference_keeps_mask_building_path(monkeypatch):
+    def fail_if_called(data, kind):
+        raise AssertionError("nullable input used dense construction")
+
+    monkeypatch.setattr(
+        construction,
+        'storage_from_dense_materialized',
+        fail_if_called,
+    )
+
+    result = Vector([1, None, 3])
+
+    assert isinstance(result._storage, ArrayStorage)
+    assert result._storage._mask is not None
+    assert list(result) == [1, None, 3]
 
 
 def test_table_column_null_first():
