@@ -57,45 +57,45 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
 
     reader = csv.reader(file_obj, delimiter=delimiter)
 
-    # Read all rows first
-    all_rows = list(reader)
-
-    if not all_rows:
+    first_row = next(reader, None)
+    if first_row is None:
         return Table()
 
-    # Determine header and data rows
+    # Determine the header from the first record, then accumulate every data
+    # cell directly into its column's raw builder.
     if has_header:
-        header = all_rows[0]
-        rows = all_rows[1:]
-        first_data_row = 2  # 1-based physical line of the first data row
+        header = first_row
+        raw_columns = [[] for _ in header]
+        has_data = False
     else:
         # Generate default column names: col_0, col_1, etc.
-        header = [f"col_{i}" for i in range(len(all_rows[0]))]
-        rows = all_rows
-        first_data_row = 1
+        header = [f"col_{i}" for i in range(len(first_row))]
+        raw_columns = [[cell] for cell in first_row]
+        has_data = True
 
     num_cols = len(header)
 
-    # Rows longer than the header would silently lose their extra fields in
-    # the transpose below — refuse loudly instead. (Shorter rows are padded
-    # with None: additive, not destructive.)
-    for row_num, row in enumerate(rows, start=first_data_row):
-        if len(row) > num_cols:
+    for row_num, row in enumerate(reader, start=2):
+        row_width = len(row)
+        if row_width > num_cols:
             raise SerifValueError(
-                f"Row {row_num} has {len(row)} fields, but the header has "
+                f"Row {row_num} has {row_width} fields, but the header has "
                 f"{num_cols} columns."
             )
 
-    if not rows:
+        for col_idx, cell in enumerate(row):
+            raw_columns[col_idx].append(cell)
+        for col_idx in range(row_width, num_cols):
+            raw_columns[col_idx].append(None)
+        has_data = True
+
+    if not has_data:
         # Header only, no data
         return Table({col: Vector() for col in header})
 
-    # Transpose rows into columns
     columns = []
 
-    for col_idx in range(num_cols):
-        # Handle jagged (short) rows: missing cells read as None
-        raw_cells = [(row[col_idx] if col_idx < len(row) else None) for row in rows]
+    for col_idx, raw_cells in enumerate(raw_columns):
         column_data = [None if v is None else _infer_type(v) for v in raw_cells]
 
         # Identifier-column rule: _infer_type keeps a numeric-LOOKING string
