@@ -14,6 +14,7 @@ from serif._table._arrow import aggregation as arrow_aggregation
 from serif._vector import Schema
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
 
 
 def _without_arrow(fn):
@@ -113,7 +114,10 @@ def test_physical_result_returns_string_key_storage():
     int_schema, int_values = columns[0]
     float_schema, float_values = columns[1]
     assert int_schema.kind is int
-    assert int_values == [4, 2]
+    assert isinstance(int_values, ArrayStorage)
+    assert int_values._data.typecode == 'q'
+    assert int_values._mask is None
+    assert list(int_values) == [4, 2]
     assert float_schema.kind is float
     assert isinstance(float_values, ArrayStorage)
     assert float_values._data.typecode == 'd'
@@ -175,6 +179,8 @@ def test_all_null_group_retains_sum_identity():
     actual = run()
     _assert_tables_identical(_without_arrow(run), actual)
     assert list(actual.total) == [0, 3]
+    assert isinstance(actual.total._storage, ArrayStorage)
+    assert actual.total._storage._data.typecode == 'q'
 
 
 def test_all_null_float_groups_return_float_storage():
@@ -205,20 +211,22 @@ def test_all_null_float_groups_return_float_storage():
 def test_narrow_spread_sum_reconstructs_bigint():
     def run():
         table = Table({
-            'group': [1, 1, 2],
-            'value': [2**62, 2**62, 7],
+            'group': [1, 2, 2],
+            'value': [7, 2**62, 2**62],
         })
         return table.aggregate('group', {'total': table.value.sum})
 
     actual = run()
     _assert_tables_identical(_without_arrow(run), actual)
-    assert actual.total[0] == 2**63
+    assert isinstance(actual.total._storage, TupleStorage)
+    assert list(actual.total) == [7, 2**63]
+    assert all(type(value) is int for value in actual.total)
 
 
 def test_ambiguous_int_group_declines():
     table = Table({
-        'group': [1, 1],
-        'value': [-2**63, 2**63 - 1],
+        'group': [0, 1, 1],
+        'value': [7, -2**63, 2**63 - 1],
     })
     assert arrow_aggregation.grouped_sums(
         _source(table.group),

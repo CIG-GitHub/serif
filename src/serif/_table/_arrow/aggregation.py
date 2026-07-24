@@ -4,12 +4,17 @@ from ..._execution import DECLINED
 from ..._vector._arrow import storage as _arrow_storage
 from ..._vector.storage import ArrayStorage
 from ..._vector.storage import StringStorage
+from ..._vector.storage import storage_from_known_iterable
 from . import _pa
 from . import _pc
 from . import _USE_ARROW
 
 
 _U64 = 2**64
+
+
+class _AmbiguousIntegerSum(Exception):
+    """Signal that Arrow's wrapped residue cannot identify an exact sum."""
 
 
 def _contiguous_array(chunked):
@@ -19,6 +24,27 @@ def _contiguous_array(chunked):
     if chunked.num_chunks == 1:
         return chunked.chunk(0)
     return _pa.concat_arrays(chunked.chunks)
+
+
+def _integer_sums(wrapped, counts, minimums, maximums):
+    """Yield exact Python sums, declining when the residue is ambiguous."""
+    for residue, count, minimum, maximum in zip(
+        wrapped,
+        counts,
+        minimums,
+        maximums,
+    ):
+        count = int(count)
+        if count == 0:
+            yield 0
+            continue
+        minimum = int(minimum)
+        maximum = int(maximum)
+        if count * (maximum - minimum) >= _U64:
+            raise _AmbiguousIntegerSum
+        residue = int(residue)
+        spread_sum = (residue - count * minimum) % _U64
+        yield count * minimum + spread_sum
 
 
 def grouped_sums(key_source, value_sources):
@@ -102,25 +128,14 @@ def grouped_sums(key_source, value_sources):
         minimums = grouped[f'{name}_min'].to_pylist()
         maximums = grouped[f'{name}_max'].to_pylist()
 
-        values = []
-        for residue, count, minimum, maximum in zip(
-            wrapped,
-            counts,
-            minimums,
-            maximums,
-        ):
-            count = int(count)
-            if count == 0:
-                values.append(0)
-                continue
-            minimum = int(minimum)
-            maximum = int(maximum)
-            if count * (maximum - minimum) >= _U64:
-                return DECLINED
-            residue = int(residue)
-            spread_sum = (residue - count * minimum) % _U64
-            values.append(count * minimum + spread_sum)
-        outputs.append((source_schema, values))
+        try:
+            result_storage = storage_from_known_iterable(
+                _integer_sums(wrapped, counts, minimums, maximums),
+                int,
+            )
+        except _AmbiguousIntegerSum:
+            return DECLINED
+        outputs.append((source_schema, result_storage))
 
     return (key_schema, key_result), outputs
 

@@ -89,12 +89,10 @@ def _wrap_group_key_storage(storage, schema, name):
     return result
 
 
-def _wrap_group_sum(values, source_schema, name):
-    """Wrap storage results directly; retain materialized integer inference."""
-    if isinstance(values, list):
-        return Vector(values, name=name)
+def _wrap_group_sum(storage, source_schema, name):
+    """Wrap grouped sum storage with its known non-null result schema."""
     result = Vector._from_storage(
-        values,
+        storage,
         Schema(source_schema.kind, False),
         name=name,
     )
@@ -127,10 +125,10 @@ def aggregate(table, groupby=None, aggregations=None):
                     uniquify(key_name),
                 )
             ]
-            for aggregation_name, (source_schema, values) in summed:
+            for aggregation_name, (source_schema, storage) in summed:
                 result_columns.append(
                     _wrap_group_sum(
-                        values,
+                        storage,
                         source_schema,
                         uniquify(aggregation_name),
                     )
