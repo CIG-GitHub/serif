@@ -82,6 +82,14 @@ def test_quoted_field_containing_delimiter():
     assert list(t.a) == ['x,y']
 
 
+def test_duplicate_headers_are_preserved_with_warning():
+    with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
+        t = _read("a,a\n1,2\n")
+    assert t.column_names() == ['a', 'a']
+    assert list(t.cols(0)) == [1]
+    assert list(t.cols(1)) == [2]
+
+
 # ---------------------------------------------------------------------------
 # Structure
 # ---------------------------------------------------------------------------

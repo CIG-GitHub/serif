@@ -97,7 +97,10 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
 
     if not has_data:
         # Header only, no data
-        return Table({col: Vector() for col in header})
+        # Preserve the existing dict-construction behavior for duplicate
+        # header names while avoiding the constructor's column-shell copies.
+        empty_columns = [Vector(name=col) for col in dict.fromkeys(header)]
+        return Table._from_columns_nocopy(empty_columns)
 
     columns = []
 
@@ -114,11 +117,15 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
         storage = _build_column_storage(raw_cells, dtype, identifier_mode)
         raw_columns[col_idx] = None
         del raw_cells
-        columns.append(
-            Vector._from_storage(storage, dtype, name=header[col_idx])
+        column = Vector._from_storage(
+            storage,
+            dtype,
+            name=header[col_idx],
         )
+        column.vector_name = header[col_idx]
+        columns.append(column)
 
-    return Table(columns)
+    return Table._from_columns_nocopy(columns)
 
 
 # A cell is numeric only if it LOOKS like a number: optional sign, ASCII
