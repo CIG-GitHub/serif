@@ -3,18 +3,19 @@
 from array import array as _array
 
 from ..storage import ArrayStorage
+from ..storage import BoolStorage
 from ..storage import TupleStorage
 
 
 def compare_vector(left, right, op):
-    return tuple(
+    return BoolStorage.from_iterable(
         None if (x is None or y is None) else bool(op(x, y))
         for x, y in zip(left, right, strict=True)
     )
 
 
 def compare_scalar(storage, other, op):
-    return tuple(
+    return BoolStorage.from_iterable(
         None if (x is None or other is None) else bool(op(x, other))
         for x in storage
     )
