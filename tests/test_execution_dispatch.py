@@ -1002,6 +1002,6 @@ def test_disabled_arrow_aggregation_declines(monkeypatch):
     monkeypatch.setattr(arrow_aggregation, '_USE_ARROW', False)
 
     assert arrow_aggregation.grouped_sums(
-        table.key._storage,
-        [table.value._storage],
+        (table.key.schema(), table.key._storage),
+        [(table.value.schema(), table.value._storage)],
     ) is execution.DECLINED

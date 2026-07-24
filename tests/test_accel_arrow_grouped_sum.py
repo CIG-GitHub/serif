@@ -8,8 +8,12 @@ import pytest
 pytest.importorskip("pyarrow")
 
 from serif import Table
+from serif import Vector
 from serif._execution import DECLINED
 from serif._table._arrow import aggregation as arrow_aggregation
+from serif._vector import Schema
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import StringStorage
 
 
 def _without_arrow(fn):
@@ -39,6 +43,10 @@ def _assert_tables_identical(expected, actual):
             else:
                 assert right == left
                 assert type(right) is type(left)
+
+
+def _source(vector):
+    return vector.schema(), vector._storage
 
 
 def test_nullable_int_sum_and_first_appearance_conform():
@@ -85,27 +93,70 @@ def test_multiple_bound_sums_share_one_grouping():
     _assert_tables_identical(_without_arrow(run), run())
 
 
-def test_physical_result_contains_only_python_values():
+def test_physical_result_returns_string_key_storage():
     table = Table({
         'group': ['b', 'a', 'b'],
         'x': [1, 2, 3],
         'y': [1.5, None, 2.5],
     })
     result = arrow_aggregation.grouped_sums(
-        table.group._storage,
-        [table.x._storage, table.y._storage],
+        _source(table.group),
+        [_source(table.x), _source(table.y)],
     )
 
     assert result is not DECLINED
-    keys, columns = result
-    assert keys == ['b', 'a']
-    assert columns == [[4, 2], [4.0, 0]]
+    (key_schema, keys), columns = result
+    assert key_schema.kind is str
+    assert key_schema.nullable is False
+    assert isinstance(keys, StringStorage)
+    assert list(keys) == ['b', 'a']
+    assert [values for _, values in columns] == [[4, 2], [4.0, 0]]
     assert all(type(key) is str for key in keys)
     assert all(
         type(value) in (int, float)
-        for column in columns
-        for value in column
+        for _, values in columns
+        for value in values
     )
+
+
+def test_physical_result_returns_int64_key_storage():
+    table = Table({
+        'group': [3, 1, 3, 2],
+        'value': [1, 2, 3, 4],
+    })
+    result = arrow_aggregation.grouped_sums(
+        _source(table.group),
+        [_source(table.value)],
+    )
+
+    assert result is not DECLINED
+    (key_schema, keys), _ = result
+    assert key_schema.kind is int
+    assert key_schema.nullable is False
+    assert isinstance(keys, ArrayStorage)
+    assert keys._data.typecode == 'q'
+    assert list(keys) == [3, 1, 2]
+    assert all(type(key) is int for key in keys)
+
+
+def test_key_schema_name_and_collision_survive_storage_return():
+    table = Table([
+        Vector(
+            [2, 1, 2],
+            dtype=Schema(int, True),
+            name='key',
+        ),
+        Vector([3, 4, 5], name='value'),
+    ])
+
+    result = table.aggregate('key', {'key': table.value.sum})
+
+    assert result.column_names() == ['key', 'key2']
+    assert isinstance(result.key._storage, ArrayStorage)
+    assert result.key.schema().kind is int
+    assert result.key.schema().nullable is True
+    assert list(result.key) == [2, 1]
+    assert all(type(key) is int for key in result.key)
 
 
 def test_all_null_group_retains_sum_identity():
@@ -140,8 +191,8 @@ def test_ambiguous_int_group_declines():
         'value': [-2**63, 2**63 - 1],
     })
     assert arrow_aggregation.grouped_sums(
-        table.group._storage,
-        [table.value._storage],
+        _source(table.group),
+        [_source(table.value)],
     ) is DECLINED
     _assert_tables_identical(
         _without_arrow(lambda: table.aggregate(
@@ -155,12 +206,12 @@ def test_unsupported_key_storages_decline():
     floating = Table({'group': [1.0, 2.0], 'value': [2, 3]})
 
     assert arrow_aggregation.grouped_sums(
-        nullable.group._storage,
-        [nullable.value._storage],
+        _source(nullable.group),
+        [_source(nullable.value)],
     ) is DECLINED
     assert arrow_aggregation.grouped_sums(
-        floating.group._storage,
-        [floating.value._storage],
+        _source(floating.group),
+        [_source(floating.value)],
     ) is DECLINED
 
 
