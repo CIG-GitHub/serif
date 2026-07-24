@@ -48,7 +48,7 @@ Repository = "https://github.com/CIG-GitHub/serif"
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 numpy = ["numpy>=1.24"]
-arrow = ["pyarrow>=25"]
+pyarrow = ["pyarrow>=25"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
