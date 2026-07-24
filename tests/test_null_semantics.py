@@ -217,6 +217,16 @@ def test_all_null_aggregate_identity_rule(agg, expected):
         assert result == expected
 
 
+def test_float_sum_identity_preserves_dtype():
+    empty = Vector([1.0])[:0]
+    all_null = Vector([1.0, None])[1:]
+
+    assert empty.sum() == 0.0
+    assert type(empty.sum()) is float
+    assert all_null.sum() == 0.0
+    assert type(all_null.sum()) is float
+
+
 def test_all_skips_nulls():
     assert Vector([True, None]).all() is True
 

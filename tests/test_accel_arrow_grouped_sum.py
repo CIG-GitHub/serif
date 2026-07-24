@@ -110,13 +110,18 @@ def test_physical_result_returns_string_key_storage():
     assert key_schema.nullable is False
     assert isinstance(keys, StringStorage)
     assert list(keys) == ['b', 'a']
-    assert [values for _, values in columns] == [[4, 2], [4.0, 0]]
+    int_schema, int_values = columns[0]
+    float_schema, float_values = columns[1]
+    assert int_schema.kind is int
+    assert int_values == [4, 2]
+    assert float_schema.kind is float
+    assert isinstance(float_values, ArrayStorage)
+    assert float_values._data.typecode == 'd'
+    assert float_values._mask is None
+    assert list(float_values) == [4.0, 0.0]
     assert all(type(key) is str for key in keys)
-    assert all(
-        type(value) in (int, float)
-        for _, values in columns
-        for value in values
-    )
+    assert all(type(value) is int for value in int_values)
+    assert all(type(value) is float for value in float_values)
 
 
 def test_physical_result_returns_int64_key_storage():
@@ -170,6 +175,31 @@ def test_all_null_group_retains_sum_identity():
     actual = run()
     _assert_tables_identical(_without_arrow(run), actual)
     assert list(actual.total) == [0, 3]
+
+
+def test_all_null_float_groups_return_float_storage():
+    table = Table([
+        Vector([1, 1, 2], name='group'),
+        Vector(
+            [None, None, None],
+            dtype=Schema(float, True),
+            name='value',
+        ),
+    ])
+
+    result = table.aggregate('group', {'total': table.value.sum})
+    expected = _without_arrow(
+        lambda: table.aggregate('group', {'total': table.value.sum})
+    )
+
+    _assert_tables_identical(expected, result)
+    assert isinstance(result.total._storage, ArrayStorage)
+    assert result.total._storage._data.typecode == 'd'
+    assert result.total._storage._mask is None
+    assert result.total.schema().kind is float
+    assert result.total.schema().nullable is False
+    assert list(result.total) == [0.0, 0.0]
+    assert all(type(value) is float for value in result.total)
 
 
 def test_narrow_spread_sum_reconstructs_bigint():

@@ -31,7 +31,7 @@ def sum_(storage, kind):
 
     first_value = next(values, None)
     if first_value is None:
-        return 0
+        return 0.0
     try:
         return math.fsum(chain((first_value,), values))
     except (OverflowError, ValueError):

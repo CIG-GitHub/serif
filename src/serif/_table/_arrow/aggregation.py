@@ -5,6 +5,7 @@ from ..._vector._arrow import storage as _arrow_storage
 from ..._vector.storage import ArrayStorage
 from ..._vector.storage import StringStorage
 from . import _pa
+from . import _pc
 from . import _USE_ARROW
 
 
@@ -84,39 +85,42 @@ def grouped_sums(key_source, value_sources):
 
     outputs = []
     for (source_schema, storage), name in zip(value_sources, value_names):
-        wrapped = grouped[f'{name}_sum'].to_pylist()
+        summed = _contiguous_array(grouped[f'{name}_sum'])
+        if storage._data.typecode == 'd':
+            normalized = _pc.fill_null(
+                summed,
+                _pa.scalar(0.0, type=summed.type),
+            )
+            result_storage = _arrow_storage.numeric_storage(normalized)
+            if result_storage is DECLINED:
+                return DECLINED
+            outputs.append((source_schema, result_storage))
+            continue
+
+        wrapped = summed.to_pylist()
         counts = grouped[f'{name}_count'].to_pylist()
         minimums = grouped[f'{name}_min'].to_pylist()
         maximums = grouped[f'{name}_max'].to_pylist()
 
-        if storage._data.typecode == 'q':
-            values = []
-            for residue, count, minimum, maximum in zip(
-                wrapped,
-                counts,
-                minimums,
-                maximums,
-            ):
-                count = int(count)
-                if count == 0:
-                    values.append(0)
-                    continue
-                minimum = int(minimum)
-                maximum = int(maximum)
-                if count * (maximum - minimum) >= _U64:
-                    return DECLINED
-                residue = int(residue)
-                spread_sum = (residue - count * minimum) % _U64
-                values.append(count * minimum + spread_sum)
-            outputs.append((source_schema, values))
-        else:
-            outputs.append((
-                source_schema,
-                [
-                    0 if count == 0 else float(value)
-                    for value, count in zip(wrapped, counts)
-                ],
-            ))
+        values = []
+        for residue, count, minimum, maximum in zip(
+            wrapped,
+            counts,
+            minimums,
+            maximums,
+        ):
+            count = int(count)
+            if count == 0:
+                values.append(0)
+                continue
+            minimum = int(minimum)
+            maximum = int(maximum)
+            if count * (maximum - minimum) >= _U64:
+                return DECLINED
+            residue = int(residue)
+            spread_sum = (residue - count * minimum) % _U64
+            values.append(count * minimum + spread_sum)
+        outputs.append((source_schema, values))
 
     return (key_schema, key_result), outputs
 

@@ -89,6 +89,19 @@ def _wrap_group_key_storage(storage, schema, name):
     return result
 
 
+def _wrap_group_sum(values, source_schema, name):
+    """Wrap storage results directly; retain materialized integer inference."""
+    if isinstance(values, list):
+        return Vector(values, name=name)
+    result = Vector._from_storage(
+        values,
+        Schema(source_schema.kind, False),
+        name=name,
+    )
+    result._wild = True
+    return result
+
+
 def aggregate(table, groupby=None, aggregations=None):
     """Group rows by partition keys and compute scalar aggregations."""
     Table = _table_class()
@@ -114,9 +127,13 @@ def aggregate(table, groupby=None, aggregations=None):
                     uniquify(key_name),
                 )
             ]
-            for aggregation_name, (_, values) in summed:
+            for aggregation_name, (source_schema, values) in summed:
                 result_columns.append(
-                    Vector(values, name=uniquify(aggregation_name))
+                    _wrap_group_sum(
+                        values,
+                        source_schema,
+                        uniquify(aggregation_name),
+                    )
                 )
             return Table(result_columns)
 
