@@ -423,12 +423,18 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
             if fast is not DECLINED:
                 return _wrap_storage(fast, result_dtype)
         try:
-            result_values = _python_ops.binary_vector(
+            result = _python_ops.binary_vector(
                 vector,
                 other,
                 op_func,
+                result_dtype.kind if result_dtype is not None else None,
             )
-        except TypeError:
+        except TypeError as error:
+            if (
+                result_dtype is not None
+                and not isinstance(error, _python_ops._BinaryOperationTypeError)
+            ):
+                raise
             lhs = (
                 vector._dtype.kind.__name__
                 if vector._dtype is not None
@@ -445,8 +451,9 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
                 f"Vector<{lhs}> and Vector<{rhs}>."
             )
         if result_dtype is None:
-            result_dtype = infer_dtype(result_values)
-        return Vector(result_values, dtype=result_dtype, name=None)
+            result_dtype = infer_dtype(result)
+            return Vector(result, dtype=result_dtype, name=None)
+        return _wrap_storage(result, result_dtype)
 
     if isinstance(other, Iterable) and not isinstance(
         other,
@@ -487,14 +494,16 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
         if fast is not DECLINED:
             return _wrap_storage(fast, result_dtype)
     try:
-        result_values = _python_ops.binary_scalar(
+        result = _python_ops.binary_scalar(
             vector._storage,
             other,
             op_func,
+            result_dtype.kind if result_dtype is not None else None,
         )
         if result_dtype is None:
-            result_dtype = infer_dtype(result_values)
-        return Vector(result_values, dtype=result_dtype, name=None)
+            result_dtype = infer_dtype(result)
+            return Vector(result, dtype=result_dtype, name=None)
+        return _wrap_storage(result, result_dtype)
     except TypeError:
         lhs = (
             vector._dtype.kind.__name__

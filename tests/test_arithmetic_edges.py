@@ -13,10 +13,15 @@ Two doctrines pinned here:
    silently returned a Vector of (1,'a') pairs.
 """
 
+import operator
+
 import pytest
 
 from serif import Vector
 from serif.errors import SerifTypeError
+from serif._vector._python import operators as python_ops
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import TupleStorage
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,64 @@ def test_radd_preserves_none():
 
 def test_radd_float_scalar_nullable_int_vector():
     assert list(1.5 + Vector([1, None])) == [2.5, None]
+
+
+# ---------------------------------------------------------------------------
+# Pure known-result storage construction
+# ---------------------------------------------------------------------------
+
+def test_pure_known_binary_kernels_return_array_storage():
+    left = Vector([1, None, 3])._storage
+    right = Vector([4, 5, 6])._storage
+
+    vector_result = python_ops.binary_vector(
+        left,
+        right,
+        operator.add,
+        int,
+    )
+    scalar_result = python_ops.binary_scalar(
+        left,
+        0.5,
+        operator.add,
+        float,
+    )
+
+    assert isinstance(vector_result, ArrayStorage)
+    assert list(vector_result) == [5, None, 9]
+    assert isinstance(scalar_result, ArrayStorage)
+    assert list(scalar_result) == [1.5, None, 3.5]
+
+
+def test_pure_int_overflow_degrades_without_replaying_operations():
+    left = Vector([1, None, 2**63 - 1, 3])._storage
+    calls = []
+
+    def tracked_add(x, y):
+        calls.append((x, y))
+        return x + y
+
+    result = python_ops.binary_scalar(
+        left,
+        1,
+        tracked_add,
+        int,
+    )
+
+    assert isinstance(result, TupleStorage)
+    assert list(result) == [2, None, 2**63, 4]
+    assert calls == [(1, 1), (2**63 - 1, 1), (3, 1)]
+
+
+def test_pure_unknown_binary_kernel_retains_materialized_result():
+    result = python_ops.binary_scalar(
+        Vector([1, None, 3])._storage,
+        2,
+        operator.add,
+    )
+
+    assert type(result) is tuple
+    assert result == (3, None, 5)
 
 
 # ---------------------------------------------------------------------------
