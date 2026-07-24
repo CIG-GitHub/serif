@@ -2,8 +2,14 @@
 
 import csv
 import re
+import warnings
 from typing import TextIO
 
+from .._vector.dtype import Schema
+from .._vector.dtype import promote_kinds
+from .._vector.storage import ArrayStorage
+from .._vector.storage import StringStorage
+from .._vector.storage import TupleStorage
 from ..errors import SerifValueError
 
 
@@ -57,60 +63,69 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
 
     reader = csv.reader(file_obj, delimiter=delimiter)
 
-    # Read all rows first
-    all_rows = list(reader)
-
-    if not all_rows:
+    first_row = next(reader, None)
+    if first_row is None:
         return Table()
 
-    # Determine header and data rows
+    # Determine the header from the first record, then accumulate every data
+    # cell directly into its column's raw builder.
     if has_header:
-        header = all_rows[0]
-        rows = all_rows[1:]
-        first_data_row = 2  # 1-based physical line of the first data row
+        header = first_row
+        raw_columns = [[] for _ in header]
+        has_data = False
     else:
         # Generate default column names: col_0, col_1, etc.
-        header = [f"col_{i}" for i in range(len(all_rows[0]))]
-        rows = all_rows
-        first_data_row = 1
+        header = [f"col_{i}" for i in range(len(first_row))]
+        raw_columns = [[cell] for cell in first_row]
+        has_data = True
 
     num_cols = len(header)
 
-    # Rows longer than the header would silently lose their extra fields in
-    # the transpose below — refuse loudly instead. (Shorter rows are padded
-    # with None: additive, not destructive.)
-    for row_num, row in enumerate(rows, start=first_data_row):
-        if len(row) > num_cols:
+    for row_num, row in enumerate(reader, start=2):
+        row_width = len(row)
+        if row_width > num_cols:
             raise SerifValueError(
-                f"Row {row_num} has {len(row)} fields, but the header has "
+                f"Row {row_num} has {row_width} fields, but the header has "
                 f"{num_cols} columns."
             )
 
-    if not rows:
-        # Header only, no data
-        return Table({col: Vector() for col in header})
+        for col_idx, cell in enumerate(row):
+            raw_columns[col_idx].append(cell)
+        for col_idx in range(row_width, num_cols):
+            raw_columns[col_idx].append(None)
+        has_data = True
 
-    # Transpose rows into columns
+    if not has_data:
+        # Header only, no data
+        # Preserve the existing dict-construction behavior for duplicate
+        # header names while avoiding the constructor's column-shell copies.
+        empty_columns = [Vector(name=col) for col in dict.fromkeys(header)]
+        return Table._from_columns_nocopy(empty_columns)
+
     columns = []
 
-    for col_idx in range(num_cols):
-        # Handle jagged (short) rows: missing cells read as None
-        raw_cells = [(row[col_idx] if col_idx < len(row) else None) for row in rows]
-        column_data = [None if v is None else _infer_type(v) for v in raw_cells]
+    for col_idx, raw_cells in enumerate(raw_columns):
+        dtype, identifier_mode, degradation = _classify_column(raw_cells)
+        if degradation is not None:
+            previous_kind, incompatible_kind = degradation
+            warnings.warn(
+                f"Degrading column<{previous_kind.__name__}> to column<object> "
+                f"due to incompatible value of type {incompatible_kind.__name__}",
+                stacklevel=2,
+            )
 
-        # Identifier-column rule: _infer_type keeps a numeric-LOOKING string
-        # only for leading-zero forms ("0123"). One such cell marks the whole
-        # column as identifiers — numeric cells revert to their raw strings,
-        # so '90210' doesn't become an int alongside '01234'.
-        if any(isinstance(v, str) and _NUMERIC_RE.match(v) for v in column_data):
-            column_data = [
-                None if v is None or v.strip() == '' else v.strip()
-                for v in raw_cells
-            ]
+        storage = _build_column_storage(raw_cells, dtype, identifier_mode)
+        raw_columns[col_idx] = None
+        del raw_cells
+        column = Vector._from_storage(
+            storage,
+            dtype,
+            name=header[col_idx],
+        )
+        column.vector_name = header[col_idx]
+        columns.append(column)
 
-        columns.append(Vector(column_data, name=header[col_idx]))
-
-    return Table(columns)
+    return Table._from_columns_nocopy(columns)
 
 
 # A cell is numeric only if it LOOKS like a number: optional sign, ASCII
@@ -119,6 +134,105 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
 # almost never means (underscores in "1_000", words like "nan"/"inf",
 # non-ASCII digits) must stay strings.
 _NUMERIC_RE = re.compile(r'^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$', re.ASCII)
+_IDENTIFIER = object()
+
+
+def _cell_inference_mode(value: str):
+    """Return None, a scalar kind, or the leading-zero identifier sentinel."""
+    if not value or value.strip() == '':
+        return None
+
+    value = value.strip()
+    if not _NUMERIC_RE.match(value):
+        return str
+
+    digits = value.lstrip('+-')
+    if digits.isdigit():
+        if len(digits) > 1 and digits[0] == '0':
+            return _IDENTIFIER
+        return int
+
+    return float
+
+
+def _classify_column(raw_cells):
+    """Resolve final dtype and identifier handling without retaining conversions."""
+    kind = None
+    nullable = False
+    identifier_mode = False
+    degradation = None
+
+    for raw_cell in raw_cells:
+        mode = None if raw_cell is None else _cell_inference_mode(raw_cell)
+        if mode is None:
+            nullable = True
+            continue
+
+        if mode is _IDENTIFIER:
+            identifier_mode = True
+            value_kind = str
+        else:
+            value_kind = mode
+
+        if kind is None:
+            kind = value_kind
+        elif kind is not object and value_kind is not kind:
+            promoted_kind = promote_kinds(kind, value_kind)
+            if promoted_kind is None:
+                degradation = (kind, value_kind)
+                kind = object
+            else:
+                kind = promoted_kind
+
+    if identifier_mode:
+        kind = str
+        degradation = None
+    elif kind is None:
+        kind = object
+        nullable = True
+
+    return Schema(kind, nullable), identifier_mode, degradation
+
+
+def _normalized_cells(raw_cells, identifier_mode):
+    """Yield final scalar values from one retained raw column."""
+    for raw_cell in raw_cells:
+        if raw_cell is None:
+            yield None
+        elif identifier_mode:
+            value = raw_cell.strip()
+            yield None if value == '' else value
+        else:
+            yield _infer_type(raw_cell)
+
+
+def _build_column_storage(raw_cells, dtype, identifier_mode):
+    """Build the selected final storage directly from normalized raw cells."""
+    values = _normalized_cells(raw_cells, identifier_mode)
+
+    if dtype.kind is int:
+        try:
+            return ArrayStorage.from_iterable(
+                values,
+                typecode='q',
+                nullable=dtype.nullable,
+            )
+        except OverflowError:
+            # Preserve exact Python integers outside int64 without retaining a
+            # converted list solely to make the fallback re-iterable.
+            return TupleStorage.from_iterable(
+                _normalized_cells(raw_cells, identifier_mode),
+                nullable=dtype.nullable,
+            )
+    if dtype.kind is float:
+        return ArrayStorage.from_iterable(
+            values,
+            typecode='d',
+            nullable=dtype.nullable,
+        )
+    if dtype.kind is str:
+        return StringStorage.from_iterable(values)
+    return TupleStorage.from_iterable(values, nullable=dtype.nullable)
 
 
 def _infer_type(value: str):
@@ -131,19 +245,13 @@ def _infer_type(value: str):
     - Decimal / exponent forms → float
     - Everything else (including "nan"/"inf", "True", dates) → string
     """
-    if not value or value.strip() == '':
+    mode = _cell_inference_mode(value)
+    if mode is None:
         return None
 
     value = value.strip()
-
-    if not _NUMERIC_RE.match(value):
+    if mode is str or mode is _IDENTIFIER:
         return value
-
-    digits = value.lstrip('+-')
-    if digits.isdigit():
-        # Pure integer form. Leading zeros mean identifier, not number.
-        if len(digits) > 1 and digits[0] == '0':
-            return value
+    if mode is int:
         return int(value)
-
     return float(value)
