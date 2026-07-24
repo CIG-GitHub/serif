@@ -26,24 +26,48 @@ class MethodProxy:
         return _vector_class()(results)
 
 
-def _elementwise_proxy(method_name):
+def _elementwise_proxy(method_name, result_kind=None):
     """Build an explicit per-element method for a typed Vector subclass."""
     def proxy(self, *args, **kwargs):
         Vector = _vector_class()
-        return Vector(tuple(
+        values = (
             (
                 getattr(element, method_name)(*args, **kwargs)
                 if element is not None
                 else None
             )
             for element in self._storage
-        ))
+        )
+        if result_kind is not None:
+            return Vector._from_iterable_known_kind(values, result_kind)
+        return Vector(tuple(values))
 
     proxy.__name__ = method_name
     proxy.__doc__ = (
         f"Element-wise {method_name}() on each value (None passes through)."
     )
     return proxy
+
+
+def _elementwise_attribute(attribute_name, result_kind):
+    """Build an explicit fixed-result property for a typed Vector subclass."""
+    def attribute(self):
+        Vector = _vector_class()
+        return Vector._from_iterable_known_kind(
+            (
+                getattr(element, attribute_name)
+                if element is not None
+                else None
+                for element in self._storage
+            ),
+            result_kind,
+        )
+
+    attribute.__name__ = attribute_name
+    attribute.__doc__ = (
+        f"Element-wise {attribute_name} on each value (None passes through)."
+    )
+    return property(attribute)
 
 
 def resolve(vector, name):

@@ -11,6 +11,7 @@ from .storage import ArrayStorage
 from .storage import BoolStorage
 from .storage import StringStorage
 from .storage import TupleStorage
+from .storage import storage_from_known_iterable
 
 
 def _vector_class():
@@ -84,6 +85,12 @@ def _storage_for_dtype(dtype, data, nullable):
     if kind is str:
         return StringStorage.from_iterable(data)
     return TupleStorage.from_iterable(data, nullable=nullable)
+
+
+def _storage_has_nulls(storage):
+    if isinstance(storage, (ArrayStorage, BoolStorage, StringStorage)):
+        return storage._mask is not None
+    return any(value is None for value in storage)
 
 
 def _pick_target_class(dtype):
@@ -199,8 +206,16 @@ def from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
     instance._dtype = dtype
     instance._name = name
     instance._wild = True
-    nullable = dtype.nullable if dtype is not None else True
-    instance._storage = instance._build_storage(iterable, nullable)
+    instance._storage = storage_from_known_iterable(iterable, dtype.kind)
+    return instance
+
+
+def from_iterable_known_kind(cls, iterable, kind, *, name=None):
+    """Build storage first, deriving only result nullability from its mask."""
+    storage = storage_from_known_iterable(iterable, kind)
+    dtype = Schema(kind, _storage_has_nulls(storage))
+    instance = from_storage(cls, storage, dtype, name=name)
+    instance._wild = True
     return instance
 
 

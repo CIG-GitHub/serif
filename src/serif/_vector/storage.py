@@ -30,6 +30,7 @@ allowed ONLY behind an isinstance() check of the concrete class — a bare
 
 from __future__ import annotations
 from array import array
+from itertools import chain
 from typing import Any
 from typing import Iterator
 from collections.abc import Iterable
@@ -578,6 +579,50 @@ class DecimalStorage:
 
     def to_tuple(self) -> tuple:
         return tuple(self)
+
+
+def _int_storage_from_known_iterable(values):
+    """Append ints directly, degrading once when a value exceeds int64."""
+    data = array('q')
+    validity = _BitMaskBuilder()
+    iterator = iter(values)
+
+    for value in iterator:
+        if value is None:
+            data.append(0)
+            validity.append(True)
+            continue
+        try:
+            data.append(value)
+        except OverflowError:
+            mask = validity.finish()
+            prefix = (
+                None if mask is not None and mask.is_null(i) else data[i]
+                for i in range(len(data))
+            )
+            return TupleStorage.from_iterable(
+                chain(prefix, (value,), iterator)
+            )
+        validity.append(False)
+
+    return ArrayStorage(data, validity.finish())
+
+
+def storage_from_known_iterable(values, kind):
+    """Build canonical storage in one pass when the result kind is known."""
+    if kind is bool:
+        return BoolStorage.from_iterable(values)
+    if kind is int:
+        return _int_storage_from_known_iterable(values)
+    if kind is float:
+        return ArrayStorage.from_iterable(
+            values,
+            typecode='d',
+            nullable=True,
+        )
+    if kind is str:
+        return StringStorage.from_iterable(values)
+    return TupleStorage.from_iterable(values)
 
 
 def _concatenate_masks(storages) -> BitMask | None:
