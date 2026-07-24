@@ -636,9 +636,78 @@ _EPOCH_ORD  = _date(1970, 1, 1).toordinal()
 _EPOCH_DT   = _datetime(1970, 1, 1)
 
 
+def _copy_valid_fixed_width(raw, width: int, mask: BitMask | None,
+                            nrows: int) -> bytes:
+    """Copy valid fixed-width lanes without decoding their scalar values."""
+    if mask is None:
+        return bytes(raw)
+
+    encoded = bytearray()
+    run_start = None
+    for i in range(nrows):
+        if not mask.is_null(i):
+            if run_start is None:
+                run_start = i
+        elif run_start is not None:
+            encoded.extend(raw[run_start * width:i * width])
+            run_start = None
+    if run_start is not None:
+        encoded.extend(raw[run_start * width:nrows * width])
+    return bytes(encoded)
+
+
+def _encode_array_storage_plain(storage: ArrayStorage) -> bytes:
+    """Encode an ArrayStorage from its native fixed-width data buffer."""
+    raw = memoryview(storage._data).cast('B')
+    return _copy_valid_fixed_width(
+        raw, storage._data.itemsize, storage._mask, len(storage))
+
+
+def _encode_string_storage_plain(storage: StringStorage) -> bytes:
+    """Encode StringStorage from offsets and its existing UTF-8 buffer."""
+    encoded = bytearray()
+    raw = storage._buf
+    offsets = storage._offsets
+    mask = storage._mask
+    for i in range(len(storage)):
+        if mask is not None and mask.is_null(i):
+            continue
+        start = offsets[i]
+        end = offsets[i + 1]
+        encoded.extend(_struct.pack('<I', end - start))
+        encoded.extend(raw[start:end])
+    return bytes(encoded)
+
+
+def _encode_bool_storage_plain(storage: BoolStorage) -> bytes:
+    """Pack valid BoolStorage bytes directly into Parquet BOOLEAN bits."""
+    encoded = bytearray()
+    mask = storage._mask
+    out_index = 0
+    for i, value in enumerate(storage._data):
+        if mask is not None and mask.is_null(i):
+            continue
+        if (out_index & 7) == 0:
+            encoded.append(0)
+        if value:
+            encoded[-1] |= 1 << (out_index & 7)
+        out_index += 1
+    return bytes(encoded)
+
+
+def _encode_decimal_storage_plain(storage: DecimalStorage) -> bytes:
+    """Encode decimal128 from its Parquet-compatible big-endian buffer."""
+    return _copy_valid_fixed_width(
+        storage._buf, 16, storage._mask, len(storage))
+
+
 def _encode_plain(values: list, kind: type, col_name: str,
                    decimal_scale: int = None) -> bytes:
-    """Encode a list of non-null values as PLAIN bytes."""
+    """Encode object-backed non-null values as PLAIN bytes.
+
+    Dates and datetimes intentionally stay on this path. The storage-aware
+    encoders above handle canonical physical storage without scalar boxing.
+    """
     if not values:
         return b''
 

@@ -86,6 +86,96 @@ def empty_vector(kind, nullable):
 
 
 # ---------------------------------------------------------------------------
+# Storage-aware PLAIN encoding
+# ---------------------------------------------------------------------------
+
+def _forbid_storage_materialization(monkeypatch, storage_type):
+    def fail(*args, **kwargs):
+        raise AssertionError('storage values must not be materialized')
+
+    monkeypatch.setattr(storage_type, 'to_tuple', fail)
+    monkeypatch.setattr(storage_type, '__iter__', fail)
+
+
+@pytest.mark.parametrize(
+    'typecode,values,expected_values',
+    [
+        ('q', [10, None, -3, 0], [10, -3, 0]),
+        ('d', [1.5, None, -2.25, 0.0], [1.5, -2.25, 0.0]),
+    ],
+    ids=['int64', 'double'],
+)
+def test_array_storage_plain_uses_raw_fixed_width_buffer(
+        monkeypatch, typecode, values, expected_values):
+    storage = ArrayStorage.from_iterable(
+        values, typecode=typecode, nullable=True)
+    expected = array(typecode, expected_values).tobytes()
+    _forbid_storage_materialization(monkeypatch, ArrayStorage)
+
+    assert parquet_mod._encode_array_storage_plain(storage) == expected
+
+
+def test_string_storage_plain_uses_offsets_and_raw_utf8(monkeypatch):
+    values = ['café', None, '日本語', '']
+    storage = StringStorage.from_iterable(values)
+    encoded_values = [
+        'café'.encode('utf-8'),
+        '日本語'.encode('utf-8'),
+        b'',
+    ]
+    expected = b''.join(
+        len(value).to_bytes(4, 'little') + value
+        for value in encoded_values
+    )
+    _forbid_storage_materialization(monkeypatch, StringStorage)
+
+    assert parquet_mod._encode_string_storage_plain(storage) == expected
+
+
+def test_bool_storage_plain_packs_valid_bytes_without_bool_objects(monkeypatch):
+    storage = BoolStorage.from_iterable(
+        [
+            True, None, False, True, None, False,
+            True, True, False, None, True, False,
+        ],
+        nullable=True,
+    )
+    _forbid_storage_materialization(monkeypatch, BoolStorage)
+
+    assert parquet_mod._encode_bool_storage_plain(storage) == b'\xb5\x00'
+
+
+def test_decimal_storage_plain_copies_valid_fixed_width_lanes(monkeypatch):
+    values = [Decimal('1.25'), None, Decimal('-2.50')]
+    storage = DecimalStorage.from_iterable(
+        values, scale=2, precision=3, nullable=True)
+    expected = (
+        (125).to_bytes(16, 'big', signed=True)
+        + (-250).to_bytes(16, 'big', signed=True)
+    )
+    _forbid_storage_materialization(monkeypatch, DecimalStorage)
+
+    assert parquet_mod._encode_decimal_storage_plain(storage) == expected
+
+
+def test_storage_plain_encoders_emit_no_values_for_all_null_storage():
+    assert parquet_mod._encode_array_storage_plain(
+        ArrayStorage.from_iterable(
+            [None, None], typecode='q', nullable=True)
+    ) == b''
+    assert parquet_mod._encode_string_storage_plain(
+        StringStorage.from_iterable([None, None])
+    ) == b''
+    assert parquet_mod._encode_bool_storage_plain(
+        BoolStorage.from_iterable([None, None], nullable=True)
+    ) == b''
+    assert parquet_mod._encode_decimal_storage_plain(
+        DecimalStorage.from_iterable(
+            [None, None], scale=2, precision=1, nullable=True)
+    ) == b''
+
+
+# ---------------------------------------------------------------------------
 # Non-nullable columns
 # ---------------------------------------------------------------------------
 
