@@ -893,6 +893,92 @@ class TestWriterCharacterization:
         assert bytes(data[body_start:body_start + 7]) == (
             b'\x03\x00\x00\x00\x05\xb5\x01')
 
+    def test_writer_dispatches_canonical_storage_without_materializing(
+            self, tmp_path, monkeypatch):
+        decimal_values = [
+            Decimal('1.25'),
+            None,
+            Decimal('-2.50'),
+        ]
+        decimal_storage = DecimalStorage.from_iterable(
+            decimal_values, scale=2, precision=3, nullable=True)
+        table = Table({
+            'i': [1, None, -3],
+            'f': [1.5, None, -2.25],
+            's': ['café', None, '日本語'],
+            'b': [True, None, False],
+            'amount': Vector._from_storage(
+                decimal_storage, Schema(Decimal, True)),
+        })
+        path = tmp_path / 'storage-dispatch.parquet'
+
+        def fail(*args, **kwargs):
+            raise AssertionError('writer used an object-backed encoder')
+
+        with monkeypatch.context() as patcher:
+            for storage_type in (
+                    ArrayStorage, StringStorage, BoolStorage, DecimalStorage):
+                _forbid_storage_materialization(patcher, storage_type)
+            patcher.setattr(parquet_mod, '_encode_plain', fail)
+            patcher.setattr(
+                parquet_mod, '_encode_object_storage_plain', fail)
+            table.to_parquet(str(path))
+
+        result = Table.from_parquet(str(path))
+        result.cols()
+        assert col(result, 'i') == [1, None, -3]
+        assert col(result, 'f') == [1.5, None, -2.25]
+        assert col(result, 's') == ['café', None, '日本語']
+        assert col(result, 'b') == [True, None, False]
+        assert col(result, 'amount') == decimal_values
+
+    def test_writer_streams_intentional_object_backed_storage(
+            self, tmp_path, monkeypatch):
+        expected = {
+            'd': [date(1969, 12, 31), None, date(2024, 6, 15)],
+            'ts': [
+                datetime(1969, 12, 31, 23, 59, 59, 999999),
+                None,
+                datetime(2200, 6, 15, 12, 34, 56, 123457),
+            ],
+            'amount': [Decimal('1.25'), None, Decimal('-2.50')],
+        }
+        table = Table(expected)
+        assert all(
+            type(table[name]._storage) is TupleStorage
+            for name in expected
+        )
+        path = tmp_path / 'object-backed.parquet'
+        calls = []
+        original = parquet_mod._encode_object_storage_plain
+
+        def fail_to_tuple(*args, **kwargs):
+            raise AssertionError('writer called TupleStorage.to_tuple()')
+
+        def recording_encoder(storage, kind, col_name, decimal_scale=None):
+            calls.append((type(storage), kind, col_name, decimal_scale))
+            return original(storage, kind, col_name, decimal_scale)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(TupleStorage, 'to_tuple', fail_to_tuple)
+            patcher.setattr(parquet_mod, '_encode_plain', fail_to_tuple)
+            patcher.setattr(
+                parquet_mod,
+                '_encode_object_storage_plain',
+                recording_encoder,
+            )
+            table.to_parquet(str(path))
+
+        assert [(kind, name) for _, kind, name, _ in calls] == [
+            (date, 'd'),
+            (datetime, 'ts'),
+            (Decimal, 'amount'),
+        ]
+        result = Table.from_parquet(str(path))
+        result.cols()
+        for name, values in expected.items():
+            assert col(result, name) == values
+
     def test_empty_table_roundtrips(self):
         result = roundtrip(Table())
         assert result.shape == (0, 0)

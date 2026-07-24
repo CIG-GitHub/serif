@@ -701,12 +701,76 @@ def _encode_decimal_storage_plain(storage: DecimalStorage) -> bytes:
         storage._buf, 16, storage._mask, len(storage))
 
 
+def _encode_object_storage_plain(storage, kind: type, col_name: str,
+                                 decimal_scale: int = None) -> bytes:
+    """Encode intentionally object-backed storage without value staging."""
+    if kind is _date:
+        days = _pyarray.array('i')
+        for value in storage:
+            if value is not None:
+                days.append(value.toordinal() - _EPOCH_ORD)
+        return days.tobytes()
+
+    if kind is _datetime:
+        micros = _pyarray.array('q')
+        for value in storage:
+            if value is None:
+                continue
+            delta = value - _EPOCH_DT
+            micros.append(
+                (delta.days * 86_400_000_000)
+                + (delta.seconds * 1_000_000)
+                + delta.microseconds
+            )
+        return micros.tobytes()
+
+    if kind is _Decimal:
+        multiplier = _Decimal(10) ** decimal_scale
+        encoded = bytearray()
+        for value in storage:
+            if value is None:
+                continue
+            unscaled = int(
+                (value * multiplier).to_integral_value(
+                    rounding=_ROUND_HALF_EVEN)
+            )
+            encoded.extend(unscaled.to_bytes(16, 'big', signed=True))
+        return bytes(encoded)
+
+    raise SerifTypeError(
+        f"Column '{col_name}': unsupported type '{kind.__name__}' "
+        "for object-backed Parquet PLAIN encoding"
+    )
+
+
+def _encode_storage_plain(storage, kind: type, col_name: str,
+                          decimal_scale: int = None) -> bytes:
+    """Dispatch a validated column to its physical-storage encoder."""
+    if kind in (int, float) and isinstance(storage, ArrayStorage):
+        return _encode_array_storage_plain(storage)
+    if kind is str and isinstance(storage, StringStorage):
+        return _encode_string_storage_plain(storage)
+    if kind is bool and isinstance(storage, BoolStorage):
+        return _encode_bool_storage_plain(storage)
+    if kind is _Decimal and isinstance(storage, DecimalStorage):
+        return _encode_decimal_storage_plain(storage)
+    if isinstance(storage, TupleStorage) and kind in (
+            _date, _datetime, _Decimal):
+        return _encode_object_storage_plain(
+            storage, kind, col_name, decimal_scale)
+
+    raise SerifTypeError(
+        f"Column '{col_name}': unsupported storage "
+        f"'{type(storage).__name__}' for Parquet PLAIN encoding "
+        f"of '{kind.__name__}'"
+    )
+
+
 def _encode_plain(values: list, kind: type, col_name: str,
                    decimal_scale: int = None) -> bytes:
-    """Encode object-backed non-null values as PLAIN bytes.
+    """Encode an already-materialized non-null list as PLAIN bytes.
 
-    Dates and datetimes intentionally stay on this path. The storage-aware
-    encoders above handle canonical physical storage without scalar boxing.
+    Retained for synthetic-page helpers; the writer uses storage dispatch.
     """
     if not values:
         return b''
@@ -902,22 +966,34 @@ def _col_parquet_type(col, col_name: str):
             scale     = st._scale
             precision = st._precision
         else:
-            # TupleStorage: infer scale from the max decimal places across values
-            non_nulls = [v for v in st if v is not None]
-            if not non_nulls:
+            # TupleStorage: infer scale and precision without retaining a
+            # second full-column collection of the existing Decimal objects.
+            scale = 0
+            found_value = False
+            for value in st:
+                if value is None:
+                    continue
+                found_value = True
+                exponent = value.as_tuple().exponent
+                if exponent < 0:
+                    scale = max(scale, -exponent)
+
+            if not found_value:
                 raise SerifTypeError(
                     f"Column '{col_name}': empty Decimal column has no values "
                     "to determine scale and precision from."
                 )
-            scale     = max(-v.as_tuple().exponent for v in non_nulls
-                           if v.as_tuple().exponent < 0) if any(
-                               v.as_tuple().exponent < 0 for v in non_nulls) else 0
+
             # Digits needed: significant digits + any extra scale padding
-            precision = max(
-                len(v.as_tuple().digits) + max(0, scale + v.as_tuple().exponent)
-                for v in non_nulls
-            )
-            precision = max(precision, 1)
+            precision = 1
+            for value in st:
+                if value is None:
+                    continue
+                parts = value.as_tuple()
+                precision = max(
+                    precision,
+                    len(parts.digits) + max(0, scale + parts.exponent),
+                )
         return _T_FIXED_LEN_BYTE_ARRAY, _CT_DECIMAL, rep, scale, precision
 
     if kind is object:
@@ -994,18 +1070,14 @@ def write_parquet(table, path: str) -> None:
         nullable = info['nullable']
         n        = len(col)
 
-        data_tuple = col._storage.to_tuple()
-
-        # Stage PLAIN values only. Definition levels are encoded from storage
-        # below; to_tuple() supplies None here solely for value filtering.
-        if nullable:
-            non_null   = [v for v in data_tuple if v is not None]
-        else:
-            non_null   = list(data_tuple)
-
-        # Encode PLAIN values (non-null only)
-        value_bytes = _encode_plain(non_null, kind, info['name'],
-                                    info.get('decimal_scale'))
+        # Encode PLAIN values directly from physical storage. Object-backed
+        # dates, datetimes, and source Decimal columns stream their values.
+        value_bytes = _encode_storage_plain(
+            col._storage,
+            kind,
+            info['name'],
+            info.get('decimal_scale'),
+        )
 
         # Build page body: [def_levels?][value_bytes]
         if nullable:
