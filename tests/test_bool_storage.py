@@ -17,6 +17,7 @@ import pytest
 
 from serif import Table, Vector
 from serif import SerifValueError
+from serif._vector import operators as vector_ops
 from serif._vector._python import operators as python_ops
 from serif._vector.storage import BoolStorage
 
@@ -113,6 +114,30 @@ def test_kleene_logic_emits_bool_storage():
     both = a & b
     assert isinstance(both._storage, BoolStorage)
     assert list(both) == [True, None, False]  # False & None = False (Kleene)
+
+
+def test_pure_kleene_kernels_return_bool_storage_directly():
+    left = Vector([True, None, False])._storage
+    right = Vector([None, True, None])._storage
+
+    vector_result = python_ops.logical_vector(
+        left,
+        right,
+        vector_ops._kleene_and,
+    )
+    scalar_result = python_ops.logical_scalar(
+        left,
+        True,
+        vector_ops._kleene_or,
+    )
+    inverted = python_ops.invert_bool(left)
+
+    assert isinstance(vector_result, BoolStorage)
+    assert list(vector_result) == [None, None, False]
+    assert isinstance(scalar_result, BoolStorage)
+    assert list(scalar_result) == [True, True, True]
+    assert isinstance(inverted, BoolStorage)
+    assert list(inverted) == [False, None, True]
 
 
 def test_mask_filter_roundtrip():

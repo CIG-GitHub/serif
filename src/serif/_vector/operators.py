@@ -319,7 +319,7 @@ def logical_elementwise(vector, other, kleene_func):
                     fast,
                     Schema(bool, fast._mask is not None),
                 )
-        values = _python_ops.logical_vector(vector, other, kleene_func)
+        storage = _python_ops.logical_vector(vector, other, kleene_func)
     else:
         if op_name is not None and (other is None or type(other) is bool):
             fast = _dispatch_logical(vector._storage, other, op_name)
@@ -328,14 +328,15 @@ def logical_elementwise(vector, other, kleene_func):
                     fast,
                     Schema(bool, fast._mask is not None),
                 )
-        values = _python_ops.logical_scalar(
+        storage = _python_ops.logical_scalar(
             vector._storage,
             other,
             kleene_func,
         )
-    return Vector._from_iterable_known_dtype(
-        values,
-        Schema(bool, any(value is None for value in values)),
+    assert isinstance(storage, BoolStorage)
+    return _wrap_storage(
+        storage,
+        Schema(bool, storage._mask is not None),
     )
 
 
@@ -546,8 +547,7 @@ def invert(vector):
                 fast,
                 Schema(bool, vector._dtype.nullable),
             )
-        Vector = _vector_class()
-        return Vector._from_iterable_known_dtype(
+        return _wrap_storage(
             _python_ops.invert_bool(vector),
             Schema(bool, vector._dtype.nullable),
         )

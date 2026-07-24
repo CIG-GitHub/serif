@@ -22,14 +22,17 @@ def compare_scalar(storage, other, op):
 
 
 def logical_vector(left, right, kleene_func):
-    return [
+    return BoolStorage.from_iterable(
         kleene_func(x, y)
         for x, y in zip(left, right, strict=True)
-    ]
+    )
 
 
 def logical_scalar(storage, other, kleene_func):
-    return [kleene_func(x, other) for x in storage]
+    return BoolStorage.from_iterable(
+        kleene_func(x, other)
+        for x in storage
+    )
 
 
 def binary_vector(left, right, op_func):
@@ -61,7 +64,7 @@ def unary_storage(storage, op_func):
 
 
 def invert_bool(storage):
-    return tuple(
+    return BoolStorage.from_iterable(
         None if value is None else (not value)
         for value in storage
     )
