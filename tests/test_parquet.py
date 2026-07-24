@@ -979,6 +979,62 @@ class TestWriterCharacterization:
         for name, values in expected.items():
             assert col(result, name) == values
 
+    def test_writer_writes_magic_then_individual_pages_and_footer(
+            self, tmp_path, monkeypatch):
+        expected = {
+            'i': [1, None, -3],
+            's': ['café', None, '日本語'],
+            'b': [True, None, False],
+        }
+        table = Table(expected)
+        path = tmp_path / 'streamed.parquet'
+        writes = []
+        real_open = open
+
+        class RecordingWriter:
+            def __init__(self, file, mode):
+                self._handle = real_open(file, mode)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return self._handle.__exit__(exc_type, exc, traceback)
+
+            def write(self, data):
+                writes.append(len(data))
+                return self._handle.write(data)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(
+                parquet_mod, 'open', RecordingWriter, raising=False)
+            table.to_parquet(str(path))
+
+        assert writes[0] == len(parquet_mod._MAGIC)
+        assert len(writes) == len(expected) + 4
+        assert writes[-2:] == [4, len(parquet_mod._MAGIC)]
+
+        result = Table.from_parquet(str(path))
+        result.cols()
+        for name, values in expected.items():
+            assert col(result, name) == values
+
+    def test_all_column_types_validate_before_decimal_value_encoding(
+            self, tmp_path):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+        table = Table({
+            'too_wide': [Decimal('1e100')],
+            'unsupported': [1 + 2j],
+        })
+
+        with pytest.raises(
+                SerifTypeError, match="unsupported type 'complex'"):
+            table.to_parquet(str(path))
+
+        assert path.read_bytes() == original
+
     def test_empty_table_roundtrips(self):
         result = roundtrip(Table())
         assert result.shape == (0, 0)

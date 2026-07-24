@@ -766,6 +766,23 @@ def _encode_storage_plain(storage, kind: type, col_name: str,
     )
 
 
+def _validate_storage_plain(storage, kind: type,
+                            decimal_scale: int = None) -> None:
+    """Surface value-dependent encoding failures before opening the file."""
+    if kind is not _Decimal or isinstance(storage, DecimalStorage):
+        return
+
+    multiplier = _Decimal(10) ** decimal_scale
+    for value in storage:
+        if value is None:
+            continue
+        unscaled = int(
+            (value * multiplier).to_integral_value(
+                rounding=_ROUND_HALF_EVEN)
+        )
+        unscaled.to_bytes(16, 'big', signed=True)
+
+
 def _encode_plain(values: list, kind: type, col_name: str,
                    decimal_scale: int = None) -> bytes:
     """Encode an already-materialized non-null list as PLAIN bytes.
@@ -1057,105 +1074,121 @@ def write_parquet(table, path: str) -> None:
             'decimal_precision': dec_prec,
         })
 
-    # ------------------------------------------------------------------
-    # 2. Build the file in a bytearray; track offsets as we go
-    # ------------------------------------------------------------------
-    buf = bytearray(_MAGIC)
-
-    page_records = []
-
+    # Preserve the established validation order: every column's type is
+    # checked before any value-dependent encoding error can surface.
     for info in col_infos:
-        col      = info['col']
-        kind     = info['kind']
-        nullable = info['nullable']
-        n        = len(col)
-
-        # Encode PLAIN values directly from physical storage. Object-backed
-        # dates, datetimes, and source Decimal columns stream their values.
-        value_bytes = _encode_storage_plain(
-            col._storage,
-            kind,
-            info['name'],
+        _validate_storage_plain(
+            info['col']._storage,
+            info['kind'],
             info.get('decimal_scale'),
         )
 
-        # Build page body: [def_levels?][value_bytes]
-        if nullable:
-            page_body = (
-                _encode_storage_def_levels(col._storage)
-                + value_bytes
-            )
-        else:
-            page_body = value_bytes
-
-        uncompressed = len(page_body)
-
-        # Build page: PageHeader + body
-        dph        = _enc_data_page_header(n)
-        ph         = _enc_page_header(uncompressed, uncompressed, dph)
-        full_page  = ph + page_body
-        total_size = len(full_page)   # header + body, as required by spec
-
-        # Record offset of this page's first byte BEFORE appending
-        page_offset = len(buf)
-        buf.extend(full_page)
-
-        page_records.append({
-            **info,
-            'data_page_offset':  page_offset,
-            'num_values':        n,
-            'total_size':        total_size,
-            'uncompressed_body': uncompressed,
-        })
-
     # ------------------------------------------------------------------
-    # 3. Build schema: root element + one leaf per column
+    # 2. Build schema metadata before touching the destination
     # ------------------------------------------------------------------
     schema_elems = [
-        _enc_schema_element('schema', None, None, _REP_REQUIRED, num_children=ncols)
+        _enc_schema_element(
+            'schema', None, None, _REP_REQUIRED, num_children=ncols)
     ]
-    for r in page_records:
-        if r['kind'] is _Decimal:
+    for info in col_infos:
+        if info['kind'] is _Decimal:
             schema_elems.append(
-                _enc_decimal_schema_element(r['name'], r['rep_type'],
-                                             r['decimal_scale'], r['decimal_precision'])
+                _enc_decimal_schema_element(
+                    info['name'],
+                    info['rep_type'],
+                    info['decimal_scale'],
+                    info['decimal_precision'],
+                )
             )
         else:
             schema_elems.append(
-                _enc_schema_element(r['name'], r['phys_type'], r['conv_type'], r['rep_type'])
+                _enc_schema_element(
+                    info['name'],
+                    info['phys_type'],
+                    info['conv_type'],
+                    info['rep_type'],
+                )
             )
 
     # ------------------------------------------------------------------
-    # 4. Build column chunks and row group
+    # 3. Stream one column page at a time; retain footer metadata only
     # ------------------------------------------------------------------
-    col_chunk_bytes = []
-    total_rg_bytes  = 0
-
-    for r in page_records:
-        meta = _enc_column_metadata(
-            phys_type        = r['phys_type'],
-            conv_type        = r['conv_type'],
-            col_name         = r['name'],
-            codec            = _CODEC_UNCOMPRESSED,
-            num_values       = r['num_values'],
-            total_uncompressed = r['total_size'],
-            total_compressed   = r['total_size'],
-            data_page_offset = r['data_page_offset'],
-            nullable         = r['nullable'],
-        )
-        chunk = _enc_column_chunk(meta, r['data_page_offset'])
-        col_chunk_bytes.append(chunk)
-        total_rg_bytes += r['total_size']
-
-    rg     = _enc_row_group(col_chunk_bytes, total_rg_bytes, nrows)
-    footer = _enc_file_metadata(schema_elems, [rg], nrows)
-
-    buf.extend(footer)
-    buf.extend(_struct.pack('<I', len(footer)))
-    buf.extend(_MAGIC)
-
+    page_records = []
+    # Characterization locks direct-write failure behavior: after wb opens,
+    # an I/O error may leave a partial destination. Semantic failures that
+    # must preserve an existing file have already surfaced above.
     with open(path, 'wb') as f:
-        f.write(buf)
+        f.write(_MAGIC)
+        file_offset = len(_MAGIC)
+
+        for info in col_infos:
+            col      = info['col']
+            kind     = info['kind']
+            nullable = info['nullable']
+            n        = len(col)
+
+            # Encode PLAIN values directly from physical storage.
+            value_bytes = _encode_storage_plain(
+                col._storage,
+                kind,
+                info['name'],
+                info.get('decimal_scale'),
+            )
+
+            # Build page body: [def_levels?][value_bytes]
+            if nullable:
+                page_body = (
+                    _encode_storage_def_levels(col._storage)
+                    + value_bytes
+                )
+            else:
+                page_body = value_bytes
+
+            uncompressed = len(page_body)
+            dph = _enc_data_page_header(n)
+            ph = _enc_page_header(uncompressed, uncompressed, dph)
+            full_page = ph + page_body
+            total_size = len(full_page)
+            page_offset = file_offset
+
+            f.write(full_page)
+            file_offset += total_size
+
+            page_records.append({
+                'name':              info['name'],
+                'phys_type':         info['phys_type'],
+                'conv_type':         info['conv_type'],
+                'nullable':          nullable,
+                'data_page_offset':  page_offset,
+                'num_values':        n,
+                'total_size':        total_size,
+            })
+            del value_bytes, page_body, full_page
+
+        col_chunk_bytes = []
+        total_rg_bytes = 0
+        for record in page_records:
+            meta = _enc_column_metadata(
+                phys_type=record['phys_type'],
+                conv_type=record['conv_type'],
+                col_name=record['name'],
+                codec=_CODEC_UNCOMPRESSED,
+                num_values=record['num_values'],
+                total_uncompressed=record['total_size'],
+                total_compressed=record['total_size'],
+                data_page_offset=record['data_page_offset'],
+                nullable=record['nullable'],
+            )
+            chunk = _enc_column_chunk(
+                meta, record['data_page_offset'])
+            col_chunk_bytes.append(chunk)
+            total_rg_bytes += record['total_size']
+
+        rg = _enc_row_group(col_chunk_bytes, total_rg_bytes, nrows)
+        footer = _enc_file_metadata(schema_elems, [rg], nrows)
+        f.write(footer)
+        f.write(_struct.pack('<I', len(footer)))
+        f.write(_MAGIC)
 
 
 def _write_empty_parquet(path: str, nrows: int) -> None:
