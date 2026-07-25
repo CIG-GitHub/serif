@@ -74,6 +74,8 @@ def cast(vector, target_type):
             name=vector._name,
         )
 
+    # An arbitrary callable carries no result-kind metadata. Preserve the
+    # replayable collection required for inference and its indexed errors.
     output = list(converted_values())
     return Vector(
         output,
@@ -150,6 +152,14 @@ def fillna(vector, value):
             new_dtype,
             name=vector._name,
         )
+    if len(vector) == 0:
+        return vector._clone(
+            vector._storage,
+            dtype=None,
+            name=vector._name,
+        )
+    # Defensive fallback for a non-empty dtype-less custom Vector: its result
+    # still needs whole-result inference.
     return Vector(tuple(values), dtype=None, name=vector._name)
 
 
@@ -160,6 +170,8 @@ def dropna(vector):
         if vector._dtype is not None
         else None
     )
+    # The optional accelerated gather requires a replayable positional
+    # indexer; these are selection coordinates, not boxed output values.
     kept = [index for index in range(len(storage)) if not storage.is_null(index)]
     return vector._clone(take_storage(storage, kept), dtype=new_dtype)
 
@@ -192,26 +204,29 @@ def is_type(vector, types):
 
 def unique(vector):
     Vector = _vector_class()
-    seen = set()
-    output = []
-    has_none = False
 
-    try:
+    def hashable_values():
+        seen = set()
         for element in vector._storage:
             if element not in seen:
                 seen.add(element)
-                output.append(element)
-                if element is None:
-                    has_none = True
+                yield element
+
+    try:
         if vector._dtype is not None:
-            return Vector(
-                output,
-                dtype=Schema(vector._dtype.kind, has_none),
+            return Vector._from_iterable_known_kind(
+                hashable_values(),
+                vector._dtype.kind,
             )
+        # A dtype-less custom Vector still requires inference. Public vectors
+        # reach this branch only when empty.
+        output = list(hashable_values())
         return Vector(output)
     except TypeError:
         pass
 
+    # Equality fallback for unhashable values must retain prior results so
+    # each candidate can be compared against them.
     output = []
     has_none = False
     for element in vector._storage:

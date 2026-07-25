@@ -16,6 +16,7 @@ from __future__ import annotations
 from ..vector import Vector
 from .storage import ArrayStorage
 from .dtype import Schema
+from .selection import take_storage
 from ..errors import SerifValueError, SerifTypeError
 
 
@@ -71,8 +72,6 @@ class _Category(Vector):
         SerifTypeError
             If categories contains non-string elements.
         """
-        from array import array
-
         # Reject unordered collections — iteration order would be arbitrary
         if isinstance(categories, (set, frozenset)):
             raise SerifTypeError(
@@ -93,16 +92,11 @@ class _Category(Vector):
         cat_tuple = tuple(cat_list)
         cat_index = {c: i for i, c in enumerate(cat_tuple)}
 
-        codes_list = []
-        null_flags = []
-        has_nulls = False
-
-        for v in values:
-            if v is None:
-                has_nulls = True
-                null_flags.append(True)
-                codes_list.append(0)  # sentinel
-            else:
+        def encoded_values():
+            for v in values:
+                if v is None:
+                    yield None
+                    continue
                 if not isinstance(v, str):
                     raise SerifTypeError(
                         f"Categorical values must be strings or None, got {type(v).__name__!r}"
@@ -111,15 +105,20 @@ class _Category(Vector):
                     raise SerifValueError(
                         f"Value {v!r} is not in the category list {cat_tuple}"
                     )
-                null_flags.append(False)
-                codes_list.append(cat_index[v])
+                yield cat_index[v]
 
-        from .nullable import BitMask
-        raw = array('q', codes_list)
-        mask = BitMask.from_iterable(null_flags) if has_nulls else None
-        code_storage = ArrayStorage(raw, mask)
+        code_storage = ArrayStorage.from_iterable(
+            encoded_values(),
+            typecode='q',
+            nullable=True,
+        )
 
-        return cls(code_storage, cat_tuple, name=name, nullable=has_nulls)
+        return cls(
+            code_storage,
+            cat_tuple,
+            name=name,
+            nullable=code_storage._mask is not None,
+        )
 
     # ------------------------------------------------------------------
     # Introspection
@@ -148,41 +147,38 @@ class _Category(Vector):
         yield from self._storage
 
     def __getitem__(self, key):
-        # Delegate to base for slice/mask/int, then re-wrap
         if isinstance(key, int):
             return self._storage[key]
 
-        if isinstance(key, slice):
-            new_codes = self._code_storage.slice(key)
-            return _Category(new_codes, self._categories, name=self._name,
-                                nullable=self._dtype.nullable)
+        # Apply the shared indexing rules to integer codes. This preserves
+        # diagnostics and warning behavior without decoding labels or
+        # demoting non-scalar selections to a plain string Vector.
+        code_vector = Vector._from_storage(
+            self._code_storage,
+            Schema(int, self._dtype.nullable),
+            name=self._name,
+        )
+        selected = code_vector[key]
+        if not isinstance(selected, Vector):
+            return None if selected is None else self._categories[selected]
 
-        if isinstance(key, Vector) and key.schema().kind == bool and not key.schema().nullable:
-            # boolean mask
-            codes_list = []
-            null_flags = []
-            has_nulls = False
-            for i, keep in enumerate(key):
-                if keep:
-                    is_null = self._code_storage.is_null(i)
-                    if is_null:
-                        has_nulls = True
-                        null_flags.append(True)
-                        codes_list.append(0)
-                    else:
-                        null_flags.append(False)
-                        codes_list.append(self._code_storage[i])
+        # The old non-nullable Vector-mask path narrowed nullability to the
+        # selected values. Keep that behavior; the other paths preserve the
+        # source schema, just as their former plain-Vector fallback did.
+        nullable = self._dtype.nullable
+        if (
+            isinstance(key, Vector)
+            and key.schema().kind == bool
+            and not key.schema().nullable
+        ):
+            nullable = selected._storage._mask is not None
 
-            from array import array
-            from .nullable import BitMask
-            raw = array('q', codes_list)
-            mask = BitMask.from_iterable(null_flags) if has_nulls else None
-            new_codes = ArrayStorage(raw, mask)
-            return _Category(new_codes, self._categories, name=self._name,
-                                nullable=has_nulls)
-
-        # Fallback: decode → base Vector handles it
-        return Vector(list(self._storage)).__getitem__(key)
+        return _Category(
+            selected._storage,
+            self._categories,
+            name=self._name,
+            nullable=nullable,
+        )
 
     def copy(self, new_storage=None, name=..., **kwargs):
         if new_storage is None:
@@ -196,8 +192,11 @@ class _Category(Vector):
                 name=self._name if name is ... else name,
                 nullable=self._dtype.nullable,
             )
-        # When called with a storage override (e.g. from _clone), decode back
-        return Vector(list(new_storage))
+        # Explicit replacement values retain the historical plain-Vector
+        # inference contract: unlike row selection, they are not guaranteed
+        # to belong to this categorical domain. Vector collects a one-shot
+        # iterable itself only when inference genuinely requires it.
+        return Vector(new_storage)
 
     def _clone(self, new_storage, dtype=..., name=...):
         """
@@ -217,7 +216,13 @@ class _Category(Vector):
                 name=use_name,
                 nullable=use_dtype.nullable if use_dtype is not None else True,
             )
-        return Vector(list(new_storage), dtype=use_dtype, name=use_name)
+        if use_dtype is None:
+            return Vector(new_storage, name=use_name)
+        return Vector._from_iterable_known_dtype(
+            new_storage,
+            use_dtype,
+            name=use_name,
+        )
 
     def __setitem__(self, key, value):
         self._require_mutable()
@@ -233,9 +238,9 @@ class _Category(Vector):
         semantics (int / slice / mask / index list), then re-encode against
         the SAME category list. Values outside the list raise SerifValueError.
         """
-        tmp = Vector(list(self._storage), dtype=Schema(str, True))
+        tmp = Vector._from_storage(self._storage, Schema(str, True))
         tmp[key] = value
-        new = _Category.from_values(list(tmp), self._categories, name=self._name)
+        new = _Category.from_values(tmp, self._categories, name=self._name)
         self._code_storage = new._code_storage
         self._dtype = new._dtype
         self._storage = _CategoryStorage(self._code_storage, self._categories)
@@ -406,24 +411,7 @@ class _Category(Vector):
 
         order = sorted(range(n), key=key_fn, reverse=reverse)
 
-        from array import array
-        from .nullable import BitMask
-        new_codes_list = []
-        new_null_flags = []
-        has_nulls = False
-        for i in order:
-            is_null = self._code_storage.is_null(i)
-            if is_null:
-                has_nulls = True
-                new_null_flags.append(True)
-                new_codes_list.append(0)
-            else:
-                new_null_flags.append(False)
-                new_codes_list.append(self._code_storage[i])
-
-        raw = array('q', new_codes_list)
-        mask = BitMask.from_iterable(new_null_flags) if has_nulls else None
-        new_code_storage = ArrayStorage(raw, mask)
+        new_code_storage = take_storage(self._code_storage, order)
         return _Category(new_code_storage, self._categories, name=self._name,
                             nullable=self._dtype.nullable)
 

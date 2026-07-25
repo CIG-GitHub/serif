@@ -228,7 +228,7 @@ _DATE_PROXY_KINDS = {
 }
 
 for _m in _DATE_PROXY_METHODS:
-    setattr(_Date, _m, _elementwise_proxy(_m, _DATE_PROXY_KINDS.get(_m)))
+    setattr(_Date, _m, _elementwise_proxy(_m, _DATE_PROXY_KINDS[_m]))
 del _m
 
 for _attribute in ('year', 'month', 'day'):

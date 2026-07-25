@@ -28,6 +28,8 @@ from serif._vector._numpy import selection as numpy_selection
 from serif._vector._python import reductions as python_reductions
 from serif._vector._python import selection as python_selection
 from serif._vector.storage import ArrayStorage
+from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
 
 
 def test_declined_has_one_identity_and_is_not_none():
@@ -625,6 +627,69 @@ def test_multi_key_grouping_uses_canonical_python_path(monkeypatch):
     ]
 
 
+def test_python_grouping_reads_key_storage_directly(monkeypatch):
+    int_storage = Vector([2, None, 2, 1])._storage
+    string_storage = Vector(['b', 'n', 'b', 'a'])._storage
+    object_storage = Vector([10, 20, 10, 30]).to_object()._storage
+
+    def unexpected_snapshot(storage):
+        raise AssertionError('Python grouping snapshotted key storage')
+
+    monkeypatch.setattr(ArrayStorage, 'to_tuple', unexpected_snapshot)
+    monkeypatch.setattr(StringStorage, 'to_tuple', unexpected_snapshot)
+    monkeypatch.setattr(TupleStorage, 'to_tuple', unexpected_snapshot)
+
+    buckets, row_keys = python_grouping.bucket_rows(
+        [int_storage, string_storage, object_storage],
+        4,
+        track_row_keys=True,
+    )
+
+    assert list(buckets) == [
+        (2, 'b', 10),
+        (None, 'n', 20),
+        (1, 'a', 30),
+    ]
+    assert buckets == {
+        (2, 'b', 10): [0, 2],
+        (None, 'n', 20): [1],
+        (1, 'a', 30): [3],
+    }
+    assert row_keys == [
+        (2, 'b', 10),
+        (None, 'n', 20),
+        (2, 'b', 10),
+        (1, 'a', 30),
+    ]
+
+
+def test_python_grouping_preserves_unhashable_key_error():
+    storage = Vector([[1]], name='key').to_object()._storage
+
+    with pytest.raises(TypeError, match="unhashable type: 'list'"):
+        python_grouping.bucket_rows([storage], 1)
+
+
+def test_object_group_slicing_reads_storage_directly(monkeypatch):
+    table = Table([
+        Vector([2, 1, 2], name='group'),
+        Vector([['a'], ['b'], ['c']], name='payload').to_object(),
+    ])
+
+    def unexpected_snapshot(storage):
+        raise AssertionError('group slicing snapshotted object storage')
+
+    monkeypatch.setattr(TupleStorage, 'to_tuple', unexpected_snapshot)
+
+    result = table.aggregate(
+        groupby='group',
+        aggregations={'size': lambda group: len(group.payload)},
+    )
+
+    assert list(result.group) == [2, 1]
+    assert list(result['size']) == [2, 1]
+
+
 def test_window_row_keys_use_canonical_python_grouping(monkeypatch):
     def unexpected_optional(storage):
         raise AssertionError('window row keys reached optional dispatch')
@@ -787,6 +852,50 @@ def test_join_declines_reach_mandatory_python_path(monkeypatch):
     result = left.left_join(right, 'key', 'key')
     assert list(result.y) == [None, 30]
     assert calls == ['python']
+
+
+def test_python_join_reads_key_storage_directly(monkeypatch):
+    left_storages = [
+        Vector([2, None, 1])._storage,
+        Vector(['b', 'n', 'a'])._storage,
+        Vector(['left-b', 'left-n', 'left-a']).to_object()._storage,
+    ]
+    right_storages = [
+        Vector([1, 2, 2, None])._storage,
+        Vector(['a', 'b', 'b', 'n'])._storage,
+        Vector(
+            ['left-a', 'left-b', 'left-b', 'left-n']
+        ).to_object()._storage,
+    ]
+
+    def unexpected_snapshot(storage):
+        raise AssertionError('Python join snapshotted key storage')
+
+    monkeypatch.setattr(ArrayStorage, 'to_tuple', unexpected_snapshot)
+    monkeypatch.setattr(StringStorage, 'to_tuple', unexpected_snapshot)
+    monkeypatch.setattr(TupleStorage, 'to_tuple', unexpected_snapshot)
+
+    assert python_joins.probe(
+        left_storages,
+        right_storages,
+        3,
+        4,
+        False,
+        True,
+        False,
+        False,
+    ) == ('right_dup', (2, 'b', 'left-b'), 2)
+
+    assert python_joins.probe(
+        left_storages,
+        right_storages,
+        3,
+        4,
+        False,
+        False,
+        True,
+        True,
+    ) == ('ok', [0, 0, 1, 2], [1, 2, 3, 0])
 
 
 def test_join_backend_defects_propagate_without_fallback(monkeypatch):

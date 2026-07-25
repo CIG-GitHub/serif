@@ -1,6 +1,10 @@
 """Tests for Table.sort_by() method."""
 import pytest
 from serif import Table, Vector
+from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
+from serif._vector.storage import StringStorage
+from serif._vector.storage import TupleStorage
 
 
 def test_sort_by_single_column_ascending():
@@ -202,4 +206,35 @@ def test_sort_by_does_not_mutate_original():
 	assert list(t['name']) == original_names
 	# Result should be sorted
 	assert list(result['name']) == ['Alice', 'Bob', 'Charlie']
+
+
+@pytest.mark.parametrize(
+	"vector, storage_type, expected",
+	[
+		(Vector([3, 1, 2], name='key'), ArrayStorage, [1, 2, 3]),
+		(Vector([True, False, True], name='key'), BoolStorage,
+		 [False, True, True]),
+		(Vector(['c', 'a', 'b'], name='key'), StringStorage,
+		 ['a', 'b', 'c']),
+		(Vector([3, 1, 2], name='key').to_object(), TupleStorage,
+		 [1, 2, 3]),
+	],
+	ids=['array', 'bool', 'string', 'tuple'],
+)
+def test_sort_key_storage_is_not_snapshotted(
+	vector,
+	storage_type,
+	expected,
+	monkeypatch,
+):
+	table = Table([vector])
+
+	def unexpected_snapshot(storage):
+		raise AssertionError('sort snapshotted key storage')
+
+	monkeypatch.setattr(storage_type, 'to_tuple', unexpected_snapshot)
+
+	result = table.sort_by('key')
+
+	assert list(result.key) == expected
 
