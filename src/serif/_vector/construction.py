@@ -1,6 +1,7 @@
 """Vector construction, subtype selection, and storage selection."""
 
 from datetime import date
+from itertools import repeat
 
 from ..errors import SerifValueError
 from .dtype import Schema
@@ -239,7 +240,10 @@ def filled(cls, value, length, typesafe=False):
         dtype = infer_dtype([value])
         if typesafe:
             dtype = Schema(dtype.kind, False)
-        return cls([value for _ in range(length)], dtype=dtype)
+        return cls._from_iterable_known_dtype(
+            repeat(value, length),
+            dtype,
+        )
 
     dtype = (
         infer_dtype([value])

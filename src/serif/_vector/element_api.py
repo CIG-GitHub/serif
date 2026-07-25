@@ -17,6 +17,8 @@ class MethodProxy:
 
     def __call__(self, *args, **kwargs):
         method = self._method_name
+        # Dynamic scalar methods carry no result-kind metadata. Keep the
+        # materialized results required for whole-result dtype inference.
         results = []
         for element in self._vector._storage:
             if element is None:
@@ -26,7 +28,7 @@ class MethodProxy:
         return _vector_class()(results)
 
 
-def _elementwise_proxy(method_name, result_kind=None):
+def _elementwise_proxy(method_name, result_kind):
     """Build an explicit per-element method for a typed Vector subclass."""
     def proxy(self, *args, **kwargs):
         Vector = _vector_class()
@@ -38,9 +40,7 @@ def _elementwise_proxy(method_name, result_kind=None):
             )
             for element in self._storage
         )
-        if result_kind is not None:
-            return Vector._from_iterable_known_kind(values, result_kind)
-        return Vector(tuple(values))
+        return Vector._from_iterable_known_kind(values, result_kind)
 
     proxy.__name__ = method_name
     proxy.__doc__ = (
@@ -88,6 +88,8 @@ def resolve(vector, name):
     if callable(class_attribute):
         return MethodProxy(vector, name)
 
+    # Dynamic scalar attributes also lack result-kind metadata, so inference
+    # requires one replayable materialization of the complete result.
     Vector = _vector_class()
     return Vector(tuple(
         getattr(element, name) if element is not None else None

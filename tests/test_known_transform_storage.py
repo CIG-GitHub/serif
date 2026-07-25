@@ -155,3 +155,81 @@ def test_fillna_date_to_datetime_promotion_builds_tuple_storage():
         datetime(2024, 1, 1),
         datetime(2024, 1, 2, 12),
     ]
+
+
+def test_filled_builds_known_storage_directly():
+    integers = Vector.filled(7, 4)
+    strings = Vector.filled('x', 3)
+    nulls = Vector.filled(None, 2)
+
+    assert isinstance(integers._storage, ArrayStorage)
+    assert integers.schema() == Schema(int, False)
+    assert list(integers) == [7, 7, 7, 7]
+    assert isinstance(strings._storage, StringStorage)
+    assert strings.schema() == Schema(str, False)
+    assert list(strings) == ['x', 'x', 'x']
+    assert isinstance(nulls._storage, TupleStorage)
+    assert nulls.schema() == Schema(object, True)
+    assert list(nulls) == [None, None]
+
+
+def test_filled_preserves_repeated_identity_and_exact_large_ints():
+    marker = []
+    objects = Vector.filled(marker, 3)
+    huge = 2 ** 80
+    integers = Vector.filled(huge, 2)
+
+    assert all(value is marker for value in objects)
+    assert isinstance(integers._storage, TupleStorage)
+    assert integers.schema() == Schema(int, False)
+    assert list(integers) == [huge, huge]
+
+
+def test_hashable_unique_streams_into_known_storage():
+    source = Vector([3, None, 3, 1, None])
+
+    result = source.unique()
+
+    assert isinstance(result._storage, ArrayStorage)
+    assert result.schema() == Schema(int, True)
+    assert list(result) == [3, None, 1]
+
+
+def test_unique_keeps_exact_large_ints_and_unhashable_fallback():
+    huge = 2 ** 80
+    integers = Vector([huge, 2, huge])
+    objects = Vector(
+        [[1], [1], [2]],
+        dtype=Schema(object, False),
+    )
+
+    integer_result = integers.unique()
+    object_result = objects.unique()
+
+    assert isinstance(integer_result._storage, TupleStorage)
+    assert integer_result.schema() == Schema(int, False)
+    assert list(integer_result) == [huge, 2]
+    assert isinstance(object_result._storage, TupleStorage)
+    assert object_result.schema() == Schema(object, False)
+    assert list(object_result) == [[1], [2]]
+
+
+def test_empty_untyped_fillna_reuses_storage(monkeypatch):
+    source = Vector([], name='empty')
+    original_storage = source._storage
+
+    def unexpected_rebuild(*args, **kwargs):
+        raise AssertionError('empty fillna rebuilt storage')
+
+    monkeypatch.setattr(
+        TupleStorage,
+        'from_iterable',
+        unexpected_rebuild,
+    )
+
+    result = source.fillna(0)
+
+    assert result._storage is original_storage
+    assert result.schema() is None
+    assert result.vector_name == 'empty'
+    assert result._wild is True

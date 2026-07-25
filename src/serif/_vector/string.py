@@ -176,5 +176,5 @@ _STR_PROXY_KINDS = {
 }
 
 for _m in _STR_PROXY_METHODS:
-    setattr(_String, _m, _elementwise_proxy(_m, _STR_PROXY_KINDS.get(_m)))
+    setattr(_String, _m, _elementwise_proxy(_m, _STR_PROXY_KINDS[_m]))
 del _m
