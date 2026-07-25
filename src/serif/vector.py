@@ -5,6 +5,7 @@ from .errors import SerifTypeError
 from .errors import SerifValueError
 from .display import _printr
 from .naming import _sanitize_user_name
+from ._vector import coalesce as _coalesce
 from ._vector import construction as _construction
 from ._vector import element_api as _element_api
 from ._vector import mutation as _mutation
@@ -218,6 +219,11 @@ class Vector():
 
     def fillna(self, value):
         return _transforms.fillna(self, value)
+
+
+    def coalesce(self, *others):
+        """Take the first non-None value from corresponding Vector positions."""
+        return _coalesce.coalesce(self, *others)
 
 
     def dropna(self):
