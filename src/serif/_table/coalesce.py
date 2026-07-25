@@ -21,9 +21,15 @@ def coalesce(table, *others):
 
     for position, other in enumerate(others, start=1):
         if not isinstance(other, Table):
+            from ..vector import Vector
+            argument_type = (
+                "Vector"
+                if isinstance(other, Vector) and other.ndims() == 1
+                else type(other).__name__
+            )
             raise SerifTypeError(
                 "Table.coalesce() expects only Table arguments; "
-                f"argument {position} is {type(other).__name__}"
+                f"argument {position} is {argument_type}"
             )
         if other.shape != table.shape:
             raise SerifValueError(
