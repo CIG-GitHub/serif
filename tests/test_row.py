@@ -58,8 +58,7 @@ def test_row_sum_skips_nulls(null_t):
 
 
 def test_row_aggregation_per_iteration(num_t):
-    # The mutable-iterator pattern reuses one Row object; aggregation must
-    # reflect the CURRENT index each time.
+    # Each fixed-index Row must aggregate its own values.
     assert [r.sum() for r in num_t] == [111, 222, 333]
 
 
@@ -140,6 +139,42 @@ def test_row_isinstance(num_t):
 def test_row_unpacking(num_t):
     a, b, c = num_t[0]
     assert (a, b, c) == (1, 10, 100)
+
+
+def test_table_iteration_yields_distinct_stable_rows(num_t):
+    rows = list(num_t)
+
+    assert len({id(row) for row in rows}) == 3
+    assert [list(row) for row in rows] == [
+        [1, 10, 100],
+        [2, 20, 200],
+        [3, 30, 300],
+    ]
+    assert [row.a for row in rows] == [1, 2, 3]
+
+
+def test_table_iteration_snapshots_columns_when_iteration_starts(num_t):
+    rows = iter(num_t)
+    first = next(rows)
+
+    num_t[1, 'a'] = 999
+    second = next(rows)
+
+    assert first.a == 1
+    assert second.a == 2
+    assert num_t[1, 'a'] == 999
+
+
+def test_table_iteration_snapshots_active_batch_buffers(num_t):
+    with num_t.batch():
+        rows = iter(num_t)
+        first = next(rows)
+        num_t[1, 'a'] = 999
+        second = next(rows)
+
+    assert first.a == 1
+    assert second.a == 2
+    assert num_t[1, 'a'] == 999
 
 
 def test_row_getitem_int_str_attr(num_t):

@@ -1,7 +1,7 @@
 """
 Pins for the semantic fixes (commit 3): loud errors instead of silent
 wrongness, honest schemas, backend preservation across mutation, and the
-documented ride-along Row semantics.
+documented stable Row iteration semantics.
 """
 
 import warnings
@@ -285,23 +285,22 @@ def test_parquet_duplicate_column_names_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Ride-along Row views: intentional, documented semantics
+# Stable Row iteration semantics
 # ---------------------------------------------------------------------------
 
-def test_row_iteration_is_ride_along_view():
+def test_row_iteration_yields_stable_values():
     t = Table({'a': [1, 2, 3]})
     rows = list(t)
-    # One view object, parked on the last row — this is the documented
-    # zero-allocation design (docs/table-model.md #4), not a bug.
-    assert rows[0] is rows[1] is rows[2]
-    assert rows[0]['a'] == 3
+
+    assert rows[0] is not rows[1]
+    assert rows[1] is not rows[2]
+    assert [row['a'] for row in rows] == [1, 2, 3]
 
 
 def test_row_iteration_consume_in_loop_is_correct():
     t = Table({'a': [1, 2, 3], 'b': [10, 20, 30]})
     seen = [(row['a'], row['b']) for row in t]
     assert seen == [(1, 10), (2, 20), (3, 30)]
-    # Explicit materialization pattern from the docs:
     assert [tuple(row) for row in t] == [(1, 10), (2, 20), (3, 30)]
 
 
