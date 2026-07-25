@@ -47,7 +47,7 @@ t.v[0] = 5          # ✗ SerifTypeError — and the error contains the fix
 t['v'][0] = 5       # ✗ same path, string spelling
 v = t.v
 v[0] = 5            # ✗ the same operation, three lines apart
-t.v.alias('new')     # ✗ metadata is frozen too; use t.rename(...)
+t.v.alias('new')     # ✗ metadata is frozen too; use t.rename_columns(...)
 ```
 
 ## Why: the two spellings are the same spelling

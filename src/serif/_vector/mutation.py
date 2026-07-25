@@ -38,7 +38,7 @@ def require_mutable_metadata(vector):
             "Read-out columns are values: this vector is owned by a "
             "Table and its metadata is frozen. Rename through the table "
             "instead:\n"
-            f"    t = t.rename({{{column!r}: 'new_name'}})\n"
+            f"    t = t.rename_columns({{{column!r}: 'new_name'}})\n"
             "For an independent renameable vector use .copy()."
         )
 

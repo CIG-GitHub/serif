@@ -56,8 +56,12 @@ The goal is not to redefine Python, but to inherit its behaviors where they make
 
 Ambiguity leads to bugs. Serif avoids “cleverness” that conceals meaning.
 
-- No automatic type inference beyond what Python already does.
-- No silent coercions except those Python performs natively.
+- Untyped construction infers one schema from the complete input; compatible
+  Python numeric kinds promote normally, and incompatible mixed kinds infer
+  `object`.
+- An explicit or established schema is a constraint. Incompatible values
+  raise instead of silently degrading it.
+- No silent coercions except Python-standard numeric promotions.
 - Column names map directly to columns, and nothing else.
 - Masking is always explicit.
 - Indexing rules are strict, predictable, and documented.

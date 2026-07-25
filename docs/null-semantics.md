@@ -161,8 +161,25 @@ value. `dropna()` — remove null positions. These are the only operations
 that *look at* nullness; everything else either propagates it (element-wise)
 or skips it (aggregate).
 
-## Open question (documented current behavior, not yet doctrine)
+## Null keys in joins and grouping
 
-Join and groupby keys currently match nulls to each other (Python equality
-on the key tuple: `None == None` groups together). SQL says null keys match
-nothing. This is unresolved — today's behavior is the Python-equality one.
+Joins and grouping ask different questions, so null keys follow different
+rules.
+
+**Joins:** a key containing a null never matches another key. A join predicate
+must be positively true, and equality involving an unknown value is unknown,
+not true. In an inner join, null-key rows therefore do not appear. In a left
+or full join, they survive only as unmatched rows. For a multi-column key, a
+null in any component makes the complete key non-matching. Repeated null keys
+do not violate `expect_left_unique` or `expect_right_unique`, because they
+cannot produce multiple matches.
+
+**Grouping and windows:** null keys form groups. Grouping classifies rows
+rather than asserting equality, and silently dropping null-key rows would
+discard data. Rows with the same key, including the same null components, are
+placed in one bucket; `(None, 'A')` and `(None, 'B')` remain distinct groups.
+
+**Known implementation gap:** grouping already follows this doctrine. Joins
+do not yet: the current pure-Python join path uses ordinary Python tuple
+hashing and equality, so null keys still match each other. That behavior is
+incorrect and remains to be fixed.
