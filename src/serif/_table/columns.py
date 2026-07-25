@@ -260,7 +260,7 @@ def resolve_column(table, spec):
     )
 
 
-def rename(table, mapping):
+def rename_columns(table, mapping):
     """Return a new Table with simultaneous owner-addressed renames."""
     copied_columns = [column.copy() for column in iter_columns(table)]
     original_names = [column._name for column in copied_columns]
@@ -268,7 +268,8 @@ def rename(table, mapping):
     for key, new_name in mapping.items():
         if isinstance(key, bool):
             raise SerifTypeError(
-                "rename key must be a column name (str) or index (int), "
+                "rename_columns mapping keys must be column names (str) "
+                "or indexes (int), "
                 f"not bool: {key!r}"
             )
         if isinstance(key, int):
@@ -292,7 +293,7 @@ def rename(table, mapping):
                 f"Column name '{key}' is ambiguous "
                 f"({len(matches)} columns share it); rename by position "
                 "instead, e.g. "
-                f"rename({{{matches[0]}: {new_name!r}}})."
+                f"rename_columns({{{matches[0]}: {new_name!r}}})."
             )
         copied_columns[matches[0]]._name = new_name
 

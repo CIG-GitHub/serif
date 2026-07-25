@@ -7,7 +7,7 @@ def test_table_owned_column_vector_name_is_frozen():
     t = Table({'old_name': [1, 2, 3], 'other': [4, 5, 6]})
     col = t.old_name
 
-    with pytest.raises(SerifTypeError, match=r"t = t\.rename"):
+    with pytest.raises(SerifTypeError, match=r"t = t\.rename_columns"):
         col.vector_name = 'new_name'
 
     assert t.column_names() == ['old_name', 'other']
@@ -31,9 +31,9 @@ def test_copied_column_metadata_is_independent_and_mutable():
     assert t.column_names() == ['old_name']
 
 
-def test_rename_remains_owner_addressed_and_non_mutating():
+def test_rename_columns_remains_owner_addressed_and_non_mutating():
     t = Table({'lowercase': [1, 2, 3]})
-    renamed = t.rename({'lowercase': 'UPPERCASE'})
+    renamed = t.rename_columns({'lowercase': 'UPPERCASE'})
 
     assert t.column_names() == ['lowercase']
     assert renamed.column_names() == ['UPPERCASE']

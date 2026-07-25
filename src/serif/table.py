@@ -269,7 +269,7 @@ class Table(Vector):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
         return _mutation.setattr(self, attr, value)
 
-    def rename(self, mapping):
+    def rename_columns(self, mapping):
         """Return a NEW Table with columns renamed per {old: new}.
 
         Non-mutating (matches drop / pandas / polars). Keys may be:
@@ -283,13 +283,13 @@ class Table(Vector):
         {'a': 'b', 'b': 'c'} does not cascade. Raises SerifKeyError for a
         missing name, an ambiguous name, or an out-of-range index.
         """
-        return _columns.rename(self, mapping)
+        return _columns.rename_columns(self, mapping)
 
     def drop(self, *names):
         """Return a NEW Table without the named column(s).
 
-        Non-mutating — the original table is unchanged (like rename). Names
-        may be passed as varargs or a single
+        Non-mutating — the original table is unchanged (like rename_columns).
+        Names may be passed as varargs or a single
         list/tuple: `t.drop('a')`, `t.drop('a', 'b')`, `t.drop(['a', 'b'])`.
         Raises SerifKeyError if any name is not a column.
         """

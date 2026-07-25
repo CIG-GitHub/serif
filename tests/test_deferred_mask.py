@@ -507,7 +507,7 @@ def test_drop_and_rename_are_plain_and_nonmutating(tier):
     qd = q.drop('a')
     assert type(qd) is Table
     assert_same_table(qd, e.drop('a'))
-    qr = q.rename({'a': 'z'})
+    qr = q.rename_columns({'a': 'z'})
     assert type(qr) is Table
     assert qr.column_names() == ['z', 'b', 's', 'n', 'f']
     assert q.column_names() == ['a', 'b', 's', 'n', 'f']  # non-mutating
@@ -561,7 +561,7 @@ def test_new_collision_after_defer_still_warns(tier):
     t = Table({'a': [1, 2, 3], 'b': [4, 5, 6]})
     q = t[t.a > 1]
     with pytest.warns(UserWarning, match="reserved"):
-        qr = q.rename({'b': 'sum'})       # fresh table, fresh sin
+        qr = q.rename_columns({'b': 'sum'})  # fresh table, fresh sin
     assert list(qr['sum']) == [5, 6]
 
 
@@ -604,7 +604,7 @@ def test_rename_on_deferred_table_is_owner_addressed(tier):
     t = make_table()
     q = t[t.a > 3]
     with pytest.warns(UserWarning, match="reserved"):
-        renamed = q.rename({'b': 'sum'})
+        renamed = q.rename_columns({'b': 'sum'})
     assert list(renamed.sum_) == [4.0, 5.5, 6.75]
     assert q.column_names() == ['a', 'b', 's', 'n', 'f']
 
