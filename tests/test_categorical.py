@@ -2,6 +2,7 @@
 import pytest
 from serif import Vector
 from serif._vector.categorical import _Category
+from serif._vector.categorical import _CategoryStorage
 from serif.errors import SerifValueError
 from serif.errors import SerifTypeError
 
@@ -217,6 +218,91 @@ class TestCategoricalIndexing:
         filtered = c[mask]
         assert isinstance(filtered, _Category)
         assert list(filtered) == ['m', 'l', 'xl']
+
+    @pytest.mark.parametrize(
+        "selector, expected_values, expected_codes",
+        [
+            (slice(1, None), [None, 's', 'l'], [None, 1, 3]),
+            (
+                [True, False, True, False],
+                ['m', 's'],
+                [2, 1],
+            ),
+            (
+                Vector([True, None, False, True]),
+                ['m', 'l'],
+                [2, 3],
+            ),
+            ([3, 0, 3], ['l', 'm', 'l'], [3, 2, 3]),
+            (Vector([3, 0, 3]), ['l', 'm', 'l'], [3, 2, 3]),
+            ((slice(0, 2),), ['m', None], [2, None]),
+        ],
+        ids=[
+            'slice',
+            'boolean-list',
+            'nullable-boolean-vector',
+            'integer-list',
+            'integer-vector',
+            'tuple-slice',
+        ],
+    )
+    def test_non_scalar_selection_stays_encoded(
+        self,
+        selector,
+        expected_values,
+        expected_codes,
+        monkeypatch,
+    ):
+        c = Vector(
+            ['m', None, 's', 'l'],
+            name='size',
+        ).categorize(SIZES)
+
+        def unexpected_decode(storage):
+            raise AssertionError('categorical selection decoded all labels')
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                _CategoryStorage,
+                '__iter__',
+                unexpected_decode,
+            )
+            selected = c[selector]
+
+        assert isinstance(selected, _Category)
+        assert selected.categories == tuple(SIZES)
+        assert selected.vector_name == 'size'
+        assert list(selected) == expected_values
+        assert list(selected._code_storage) == expected_codes
+
+    def test_tuple_scalar_index_still_returns_label(self):
+        c = make_cat(['s', 'm', 'l'])
+        assert c[(1,)] == 'm'
+
+    def test_positional_selection_keeps_categorical_semantics(self):
+        c = make_cat(['l', 'xs', 'm'])
+        selected = c[[0, 1, 2]]
+
+        assert list(selected.sort_by()) == ['xs', 'm', 'l']
+        with pytest.raises(SerifValueError, match="not in the category list"):
+            _ = selected < 'xxl'
+        with pytest.raises(SerifValueError, match="not in the category list"):
+            selected[0] = 'xxl'
+
+    def test_mutation_rebuild_preserves_codes_and_is_atomic(self):
+        c = make_cat(['m', 's', 'l'])
+        c[[0, 2]] = ['l', None]
+
+        assert list(c) == ['l', 's', None]
+        assert list(c._code_storage) == [3, 1, None]
+        assert c.categories == tuple(SIZES)
+        assert c.schema().nullable is True
+
+        with pytest.raises(SerifValueError, match="not in the category list"):
+            c[[0, 1]] = ['s', 'xxl']
+
+        assert list(c) == ['l', 's', None]
+        assert list(c._code_storage) == [3, 1, None]
 
 
 class TestCategoricalIsin:
