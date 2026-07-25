@@ -51,8 +51,10 @@ def test_null_first_then_promotion():
     assert s.nullable is True
 
 
-def test_null_first_mixed_degrades_with_warning():
-    with pytest.warns(UserWarning, match='[Dd]egrading'):
+def test_null_first_mixed_infers_object_silently():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
         s = Vector([None, 1, 'a']).schema()
     assert s.kind is object
 

@@ -13,7 +13,6 @@ from typing import Any
 from typing import Iterable
 from typing import Optional
 from typing import Type
-import warnings
 
 
 Schema = namedtuple('Schema', ['kind', 'nullable'])
@@ -72,7 +71,7 @@ def promote_dtype(schema: Schema, value: Any) -> Schema:
     Return a new Schema promoted to accommodate value.
 
     None values update nullable only; the kind is unchanged.
-    Mixed incompatible types degrade to object with a warning.
+    Mixed incompatible types infer object without warning.
     """
     if value is None:
         if schema.nullable:
@@ -110,11 +109,6 @@ def promote_dtype(schema: Schema, value: Any) -> Schema:
         return schema
 
     if schema.kind is not object:
-        warnings.warn(
-            f"Degrading column<{schema.kind.__name__}> to column<object> "
-            f"due to incompatible value of type {vtype.__name__}",
-            stacklevel=3,
-        )
         return Schema(object, schema.nullable)
 
     return schema
