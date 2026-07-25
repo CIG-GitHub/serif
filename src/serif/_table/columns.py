@@ -3,6 +3,7 @@
 import warnings
 from collections.abc import Iterable
 
+from ..errors import SerifIndexError
 from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
@@ -209,7 +210,13 @@ def get_attribute(table, attr, fallback):
 def columns(table, key=None):
     """Return one or more structural columns by position."""
     if isinstance(key, int):
-        return table._storage[key]
+        try:
+            return table._storage[key]
+        except IndexError:
+            raise SerifIndexError(
+                f"Column index {key} out of range "
+                f"(table has {len(table._storage)} columns)"
+            ) from None
     if isinstance(key, slice):
         return table._storage.to_tuple()[key]
     return table._storage.to_tuple()

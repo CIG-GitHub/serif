@@ -6,7 +6,7 @@ from array import array
 import pytest
 
 from serif import Table, read_parquet
-from serif.errors import SerifValueError
+from serif.errors import SerifIndexError, SerifValueError
 from serif.table import MaskedTable
 import serif.io.parquet as parquet
 from serif.io.parquet import (
@@ -86,6 +86,19 @@ def test_read_is_footer_only_and_schema_view_is_free(tmp_path, monkeypatch):
     assert result.shape == (4, 3)
     assert result.column_names() == ['a', 'b', 's']
     assert '.a' in repr(result._)
+    assert result._mat is None
+    assert result._gathered == {}
+
+
+def test_lazy_parquet_cols_out_of_range_raises_exact_serif_index_error(tmp_path):
+    path = tmp_path / 'table.parquet'
+    _write_table(path)
+    result = read_parquet(path)
+
+    with pytest.raises(SerifIndexError) as exc:
+        result.cols(len(result.column_names()))
+
+    assert type(exc.value) is SerifIndexError
     assert result._mat is None
     assert result._gathered == {}
 

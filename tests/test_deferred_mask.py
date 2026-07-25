@@ -23,7 +23,12 @@ import pytest
 
 from serif import Table, Vector
 from serif.table import MaskedTable
-from serif.errors import SerifKeyError, SerifTypeError, SerifValueError
+from serif.errors import (
+    SerifIndexError,
+    SerifKeyError,
+    SerifTypeError,
+    SerifValueError,
+)
 from serif._vector import selection as vector_selection
 from serif._vector._numpy import selection as numpy_selection
 
@@ -105,6 +110,16 @@ def test_masking_returns_deferred_subtype(tier):
     assert isinstance(q, Table)
     # list masks defer too
     assert type(t[[True] * 6]) is MaskedTable
+
+
+def test_deferred_cols_out_of_range_raises_exact_serif_index_error(tier):
+    t = make_table()
+    q = t[t.a > 3]
+
+    with pytest.raises(SerifIndexError) as exc:
+        q.cols(len(q.column_names()))
+
+    assert type(exc.value) is SerifIndexError
 
 
 def test_categorical_column_round_trip(tier):

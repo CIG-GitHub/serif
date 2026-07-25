@@ -14,6 +14,8 @@ from typing import Iterable
 from typing import Optional
 from typing import Type
 
+from ..errors import SerifTypeError
+
 
 Schema = namedtuple('Schema', ['kind', 'nullable'])
 """
@@ -175,7 +177,7 @@ def validate_scalar(value: Any, dtype: Schema) -> Any:
     """Validate (and possibly coerce) a scalar before writing into a vector."""
     if value is None:
         if not dtype.nullable:
-            raise TypeError(
+            raise SerifTypeError(
                 f"Cannot store None in non-nullable {dtype.kind.__name__} column"
             )
         return None
@@ -206,6 +208,6 @@ def validate_scalar(value: Any, dtype: Schema) -> Any:
         except TypeError:
             pass
 
-    raise TypeError(
+    raise SerifTypeError(
         f"Incompatible value {value!r} for column<{dtype.kind.__name__}>"
     )

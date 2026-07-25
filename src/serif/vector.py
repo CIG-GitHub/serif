@@ -659,7 +659,7 @@ class Vector():
         Users often mistakenly use 'if vec' when they mean 'if vec.any()' or 'if vec.all()'.
         Use len(vec) > 0 to check for emptiness.
         """
-        raise TypeError(
+        raise SerifTypeError(
             "Vector cannot be used in a boolean context (e.g., 'if vector:'). "
             "Use .any() or .all() for element-wise checks, or len(vector) > 0 to check for emptiness."
         )
