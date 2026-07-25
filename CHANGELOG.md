@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 – Column Rename Clarity
+
+### Changed
+- Breaking, pre-1.0: `Table.rename({old: new})` is now
+  `Table.rename_columns({old: new})`. Behavior is otherwise unchanged.
+
 ## 0.2.0 – Optional Acceleration & Value Semantics
 
 ### Changed

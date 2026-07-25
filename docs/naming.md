@@ -12,8 +12,8 @@ Names in Vector and Table are simple, non-magical metadata.
 Names are human-facing, not structural.
 
 A table-owned column's name is frozen along with its values. Rename through
-the owner with `t.rename({'old': 'new'})`; use `t.col.copy().alias('new')` for
-an independent named Vector.
+the owner with `t.rename_columns({'old': 'new'})`; use
+`t.col.copy().alias('new')` for an independent named Vector.
 
 ## Table
 - each column has its own name  
@@ -51,5 +51,5 @@ column's accessor alongside its original name.
 - weird user-provided column names are allowed
 - dot-access provides ergonomic access without polluting data semantics
 - exact and sanitized names resolve identically in one- and two-axis access
-- users rename columns owner-first with `Table.rename()`
+- users rename columns owner-first with `Table.rename_columns()`
 

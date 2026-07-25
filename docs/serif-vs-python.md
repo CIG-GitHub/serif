@@ -33,7 +33,8 @@ original vector therefore cannot affect the table, and table writes cannot
 affect an external vector.
 
 The boundary includes metadata: a read-out table column cannot rename its
-owner through `.vector_name` or `.alias()`. Rename through `Table.rename()`.
+owner through `.vector_name` or `.alias()`. Rename through
+`Table.rename_columns()`.
 
 This ensures table operations are deterministic and isolating.
 

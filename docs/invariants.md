@@ -82,6 +82,6 @@ Null positions yield `None`.
 ## 12. Table-owned columns are complete values
 Data and metadata read out of a table are frozen. Element assignment,
 `.vector_name = ...`, and `.alias(...)` all raise on table-owned columns.
-Write data through table indexing and rename through `Table.rename()`.
+Write data through table indexing and rename through `Table.rename_columns()`.
 A `.copy()` is an independent mutable and renameable Vector.
 
