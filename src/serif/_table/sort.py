@@ -3,6 +3,10 @@
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from .._vector.selection import take_storage
+from .._vector.storage import ArrayStorage
+from .._vector.storage import BoolStorage
+from .._vector.storage import StringStorage
+from .._vector.storage import TupleStorage
 from ..vector import Vector
 from .._vector.transforms import _null_sort_flag
 from .columns import iter_columns
@@ -12,6 +16,48 @@ def _table_class():
     # Local import avoids a cycle while Table delegates sorting here.
     from ..table import Table
     return Table
+
+
+def _sort_value_getter(storage):
+    """Return a direct scalar accessor without snapshotting the column."""
+    if isinstance(storage, ArrayStorage):
+        data = storage._data
+        mask = storage._mask
+        if mask is None:
+            return data.__getitem__
+
+        def get_array_value(index):
+            return None if mask.is_null(index) else data[index]
+
+        return get_array_value
+
+    if isinstance(storage, BoolStorage):
+        data = storage._data
+        mask = storage._mask
+
+        def get_bool_value(index):
+            if mask is not None and mask.is_null(index):
+                return None
+            return bool(data[index])
+
+        return get_bool_value
+
+    if isinstance(storage, StringStorage):
+        buf = storage._buf
+        offsets = storage._offsets
+        mask = storage._mask
+
+        def get_string_value(index):
+            if mask is not None and mask.is_null(index):
+                return None
+            return buf[offsets[index]:offsets[index + 1]].decode('utf-8')
+
+        return get_string_value
+
+    if isinstance(storage, TupleStorage):
+        return storage._data.__getitem__
+
+    return storage.__getitem__
 
 
 def sort_by(table, by, reverse=False, na_last=True):
@@ -74,10 +120,15 @@ def sort_by(table, by, reverse=False, na_last=True):
 
     # Stable sort: apply keys from last to first
     for column, rev in reversed(list(zip(resolved, rev_flags))):
-        data = column._storage.to_tuple()
+        get_value = _sort_value_getter(column._storage)
 
-        def key_fn(index, data=data, rev=rev, na_last=na_last):
-            value = data[index]
+        def key_fn(
+            index,
+            get_value=get_value,
+            rev=rev,
+            na_last=na_last,
+        ):
+            value = get_value(index)
             # Compare on (flag, value): the shared null-flag rule keeps
             # nulls last/first under BOTH sort directions; `value` is only
             # compared among non-None values.
