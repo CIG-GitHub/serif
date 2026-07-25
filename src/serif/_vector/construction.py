@@ -8,6 +8,7 @@ from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import infer_kind
 from .dtype import promote_dtype
+from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import BoolStorage
 from .storage import StringStorage
@@ -23,7 +24,7 @@ def _vector_class():
 
 
 def _collect_and_infer(iterable, dtype_hint):
-    """Infer dtype, collecting only inputs that cannot be replayed safely."""
+    """Infer an unspecified dtype or validate a supplied dtype constraint."""
     Vector = _vector_class()
     materialized = type(iterable) in (list, tuple)
     data = iterable if materialized else []
@@ -41,6 +42,8 @@ def _collect_and_infer(iterable, dtype_hint):
             saw_vector = True
             continue
         all_vectors = False
+        if dtype_hint is not None:
+            continue
         if dtype is None:
             if value is None:
                 saw_none = True
@@ -49,8 +52,8 @@ def _collect_and_infer(iterable, dtype_hint):
         else:
             dtype = promote_dtype(dtype, value)
 
-    if saw_vector and not all_vectors:
-        dtype = dtype_hint
+    if saw_vector and not all_vectors and dtype_hint is None:
+        dtype = None
         saw_none = False
         for value in data:
             if dtype is None:
@@ -60,6 +63,17 @@ def _collect_and_infer(iterable, dtype_hint):
                 dtype = Schema(infer_kind(value), saw_none)
             else:
                 dtype = promote_dtype(dtype, value)
+
+    if dtype_hint is not None and not all_vectors:
+        validated = []
+        changed = False
+        for value in data:
+            checked = validate_scalar(value, dtype_hint)
+            validated.append(checked)
+            changed = changed or checked is not value
+        if changed:
+            data = type(data)(validated)
+        dtype = dtype_hint
 
     if dtype is None and saw_none:
         dtype = Schema(object, True)
@@ -129,13 +143,7 @@ def new(cls, initial=(), dtype=None, name=None, **kwargs):
     else:
         dtype_hint = dtype
 
-    # Internal materialized calls with a full Schema bypass inference.
-    if isinstance(initial, (list, tuple)) and isinstance(dtype_hint, Schema):
-        data = initial
-        is_table = False
-        dtype = dtype_hint
-    else:
-        data, is_table, dtype = _collect_and_infer(initial, dtype_hint)
+    data, is_table, dtype = _collect_and_infer(initial, dtype_hint)
 
     if is_table and data:
         if len({len(value) for value in data}) == 1:

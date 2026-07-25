@@ -1,5 +1,6 @@
 from .vector import Vector
 from ._table import aggregation as _aggregation
+from ._table import coalesce as _coalesce
 from ._table import columns as _columns
 from ._table import joins as _joins
 from ._table import lifting as _lifting
@@ -212,6 +213,10 @@ class Table(Vector):
     def fillna(self, value):
         """Fill null cells in every column with *value*."""
         return _lifting.fillna(self, value)
+
+    def coalesce(self, *others):
+        """Coalesce same-shaped Tables positionally, preserving this metadata."""
+        return _coalesce.coalesce(self, *others)
 
     def is_na(self):
         """Return a same-shaped bool Table marking null cells."""

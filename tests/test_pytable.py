@@ -1,4 +1,6 @@
 """Table specific tests - 2D operations, column access, matrix operations"""
+import warnings
+
 import pytest
 from serif import Vector
 from serif import Table
@@ -138,13 +140,8 @@ class TestTranspose:
     def test_transpose_heterogeneous_rows(self):
         table = Table({'number': [1, 2], 'label': ['a', 'b']})
 
-        with pytest.warns(
-            UserWarning,
-            match=(
-                r"Degrading column<int> to column<object> due to "
-                r"incompatible value of type str"
-            ),
-        ):
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
             transposed = table.T
 
         assert transposed.shape == (2, 2)
@@ -247,6 +244,28 @@ class TestConcatenation:
         assert len(result.cols()[0]) == 4
         assert list(result.cols()[0]) == [1, 2, 3, 7]
 
+    def test_lshift_none_promotes_affected_columns_to_nullable(self):
+        table = Table({'a': [1, 2], 'b': ['A', 'B']})
 
+        result = table << [None, 'C']
 
+        assert list(result.a) == [1, 2, None]
+        assert result.a.schema().kind is int
+        assert result.a.schema().nullable is True
+        assert list(result.b) == ['A', 'B', 'C']
+        assert result.b.schema().kind is str
+        assert result.b.schema().nullable is False
+        assert table.a.schema().nullable is False
+        assert table.b.schema().nullable is False
+
+    def test_lshift_nullable_vector_preserves_declared_nullability(self):
+        left = Table({'a': [1, 2]})
+        nullable_without_nulls = Vector([3, None])[:1]
+        right = Table({'a': nullable_without_nulls})
+
+        result = left << right
+
+        assert list(result.a) == [1, 2, 3]
+        assert result.a.schema().kind is int
+        assert result.a.schema().nullable is True
 

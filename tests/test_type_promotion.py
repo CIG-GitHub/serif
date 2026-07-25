@@ -72,7 +72,7 @@ class TestInferDtype:
     def test_infer_mixed_incompatible_falls_back_to_object(self):
         import warnings
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
+            warnings.simplefilter("error")
             dt = infer_dtype([1, "a", 3])
         assert dt.kind is object
         assert dt.nullable is False  # no None in input
@@ -80,6 +80,14 @@ class TestInferDtype:
 
 class TestVectorCreationWithDtype:
     """Creating vectors with explicit Schema or Python type."""
+
+    def test_mixed_incompatible_input_infers_object_silently(self):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            v = Vector([1, 2, '3', 4, 5])
+        assert list(v) == [1, 2, '3', 4, 5]
+        assert v.schema() == Schema(object, False)
 
     def test_create_typed_int(self):
         v = Vector([1, 2, 3], dtype=int)
@@ -112,6 +120,20 @@ class TestVectorCreationWithDtype:
         s = v.schema()
         assert s.kind is int
         assert s.nullable is False
+
+    def test_incompatible_value_raises_for_explicit_dtype(self):
+        with pytest.raises(
+            TypeError,
+            match=r"Incompatible value '3' for column<int>",
+        ):
+            Vector([1, 2, '3', 4, 5], dtype=int)
+
+    def test_incompatible_value_raises_for_explicit_dtype_generator(self):
+        with pytest.raises(
+            TypeError,
+            match=r"Incompatible value '3' for column<int>",
+        ):
+            Vector((value for value in [1, 2, '3']), dtype=int)
 
 
 class TestArithmeticPromotion:

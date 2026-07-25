@@ -2,7 +2,6 @@
 
 import csv
 import re
-import warnings
 from typing import TextIO
 
 from .._vector.dtype import Schema
@@ -105,15 +104,7 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
     columns = []
 
     for col_idx, raw_cells in enumerate(raw_columns):
-        dtype, identifier_mode, degradation = _classify_column(raw_cells)
-        if degradation is not None:
-            previous_kind, incompatible_kind = degradation
-            warnings.warn(
-                f"Degrading column<{previous_kind.__name__}> to column<object> "
-                f"due to incompatible value of type {incompatible_kind.__name__}",
-                stacklevel=2,
-            )
-
+        dtype, identifier_mode = _classify_column(raw_cells)
         storage = _build_column_storage(raw_cells, dtype, identifier_mode)
         raw_columns[col_idx] = None
         del raw_cells
@@ -160,7 +151,6 @@ def _classify_column(raw_cells):
     kind = None
     nullable = False
     identifier_mode = False
-    degradation = None
 
     for raw_cell in raw_cells:
         mode = None if raw_cell is None else _cell_inference_mode(raw_cell)
@@ -179,19 +169,17 @@ def _classify_column(raw_cells):
         elif kind is not object and value_kind is not kind:
             promoted_kind = promote_kinds(kind, value_kind)
             if promoted_kind is None:
-                degradation = (kind, value_kind)
                 kind = object
             else:
                 kind = promoted_kind
 
     if identifier_mode:
         kind = str
-        degradation = None
     elif kind is None:
         kind = object
         nullable = True
 
-    return Schema(kind, nullable), identifier_mode, degradation
+    return Schema(kind, nullable), identifier_mode
 
 
 def _normalized_cells(raw_cells, identifier_mode):

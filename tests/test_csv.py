@@ -17,6 +17,7 @@ order-dependence is a known issue slated for a later group).
 """
 
 import io
+import warnings
 from datetime import date
 
 import pytest
@@ -250,8 +251,9 @@ def test_whitespace_only_cell_is_none():
     assert list(t.b) == [None, 'x']
 
 
-def test_mixed_number_and_string_degrades_to_object_with_warning():
-    with pytest.warns(UserWarning, match='[Dd]egrading'):
+def test_mixed_number_and_string_infers_object_silently():
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
         t = _read("a\n1\nhello\n")
     assert list(t.a) == [1, 'hello']
     assert t.a.schema().kind is object

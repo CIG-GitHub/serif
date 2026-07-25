@@ -1,7 +1,6 @@
 """Tests for Vector >> operator building Tables"""
 import warnings
 
-import pytest
 from serif import Vector
 
 
@@ -24,10 +23,11 @@ class TestMixedKindComposeIsSilent:
             t = Vector((Vector([1, 2]), Vector(['a', 'b'])))
         assert type(t).__name__ == 'Table'
 
-    def test_genuine_vector_as_element_still_warns(self):
+    def test_genuine_vector_as_element_infers_object_silently(self):
         # NOT a table: a Vector mixed with a scalar is a real object-dtype
-        # degradation, and the deliberate signal must survive the fix.
-        with pytest.warns(UserWarning, match='Degrading'):
+        # inference result, not a degradation of an established schema.
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
             v = Vector([Vector([1, 2]), 5])
         assert v.schema().kind is object
 
