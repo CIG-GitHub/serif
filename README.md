@@ -40,7 +40,9 @@ t
 pip install serif
 ```
 
-Serif has no required runtime dependencies. Its pure-Python implementation defines the result.
+Serif has no required runtime dependencies. Its pure-Python implementation
+defines the semantics; optional accelerators improve performance without
+changing behavior.
 
 NumPy and PyArrow are used when available, but only when they preserve the same Python values and behavior. Otherwise, Serif falls back to pure Python.
 
