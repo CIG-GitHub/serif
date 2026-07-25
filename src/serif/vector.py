@@ -672,13 +672,27 @@ class Vector():
             warnings.warn("The behavior of >> and << have been overridden for concatenation. Use .bit_lshift()/.bit_rshift() to shift bits.")
 
         nullable = self._dtype.nullable if self._dtype is not None else True
+
+        def concatenate(values, declared_nullable=nullable):
+            storage = self._build_storage(values, declared_nullable)
+            if self._dtype is None:
+                return self._clone(storage)
+            result_dtype = Schema(
+                self._dtype.kind,
+                declared_nullable or any(value is None for value in storage),
+            )
+            return self._clone(storage, dtype=result_dtype)
+
         if isinstance(other, Vector):
             if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
                 raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
-            return self._clone(self._build_storage(chain(self._storage, other._storage), nullable))
+            return concatenate(
+                chain(self._storage, other._storage),
+                nullable or other.schema().nullable,
+            )
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return self._clone(self._build_storage(chain(self._storage, other), nullable))
-        return self._clone(self._build_storage(chain(self._storage, (other,)), nullable))
+            return concatenate(chain(self._storage, other))
+        return concatenate(chain(self._storage, (other,)))
 
 
     def __rshift__(self, other):
