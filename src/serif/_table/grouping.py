@@ -1,7 +1,6 @@
 """Shared Table partitioning and grouped aggregation evaluation."""
 
 from .._execution import DECLINED
-from .._vector import Schema
 from .._vector.selection import take_storage
 from ..errors import SerifEmptyReductionError
 from ..errors import SerifTypeError
@@ -100,24 +99,16 @@ def _make_group_slicer(source_column):
     """Return a schema-aware slicer for one aggregation source column."""
     schema = source_column.schema()
     typed = schema is not None and schema.kind is not object
-    state = {}
+    storage = source_column._storage
 
     def slicer(row_indices, name):
         if typed:
             return source_column._clone(
-                take_storage(source_column._storage, row_indices),
+                take_storage(storage, row_indices),
                 name=name,
             )
-        if "data" not in state:
-            state["data"] = source_column._storage.to_tuple()
-        values = [state["data"][index] for index in row_indices]
-        if not typed:
-            return Vector(values, name=name)
-        return Vector._from_iterable_known_dtype(
-            values,
-            Schema(schema.kind, schema.nullable),
-            name=name,
-        )
+        values = [storage[index] for index in row_indices]
+        return Vector(values, name=name)
 
     return slicer
 

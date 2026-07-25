@@ -15,14 +15,11 @@ def probe(
     validate_right=None,
 ):
     """Hash-index the right side and probe in left-row order."""
-    left_key_data = [storage.to_tuple() for storage in left_storages]
-    right_key_data = [storage.to_tuple() for storage in right_storages]
-
     first_duplicate_key = None
     right_index = {}
     right_index_get = right_index.get
     for row_index in range(right_nrows):
-        key = tuple(data[row_index] for data in right_key_data)
+        key = tuple(storage[row_index] for storage in right_storages)
         if validate_right is not None:
             validate_right(key, row_index)
         bucket = right_index_get(key)
@@ -47,7 +44,7 @@ def probe(
     pad = -1
 
     for left_index in range(left_nrows):
-        key = tuple(data[left_index] for data in left_key_data)
+        key = tuple(storage[left_index] for storage in left_storages)
         if validate_left is not None:
             validate_left(key, left_index)
 
