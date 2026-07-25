@@ -8,9 +8,14 @@ All elements share a single Python-native kind. The common kinds are
 `int`, `float`, `bool`, `str`, and `date`; `datetime`, `complex`, and
 `bytes` are also supported.
 
-Nothing mixes silently. Mixed content requires explicitly opting out of
-the type system into object dtype (`v.to_object()`).  
-No implicit coercion except Python-standard numeric coercions.
+Untyped construction infers one dtype from the complete input. Compatible
+Python numeric kinds promote normally; incompatible mixed kinds infer
+`object`. Users may also opt out of typed operations explicitly with
+`v.to_object()`.
+
+An explicit or established non-object dtype is a constraint. Incompatible
+values raise instead of silently degrading the Vector to `object`. There is
+no implicit coercion except Python-standard numeric promotion.
 
 ## 2. A Table is a list of column vectors
 A table is:
