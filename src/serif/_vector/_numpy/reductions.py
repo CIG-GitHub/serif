@@ -40,7 +40,7 @@ def sum_(storage):
     if values.dtype.kind == 'i':
         return _int_sum_or_declined(values)
     if values.size == 0:
-        return 0
+        return 0.0
     return float(values.sum())
 
 

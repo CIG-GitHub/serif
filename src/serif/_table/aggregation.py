@@ -61,13 +61,13 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
         sources.append(source)
 
     result = _arrow_aggregation().grouped_sums(
-        group_column._storage,
-        [source._storage for source in sources],
+        (group_column.schema(), group_column._storage),
+        [(source.schema(), source._storage) for source in sources],
     )
     if result is DECLINED:
         return DECLINED
     keys, columns = result
-    return group_column, keys, list(zip(names, columns))
+    return group_column._name, keys, list(zip(names, columns))
 
 
 def _wrap_group_key_column(values, source_column, name):
@@ -80,6 +80,24 @@ def _wrap_group_key_column(values, source_column, name):
         Schema(schema.kind, schema.nullable),
         name=name,
     )
+
+
+def _wrap_group_key_storage(storage, schema, name):
+    """Wrap grouped key storage without reconstructing its values."""
+    result = Vector._from_storage(storage, schema, name=name)
+    result._wild = True
+    return result
+
+
+def _wrap_group_sum(storage, source_schema, name):
+    """Wrap grouped sum storage with its known non-null result schema."""
+    result = Vector._from_storage(
+        storage,
+        Schema(source_schema.kind, False),
+        name=name,
+    )
+    result._wild = True
+    return result
 
 
 def aggregate(table, groupby=None, aggregations=None):
@@ -98,18 +116,22 @@ def aggregate(table, groupby=None, aggregations=None):
     if groupby is not None:
         fast = _bound_grouped_sums(table, groupby, aggregations, nrows)
         if fast is not DECLINED:
-            group_column, keys, summed = fast
+            key_name, (key_schema, key_storage), summed = fast
             uniquify = _grouping.make_uniquifier()
             result_columns = [
-                _wrap_group_key_column(
-                    keys,
-                    group_column,
-                    uniquify(group_column._name),
+                _wrap_group_key_storage(
+                    key_storage,
+                    key_schema,
+                    uniquify(key_name),
                 )
             ]
-            for aggregation_name, values in summed:
+            for aggregation_name, (source_schema, storage) in summed:
                 result_columns.append(
-                    Vector(values, name=uniquify(aggregation_name))
+                    _wrap_group_sum(
+                        storage,
+                        source_schema,
+                        uniquify(aggregation_name),
+                    )
                 )
             return Table(result_columns)
 

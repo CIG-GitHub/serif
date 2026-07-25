@@ -104,7 +104,7 @@ def test_empty_and_all_null_cases():
         assert v.mean() is None
         assert v.stdev() is None
     empty = Vector([1.5, 2.5])[Vector([False, False])]    # typed float, length 0
-    assert empty.sum() == 0 and type(empty.sum()) is int
+    assert empty.sum() == 0.0 and type(empty.sum()) is float
     assert empty.max() is None and empty.mean() is None
 
 
