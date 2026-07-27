@@ -89,7 +89,7 @@ t._                            # what do I have again?
 
 ### None means missing
 
-Element-wise, unknown in is unknown out. Aggregates summarize what you know. And a verdict needs evidence — `all()`/`any()` over zero valid values raise rather than guess.
+Element-wise, unknown in is unknown out. Aggregates summarize what you know.
 
 ```python
 v = Vector([10, None, 30])
@@ -98,9 +98,6 @@ v + 1        # 11, None, 31
 v > 15       # False, None, True
 v.sum()      # 40
 len(v)       # 3
-
-Vector([None, None]).any()                 # raises SerifEmptyReductionError
-Vector([None, None]).any(on_empty=False)   # False — you supplied the verdict
 ```
 
 ### Joins and aggregation

@@ -2,7 +2,7 @@ import pytest
 import warnings
 from serif import Table
 from serif import Vector
-from serif import SerifEmptyReductionError
+from serif import SerifEmptyReductionWarning
 
 
 class TestAggregate:
@@ -388,43 +388,54 @@ class TestAggregateWindowEdgeCases:
 
 
 class TestVerdictReductionsInAggregations:
-	"""all()/any() over a group with zero valid values raises with the
-	group's coordinates attached (docs/null-semantics.md)."""
+	"""all()/any() over a group with zero valid values returns the identity
+	and warns once per aggregation, naming the empty groups
+	(docs/null-semantics.md)."""
 
-	def test_aggregate_all_null_group_raises_with_group_key(self):
+	def test_aggregate_all_null_group_warns_with_group_key(self):
 		table = Table({
 			'region': ['E', 'E', 'W', 'W'],
 			'ok':     [True, True, None, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning, match=r"'flags'.*'W'"):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'flags': table.ok.all}
 			)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is True
+		assert flags['W'] is True  # the all() identity
 
-	def test_aggregate_qualified_via_lambda(self):
+	def test_aggregate_qualified_via_lambda_is_silent(self):
 		table = Table({
 			'region': ['E', 'E', 'W', 'W'],
 			'ok':     [True, True, None, None],
 		})
-		result = table.aggregate(
-			groupby=table.region,
-			aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
-		)
+		with warnings.catch_warnings():
+			warnings.simplefilter("error", SerifEmptyReductionWarning)
+			result = table.aggregate(
+				groupby=table.region,
+				aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
+			)
 		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
 		assert flags['E'] is True
 		assert flags['W'] is False
 
-	def test_aggregate_callable_gets_group_context_too(self):
+	def test_aggregate_callable_warns_from_the_reduction(self):
+		# A callable's inner any() warns at the vector level — no group
+		# coordinates, but the identity lands in the result.
 		table = Table({
 			'region': ['E', 'W'],
 			'ok':     [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'flags': lambda g: g.ok.any()}
 			)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is True
+		assert flags['W'] is False  # the any() identity
 
 	def test_aggregate_block_names_the_column(self):
 		table = Table({
@@ -432,23 +443,26 @@ class TestVerdictReductionsInAggregations:
 			'a':      [True, True],
 			'b':      [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"column 'b'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning, match=r"column 'b'.*'W'"):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'ok_': table['a', 'b'].all}
 			)
+		assert list(result.ok_a) == [True, True]
+		assert list(result.ok_b) == [True, True]  # identity at 'W'
 
 	def test_aggregate_whole_table_says_so(self):
 		table = Table({'ok': [None, None]})
-		with pytest.raises(SerifEmptyReductionError, match='whole table'):
-			table.aggregate(aggregations={'flags': table.ok.all})
+		with pytest.warns(SerifEmptyReductionWarning, match='whole table'):
+			result = table.aggregate(aggregations={'flags': table.ok.all})
+		assert result.flags[0] is True
 
-	def test_window_all_null_group_raises_with_group_key(self):
+	def test_window_all_null_group_warns_with_group_key(self):
 		table = Table({
 			'region': ['E', 'W'],
 			'ok':     [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"window\(\).*'W'"):
+		with pytest.warns(SerifEmptyReductionWarning, match=r"window\(\).*'W'"):
 			table.window(
 				groupby=table.region,
 				aggregations={'flags': table.ok.all}

@@ -83,8 +83,8 @@ installed package then tracks your working tree.
   single- and two-axis indexing, joins, `aggregate()`/`window()`, and
   the column map behind dot access.
 - **`errors.py`** — `SerifError` base plus `SerifKeyError`,
-  `SerifValueError`, `SerifTypeError`, `SerifIndexError`, and
-  `SerifEmptyReductionError`. See docs/exceptions.md.
+  `SerifValueError`, `SerifTypeError`, `SerifIndexError`, and the
+  `SerifEmptyReductionWarning` warning. See docs/exceptions.md.
 - **`naming.py`** — the sanitization pipeline. The exact rules live in
   docs/naming.md.
 - **`display.py`** — everything repr: head/tail truncation,

@@ -61,19 +61,25 @@ except SerifIndexError:
     print("Index out of bounds")
 ```
 
-### SerifEmptyReductionError
-Subclass of `SerifValueError`. Raised when `all()` or `any()` reduce over
-zero valid values (an empty vector, or one whose values are all null) —
-a verdict needs evidence. Pass `on_empty=` to supply the empty-case
-verdict. In `aggregate()`/`window()`, the raise carries the group key so
-you can tell a data problem from a legitimately sparse group.
+### SerifEmptyReductionWarning
+Subclass of `UserWarning` — a warning, not an exception. Warned when
+`all()` or `any()` reduce over zero valid values (an empty vector, or one
+whose values are all null): the identity is returned (`all` → `True`,
+`any` → `False`, as Python's `all([])`/`any([])` answer), and this warning
+flags that the verdict came from no evidence. Pass `on_empty=` to state
+the empty-case verdict and silence it. In `aggregate()`/`window()`, one
+warning per output column names the empty groups so you can tell a data
+problem from a legitimately sparse group.
 
 ```python
-from serif import SerifEmptyReductionError
+from serif import SerifEmptyReductionWarning
 
 flags = Vector([None, None])
-flags.any()                 # raises SerifEmptyReductionError
-flags.any(on_empty=False)   # False — opted into deliberately
+flags.any()                 # False, warns SerifEmptyReductionWarning
+flags.any(on_empty=False)   # False — opted into deliberately; silent
+
+import warnings
+warnings.simplefilter('error', SerifEmptyReductionWarning)  # the old raise, if you want it
 ```
 
 See docs/null-semantics.md for the full doctrine.
