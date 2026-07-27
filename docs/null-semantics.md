@@ -178,8 +178,3 @@ cannot produce multiple matches.
 rather than asserting equality, and silently dropping null-key rows would
 discard data. Rows with the same key, including the same null components, are
 placed in one bucket; `(None, 'A')` and `(None, 'B')` remain distinct groups.
-
-**Known implementation gap:** grouping already follows this doctrine. Joins
-do not yet: the current pure-Python join path uses ordinary Python tuple
-hashing and equality, so null keys still match each other. That behavior is
-incorrect and remains to be fixed.

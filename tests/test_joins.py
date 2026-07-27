@@ -383,6 +383,72 @@ def test_join_unhashable_object_key_keeps_context():
 		left.inner_join(right, 'key', 'key')
 
 
+@pytest.mark.parametrize(
+	"flavor, expected_left, expected_right",
+	[
+		("inner_join", ["left-match"], ["right-match"]),
+		(
+			"left_join",
+			["left-match", "left-null-1", "left-null-2"],
+			["right-match", None, None],
+		),
+		(
+			"full_join",
+			["left-match", "left-null-1", "left-null-2", None, None],
+			["right-match", None, None, "right-null-1", "right-null-2"],
+		),
+	],
+)
+def test_null_keys_never_match_and_do_not_violate_uniqueness(
+	flavor,
+	expected_left,
+	expected_right,
+):
+	left = Table({
+		'key': [1, None, None],
+		'left_value': ['left-match', 'left-null-1', 'left-null-2'],
+	})
+	right = Table({
+		'key': [1, None, None],
+		'right_value': ['right-match', 'right-null-1', 'right-null-2'],
+	})
+
+	result = getattr(left, flavor)(
+		right,
+		'key',
+		'key',
+		expect_left_unique=True,
+		expect_right_unique=True,
+	)
+
+	assert list(result.left_value) == expected_left
+	assert list(result.right_value) == expected_right
+
+
+def test_composite_join_key_with_any_null_component_never_matches():
+	left = Table({
+		'a': [1, None, 2, None],
+		'b': ['x', 'x', None, None],
+		'left_value': ['match', 'null-a', 'null-b', 'both-null'],
+	})
+	right = Table({
+		'a': [1, None, 2, None],
+		'b': ['x', 'x', None, None],
+		'right_value': ['match', 'null-a', 'null-b', 'both-null'],
+	})
+
+	result = left.inner_join(
+		right,
+		['a', 'b'],
+		['a', 'b'],
+		expect_left_unique=True,
+		expect_right_unique=True,
+	)
+
+	assert list(result.left_value) == ['match']
+	assert list(result.right_value) == ['match']
+
+
 def test_join_multi_key_computed():
 	"""Test multi-key join with mix of columns and computed values"""
 	left = Table({

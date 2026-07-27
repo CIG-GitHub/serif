@@ -40,6 +40,22 @@ class TestAggregate:
 			if result.year[i] == 2023 and result.month[i] == 1:
 				assert result.revenue_sum[i] == 150
 				break
+
+	def test_aggregate_null_components_share_composite_key_groups(self):
+		table = Table({
+			'region': [None, None, None, None],
+			'tier': ['A', 'A', 'B', 'B'],
+			'value': [1, 2, 4, 8],
+		})
+
+		result = table.aggregate(
+			groupby=[table.region, table.tier],
+			aggregations={'total': table.value.sum},
+		)
+
+		assert list(result.region) == [None, None]
+		assert list(result.tier) == ['A', 'B']
+		assert list(result.total) == [3, 12]
 	
 	def test_aggregate_multiple_aggregations(self):
 		table = Table({
@@ -179,6 +195,19 @@ class TestWindow:
 		assert result.amount_sum[4] == 80
 		assert result.amount_sum[2] == 70
 		assert result.amount_sum[3] == 70
+
+	def test_window_null_keys_share_one_group(self):
+		table = Table({
+			'group': ['A', None, None, 'A'],
+			'amount': [1, 10, 20, 4],
+		})
+
+		result = table.window(
+			groupby=table.group,
+			aggregations={'amount_sum': table.amount.sum},
+		)
+
+		assert list(result.amount_sum) == [5, 30, 30, 5]
 
 	def test_window_multiple_partitions(self):
 		"""Window with multiple partition keys"""

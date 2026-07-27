@@ -895,7 +895,7 @@ def test_python_join_reads_key_storage_directly(monkeypatch):
         False,
         True,
         True,
-    ) == ('ok', [0, 0, 1, 2], [1, 2, 3, 0])
+    ) == ('ok', [0, 0, 1, 2, -1], [1, 2, -1, 0, 3])
 
 
 def test_join_backend_defects_propagate_without_fallback(monkeypatch):

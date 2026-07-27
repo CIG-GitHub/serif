@@ -175,9 +175,8 @@ def test_left_unique_distinct_unmatched_keys_pass():
 # ---------------------------------------------------------------------------
 
 def test_nullable_keys_decline_and_conform():
-    # The pure loop joins None keys like any value ((None,) == (None,)),
-    # which codes cannot carry — so nullable declines, and both modes run
-    # the pure matcher, None-matches-None included.
+    # Nullable storage declines the accelerator, and the pure matcher treats
+    # a null key as non-matching.
     left = Table({'k': ['a', None, 'b'], 'x': [1, 2, 3]})
     right = Table({'k': [None, 'b'], 'y': [10, 20]})
     assert join_mod.probe_strings(
@@ -188,7 +187,7 @@ def test_nullable_keys_decline_and_conform():
         return left.left_join(right, 'k', 'k')
     fast, pure = run(), _pure(run)
     _assert_tables_identical(pure, fast)
-    assert list(fast['y']) == [None, 10, 20]   # the None↔None match, pinned
+    assert list(fast['y']) == [None, None, 20]
 
 
 def test_mixed_key_kinds_decline():

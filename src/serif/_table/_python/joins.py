@@ -1,6 +1,11 @@
 """Mandatory pure-Python physical implementation for Table joins."""
 
 
+def _contains_null(key):
+    """Return whether any component makes a join key non-matching."""
+    return any(component is None for component in key)
+
+
 def probe(
     left_storages,
     right_storages,
@@ -22,6 +27,8 @@ def probe(
         key = tuple(storage[row_index] for storage in right_storages)
         if validate_right is not None:
             validate_right(key, row_index)
+        if _contains_null(key):
+            continue
         bucket = right_index_get(key)
         if bucket is None:
             right_index[key] = [row_index]
@@ -47,6 +54,12 @@ def probe(
         key = tuple(storage[left_index] for storage in left_storages)
         if validate_left is not None:
             validate_left(key, left_index)
+
+        if _contains_null(key):
+            if keep_unmatched_left:
+                left_take.append(left_index)
+                right_take.append(pad)
+            continue
 
         if left_keys_seen is not None:
             if key in left_keys_seen:
