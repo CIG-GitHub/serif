@@ -1,8 +1,10 @@
 """Shared Table partitioning and grouped aggregation evaluation."""
 
+import warnings
+
 from .._execution import DECLINED
 from .._vector.selection import take_storage
-from ..errors import SerifEmptyReductionError
+from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
@@ -124,20 +126,39 @@ def _reject_nonscalar(aggregation_name, value, detail, function_name):
         )
 
 
-def _chain_empty_reduction(
-    error,
+# Verdict reductions whose empty case has a Python identity to return.
+_VERDICT_IDENTITY = {'all': True, 'any': False}
+
+
+def _warn_empty_verdict_groups(
+    empty_keys,
+    total_groups,
     aggregation_name,
     description,
-    key,
+    method_name,
     function_name,
 ):
-    """Re-raise a no-verdict reduction with its group coordinates."""
-    where = f"group {key!r}" if key != () else "the whole table"
-    raise SerifEmptyReductionError(
+    """One warning per aggregation output naming the empty-verdict groups."""
+    identity = _VERDICT_IDENTITY[method_name]
+    if empty_keys == [()]:
+        where = "the whole table has zero valid values"
+    else:
+        shown = ", ".join(repr(key) for key in empty_keys[:8])
+        if len(empty_keys) > 8:
+            shown += ", ..."
+        where = (
+            f"{len(empty_keys)} of {total_groups} groups have zero valid "
+            f"values (keys: {shown})"
+        )
+    warnings.warn(
         f"{function_name}() aggregation '{aggregation_name}' "
-        f"({description}) over {where}: {error} In an aggregation, qualify "
-        "via a lambda, e.g. lambda g: g.<col>.all(on_empty=False)."
-    ) from error
+        f"({description}): {where}; {method_name}() returned its identity "
+        f"({identity}) there. Qualify via a lambda to state the empty-case "
+        f"verdict yourself and silence this warning, e.g. "
+        f"lambda g: g.<col>.{method_name}(on_empty={identity}).",
+        SerifEmptyReductionWarning,
+        stacklevel=2,
+    )
 
 
 def apply_aggregations(
@@ -180,29 +201,25 @@ def apply_aggregations(
                     _make_group_slicer(column) for column in source_columns
                 ]
                 fanned = [[] for _ in range(width)]
+                identity = _VERDICT_IDENTITY.get(method_name)
+                empty_by_column = [[] for _ in range(width)]
+                total_groups = 0
 
                 for key, row_indices in group_items:
+                    total_groups += 1
                     for index in range(width):
                         column_slice = slicers[index](
                             row_indices,
                             source_names[index],
                         )
-                        try:
+                        if (
+                            identity is not None
+                            and column_slice.count() == 0
+                        ):
+                            empty_by_column[index].append(key)
+                            value = identity
+                        else:
                             value = getattr(column_slice, method_name)()
-                        except SerifEmptyReductionError as error:
-                            column_description = (
-                                source_names[index]
-                                if source_names[index] is not None
-                                else f"col{index}"
-                            )
-                            _chain_empty_reduction(
-                                error,
-                                aggregation_name,
-                                f"block method '{method_name}', column "
-                                f"'{column_description}'",
-                                key,
-                                function_name,
-                            )
                         _reject_nonscalar(
                             aggregation_name,
                             value,
@@ -210,6 +227,23 @@ def apply_aggregations(
                             function_name,
                         )
                         fanned[index].append(value)
+
+                for index in range(width):
+                    if empty_by_column[index]:
+                        column_description = (
+                            source_names[index]
+                            if source_names[index] is not None
+                            else f"col{index}"
+                        )
+                        _warn_empty_verdict_groups(
+                            empty_by_column[index],
+                            total_groups,
+                            aggregation_name,
+                            f"block method '{method_name}', column "
+                            f"'{column_description}'",
+                            method_name,
+                            function_name,
+                        )
 
                 for index in range(width):
                     base = (
@@ -220,19 +254,18 @@ def apply_aggregations(
                     yield f"{aggregation_name}{base}", fanned[index]
             else:
                 slicer = _make_group_slicer(source)
+                identity = _VERDICT_IDENTITY.get(method_name)
+                empty_keys = []
+                total_groups = 0
                 output = []
                 for key, row_indices in group_items:
+                    total_groups += 1
                     group_vector = slicer(row_indices, None)
-                    try:
+                    if identity is not None and group_vector.count() == 0:
+                        empty_keys.append(key)
+                        value = identity
+                    else:
                         value = getattr(group_vector, method_name)()
-                    except SerifEmptyReductionError as error:
-                        _chain_empty_reduction(
-                            error,
-                            aggregation_name,
-                            f"'{method_name}'",
-                            key,
-                            function_name,
-                        )
                     _reject_nonscalar(
                         aggregation_name,
                         value,
@@ -240,6 +273,15 @@ def apply_aggregations(
                         function_name,
                     )
                     output.append(value)
+                if empty_keys:
+                    _warn_empty_verdict_groups(
+                        empty_keys,
+                        total_groups,
+                        aggregation_name,
+                        f"'{method_name}'",
+                        method_name,
+                        function_name,
+                    )
                 yield aggregation_name, output
         elif callable(function):
             slicers = [
@@ -252,16 +294,7 @@ def apply_aggregations(
                     slicer(row_indices, column._name)
                     for column, slicer in slicers
                 ]
-                try:
-                    value = function(Table(group_columns))
-                except SerifEmptyReductionError as error:
-                    _chain_empty_reduction(
-                        error,
-                        aggregation_name,
-                        "callable",
-                        key,
-                        function_name,
-                    )
+                value = function(Table(group_columns))
                 _reject_nonscalar(
                     aggregation_name,
                     value,

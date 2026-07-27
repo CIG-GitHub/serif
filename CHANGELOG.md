@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased – Verdict Reductions Answer Like Python
+
+### Changed
+- Breaking, pre-1.0: `all()`/`any()` over zero valid values (empty vector,
+  or all null after skipping) no longer raise. They return the Python
+  identity — `all()` → `True`, `any()` → `False`, matching `all([])` /
+  `any([])` — and emit `SerifEmptyReductionWarning`. Pass `on_empty=True`
+  or `on_empty=False` to state the empty-case verdict and silence the
+  warning; `warnings.simplefilter('error', SerifEmptyReductionWarning)`
+  restores the old hard failure.
+- `SerifEmptyReductionError` is gone; `SerifEmptyReductionWarning`
+  (a `UserWarning`) replaces it in `serif`'s exports.
+- In `aggregate()`/`window()`, empty-verdict groups get the identity and
+  one warning per output column naming the affected group keys, instead
+  of raising on the first empty group.
+
 ## 0.2.1 – Column Rename Clarity
 
 ### Changed
