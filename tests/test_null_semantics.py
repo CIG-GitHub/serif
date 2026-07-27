@@ -57,11 +57,45 @@ def test_not_equal_propagates_null():
     assert list(Vector([1, None]) != 1) == [False, None]
 
 
-def test_compare_to_none_scalar_is_all_null_and_warns():
+def test_compare_to_none_scalar_is_missingness_test_and_warns():
+    # Doctrine rule three: the scalar None names absence itself, so
+    # `v == None` is `v.is_na()` — Python's answer (None == None is True).
     v = Vector([1, None, 3])
     with pytest.warns(UserWarning, match='is_na'):
         result = v == None  # noqa: E711 — the point of the test
-    assert list(result) == [None, None, None]
+    assert list(result) == [False, True, False]
+    with pytest.warns(UserWarning, match='is_na'):
+        inverted = v != None  # noqa: E711
+    assert list(inverted) == [True, False, True]
+
+
+def test_none_comparison_mask_is_total():
+    # Explicit absence collapses the unknowns: the result is plain bool,
+    # never bool? — you addressed the missing values, so none survive.
+    v = Vector([1, None, 3])
+    with pytest.warns(UserWarning):
+        result = v == None  # noqa: E711
+    schema = result.schema()
+    assert schema.kind is bool
+    assert schema.nullable is False
+
+
+def test_plucked_null_scalar_crosses_the_line():
+    # The named sharp edge (docs/null-semantics.md): v == w propagates
+    # null (two data unknowns), but plucking that null out makes it the
+    # absence symbol — v == w[1] is a missingness test.
+    v = Vector([1, None, 3])
+    w = Vector([1, None, 4])
+    assert list(v == w) == [True, None, False]
+    assert w[1] is None
+    with pytest.warns(UserWarning, match='is_na'):
+        assert list(v == w[1]) == [False, True, False]
+
+
+def test_categorical_compare_to_none_is_missingness_test():
+    c = Vector(['b', None]).categorize(['a', 'b'])
+    with pytest.warns(UserWarning, match='is_na'):
+        assert list(c == None) == [False, True]  # noqa: E711
 
 
 def test_comparison_count_counts_known():

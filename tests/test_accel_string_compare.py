@@ -154,14 +154,14 @@ def test_non_string_scalar():
         _pure(lambda: v < 5)
 
 
-def test_none_scalar_warns_and_yields_null():
+def test_none_scalar_warns_and_tests_missingness():
     v = Vector(['apple', 'banana'])
-    with pytest.warns(UserWarning, match='Null comparison'):
+    with pytest.warns(UserWarning, match='is_na'):
         fast = v == None                       # noqa: E711 — the point
-    with pytest.warns(UserWarning, match='Null comparison'):
+    with pytest.warns(UserWarning, match='is_na'):
         pure = _pure(lambda: v == None)        # noqa: E711
     _assert_identical(pure, fast)
-    assert list(fast) == [None, None]
+    assert list(fast) == [False, False]
 
 
 def test_non_string_storage_untouched():
