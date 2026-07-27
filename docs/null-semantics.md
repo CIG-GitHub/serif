@@ -4,15 +4,20 @@ serif is "Python semantics first" — but that doctrine governs **values**,
 and a null is not a value. In a typed column a null is literally a mask bit
 (`ArrayStorage`/`StringStorage` never store a `None` object at all); it is a
 *position with no value* — "we don't know what this is." Python semantics
-apply to the values you have. Absence follows the rules below, which are
-SQL's three-valued logic where SQL is right about epistemics, and not-SQL
-where SQL is just old.
+apply to the values you have. Absence follows the rules below. The layering:
+**Python governs values and answers; SQL governs row-matching.** Joins and
+filter masks borrow SQL's three-valued logic deliberately, because matching
+rows on unknowns manufactures results out of ignorance (see: pandas). Those
+two loans are the exceptions, and they are fenced off below; everywhere
+else, when Python has an answer, serif gives Python's answer.
 
-## The doctrine (two rules)
+## The doctrine (three rules)
 
 > **Element-wise: unknown in, unknown out.**
 > Comparisons, arithmetic, and `~` propagate null. `&` and `|` use Kleene
-> logic — the known operand may settle the result.
+> logic — the known operand may settle the result. (One carve-out, from
+> the third rule: comparing against the literal `None` is not a
+> comparison with an unknown — it names absence itself.)
 >
 > **Aggregate: summarize what you know.**
 > Skip nulls. If nothing remains: true math folds return their identity
@@ -21,8 +26,15 @@ where SQL is just old.
 > reductions `all()`/`any()` return their identity too (`True`/`False`,
 > as Python's `all([])`/`any([])` do) — but warn, unless `on_empty=`
 > states the verdict deliberately.
+>
+> **Explicit absence collapses the unknowns.**
+> The moment you name absence yourself — `is_na()`, `fillna()`,
+> `v == None`, `on_empty=` — the question has a total answer and the
+> unknowns leave the result. `v == None` asks "is this position
+> missing" and returns a plain `bool` mask, exactly as mapping
+> `== None` over a Python list would.
 
-Everything else in this document is a consequence of those two rules.
+Everything else in this document is a consequence of those three rules.
 
 ## Element-wise operations
 
@@ -33,12 +45,31 @@ v > 2        →  [False, None, True]      # bool? vector
 v + 1        →  [2, None, 4]             # arithmetic already propagated
 v == v2      →  None wherever either side is null
 ~(v > 2)     →  [True, None, False]      # NOT unknown is unknown
+v == None    →  [False, True, False]     # missingness test — total, no nulls
 ```
 
-`v == None` yields null at every position (comparing anything to unknown is
-unknown) and warns — use `v.is_na()` to test for nulls. Note the SQL corollary:
-null == null is **null**, not True. Identity of position is not equality of
-value; `is_na()` is the tool for "which cells are null."
+`v == None` is a missingness test. The scalar `None` is not an unknown
+value — columns never store a `None` object — it is the *symbol for
+absence*, so comparing to it asks "is this position missing." The result
+is a total, non-nullable `bool` mask, the same answer Python gives when
+mapping `== None` over a plain list (`None == None` is `True`). It also
+warns: `is_na()` is the deliberate spelling, and the warning exists to
+catch the `None` you didn't know you had — a leaked `None` variable
+silently turning a comparison into a missingness test should be loud.
+`v != None` is `~v.is_na()`, same warning.
+
+Between two *columns*, unknowns stay unknowns: `v == w` is null wherever
+either side is null, because there you hold two data unknowns that might
+or might not be equal. This is where SQL's "null == null is null" is
+right, and it is why `v[v == w]` and `v[~(v == w)]` do not reunite to
+the whole table.
+
+The sharp edge between those two rules: a null *plucked out* of a column
+crosses the line. `w[2]` reads out as Python `None`, so `v == w[2]` is a
+missingness test — `True` at v's nulls — while `v == w` at position 2 is
+null. The scalar is the symbol; the column cell is data. The warning
+fires on every scalar-`None` comparison precisely so that crossing is
+never silent.
 
 ### Kleene tables for `&` and `|` (bool vectors)
 
@@ -132,7 +163,9 @@ verdict should be.
 ## Filtering and assignment
 
 Boolean masks may be nullable (comparisons on nullable columns produce
-them). A null mask entry **excludes** the row — SQL WHERE semantics:
+them). A null mask entry **excludes** the row — SQL WHERE semantics, the
+second deliberate SQL loan: a row must positively qualify to pass a
+filter.
 
 ```
 v[v > 6]      # rows known to be  > 6
@@ -156,17 +189,22 @@ the identity, plus a warning. The one remaining verdict deviation:
 here (the null is *skipped*, leaving the empty case). In table land,
 `None` is absence, not a falsy sentinel object.
 
-**From SQL:** `SUM` of all-null is NULL in SQL, `0` here (the identity
-rule; Excel and Python agree). `EVERY`/`bool_and` of all-null is NULL in
-SQL; serif returns the identity and warns — SQL's NULL at least refuses
-to render a verdict, but it then coerces silently in a `WHERE`; the
-warning makes the empty case loud without breaking Python's answer.
+**From SQL:** `x = NULL` never matches in SQL; serif's `v == None` is a
+missingness test that matches the null positions — Python's answer
+(`None == None` is `True`), delivered with a warning. `SUM` of all-null
+is NULL in SQL, `0` here (the identity rule; Excel and Python agree).
+`EVERY`/`bool_and` of all-null is NULL in SQL; serif returns the
+identity and warns — SQL's NULL at least refuses to render a verdict,
+but it then coerces silently in a `WHERE`; the warning makes the empty
+case loud without breaking Python's answer.
 
 ## Explicit null tools
 
 `is_na()` — which positions are null. `fillna(x)` — replace nulls with a
-value. `dropna()` — remove null positions. These are the only operations
-that *look at* nullness; everything else either propagates it (element-wise)
+value. `dropna()` — remove null positions. `v == None` / `v != None` —
+the comparison spellings of `is_na()` / `~is_na()` (they warn; the named
+methods are the deliberate form). These are the only operations that
+*look at* nullness; everything else either propagates it (element-wise)
 or skips it (aggregate).
 
 ## Null keys in joins and grouping
@@ -174,9 +212,11 @@ or skips it (aggregate).
 Joins and grouping ask different questions, so null keys follow different
 rules.
 
-**Joins:** a key containing a null never matches another key. A join predicate
-must be positively true, and equality involving an unknown value is unknown,
-not true. In an inner join, null-key rows therefore do not appear. In a left
+**Joins:** the first deliberate SQL loan. A key containing a null never
+matches another key — a join predicate must be positively true, and equality
+involving an unknown *data* value is unknown, not true; matching rows on
+unknowns manufactures results out of ignorance (see: pandas). In an inner
+join, null-key rows therefore do not appear. In a left
 or full join, they survive only as unmatched rows. For a multi-column key, a
 null in any component makes the complete key non-matching. Repeated null keys
 do not violate `expect_left_unique` or `expect_right_unique`, because they
