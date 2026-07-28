@@ -18,8 +18,9 @@ where SQL is just old.
 > Skip nulls. If nothing remains: true math folds return their identity
 > (`sum` → `0`, `count` → `0`); statistics with no
 > identity return `None` (`max`, `min`, `mean`, `stdev`); and the verdict
-> reductions `all()`/`any()` refuse to guess — they raise unless
-> `on_empty=` says what the verdict should be.
+> reductions `all()`/`any()` return their identity too (`True`/`False`,
+> as Python's `all([])`/`any([])` do) — but warn, unless `on_empty=`
+> states the verdict deliberately.
 
 Everything else in this document is a consequence of those two rules.
 
@@ -74,53 +75,59 @@ remains (all-null or empty input), there are three tiers:
 | `min`     | `None`                  | no identity exists         |
 | `mean`    | `None`                  | no identity exists         |
 | `stdev`   | `None`                  | no identity exists         |
-| `all`     | raise unless `on_empty=` | a verdict needs evidence  |
-| `any`     | raise unless `on_empty=` | a verdict needs evidence  |
+| `all`     | `True`, warns unless `on_empty=`  | AND identity; a verdict from no evidence warns |
+| `any`     | `False`, warns unless `on_empty=` | OR identity; a verdict from no evidence warns  |
 
-The math folds have a true answer for the empty case — the fold identity —
-and the identity-less statistics return `None`, which propagates honestly
-through any arithmetic downstream. `all([None, True]) is True` is not
-"None is truthy" — the null was skipped, and no known value violated the
-condition. The element-wise layer already reported the unknown before you
-aggregated; aggregation is where you decide to summarize what's known.
+Every fold with an identity returns it — the empty case has a true answer,
+and it is Python's answer (`sum([])`, `all([])`, `any([])`). The
+identity-less statistics return `None`, which propagates honestly through
+any arithmetic downstream. `all([None, True]) is True` is not "None is
+truthy" — the null was skipped, and no known value violated the condition.
+The element-wise layer already reported the unknown before you aggregated;
+aggregation is where you decide to summarize what's known.
 
-### `all()` / `any()`: verdicts need evidence
+### `all()` / `any()`: identity, but say so out loud
 
 A boolean reduction is a verdict, and its result lands in `if`/`assert`,
 where Python coerces anything into a decision silently. That makes the
-identity elements dangerous in exactly this one place:
-`t[t.type == 'wire'].amount_ok.all()` with a typo'd filter would return
+identity elements risky in exactly this one place:
+`t[t.type == 'wire'].amount_ok.all()` with a typo'd filter returns
 `True` — a validation that passes on zero evidence. The mirror image:
-"any fraud flags?" over a never-populated column would return `False` — an
-alarm that silently doesn't fire.
+"any fraud flags?" over a never-populated column returns `False` — an
+alarm that doesn't fire.
 
 So when zero valid values survive the null-skip (an empty vector, or one
 whose values are all null — one condition, not two), `all()` and `any()`
-raise `SerifEmptyReductionError` unless you finish asking the question:
+return the identity **and warn** `SerifEmptyReductionWarning`. The warning
+is silenced by finishing the question — `on_empty=` states the empty-case
+verdict, and the value you pass is the value you get back:
 
 ```
-flags.all()                # zero valid values → raises
-flags.all(on_empty=True)   # vacuous truth, opted into deliberately
-flags.any(on_empty=False)  # the OR identity, opted into deliberately
+flags.all()                # zero valid values → True, with a warning
+flags.all(on_empty=True)   # vacuous truth, opted into deliberately — silent
+flags.any(on_empty=False)  # the OR identity, opted into deliberately — silent
 ```
 
-The value you pass is the value you get back. There is deliberately no
-`on_empty=None` "return a null verdict" option: in an `if`, `None` is
-indistinguishable from `False`, so `on_empty=False` already covers it.
-The one thing this closes off — a 2-D → 1-D reduction that wants to keep
-truthiness, falseness, and emptiness as three distinct output values —
-must be written by hand (like vectorized shift-via-operator: the surface
-is spoken for, but you have the tools).
+Anyone who wants the old hard failure back is one filter away:
+`warnings.simplefilter('error', SerifEmptyReductionWarning)`.
 
-In `aggregate()`/`window()`, a group with zero valid values raises the
-same error, re-raised with the group key and output column attached, so
-you can tell a data problem ("this group isn't supposed to be empty")
-from a legitimate sparse group. For the latter, qualify with a lambda:
-`lambda g: g.flag.all(on_empty=False)`.
+There is deliberately no `on_empty=None` "return a null verdict" option:
+in an `if`, `None` is indistinguishable from `False`, so `on_empty=False`
+already covers it. The one thing this closes off — a 2-D → 1-D reduction
+that wants to keep truthiness, falseness, and emptiness as three distinct
+output values — must be written by hand (like vectorized
+shift-via-operator: the surface is spoken for, but you have the tools).
 
-This is `Vector.__bool__`'s refusal, one step later: `if vec:` raises
+In `aggregate()`/`window()`, empty-verdict groups get the identity and
+one warning per output column naming the affected group keys, so you can
+tell a data problem ("this group isn't supposed to be empty") from a
+legitimate sparse group. For the latter, qualify with a lambda:
+`lambda g: g.flag.all(on_empty=False)` — stated verdicts are silent.
+
+This is `Vector.__bool__`'s refusal, one notch softer: `if vec:` raises
 because you haven't said which reduction you mean; `all()` over no
-evidence raises because you haven't said what the verdict should be.
+evidence answers like Python but warns because you haven't said what the
+verdict should be.
 
 ## Filtering and assignment
 
@@ -143,16 +150,17 @@ Masked assignment follows the same rule: a null mask entry assigns nothing.
 ## Named deviations
 
 **From Python:** `None > 6` raises in Python; in a vector it yields null.
-`all([None])` is `False` in Python (None is falsy) and `all([])` is `True`
-(vacuous truth); serif's `all()` raises on both — the nulls are skipped,
-no evidence remains, and a verdict from no evidence is the footgun. In
-table land, `None` is absence, not a falsy sentinel object.
+`all([])` is `True` and `any([])` is `False` in Python, and serif agrees —
+the identity, plus a warning. The one remaining verdict deviation:
+`all([None])` is `False` in Python (None is a falsy *object*), but `True`
+here (the null is *skipped*, leaving the empty case). In table land,
+`None` is absence, not a falsy sentinel object.
 
 **From SQL:** `SUM` of all-null is NULL in SQL, `0` here (the identity
 rule; Excel and Python agree). `EVERY`/`bool_and` of all-null is NULL in
-SQL; serif raises unless qualified — SQL's NULL at least refuses to render
-a verdict, but it then coerces silently in a `WHERE`; the raise makes the
-refusal loud.
+SQL; serif returns the identity and warns — SQL's NULL at least refuses
+to render a verdict, but it then coerces silently in a `WHERE`; the
+warning makes the empty case loud without breaking Python's answer.
 
 ## Explicit null tools
 
@@ -161,8 +169,20 @@ value. `dropna()` — remove null positions. These are the only operations
 that *look at* nullness; everything else either propagates it (element-wise)
 or skips it (aggregate).
 
-## Open question (documented current behavior, not yet doctrine)
+## Null keys in joins and grouping
 
-Join and groupby keys currently match nulls to each other (Python equality
-on the key tuple: `None == None` groups together). SQL says null keys match
-nothing. This is unresolved — today's behavior is the Python-equality one.
+Joins and grouping ask different questions, so null keys follow different
+rules.
+
+**Joins:** a key containing a null never matches another key. A join predicate
+must be positively true, and equality involving an unknown value is unknown,
+not true. In an inner join, null-key rows therefore do not appear. In a left
+or full join, they survive only as unmatched rows. For a multi-column key, a
+null in any component makes the complete key non-matching. Repeated null keys
+do not violate `expect_left_unique` or `expect_right_unique`, because they
+cannot produce multiple matches.
+
+**Grouping and windows:** null keys form groups. Grouping classifies rows
+rather than asserting equality, and silently dropping null-key rows would
+discard data. Rows with the same key, including the same null components, are
+placed in one bucket; `(None, 'A')` and `(None, 'B')` remain distinct groups.

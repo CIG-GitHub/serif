@@ -154,7 +154,10 @@ def test_aggregate_nullable_string_groupby_conforms():
     def run():
         t = Table({'g': ['a', None, 'a', None], 'x': [1, 2, 3, 4]})
         return t.aggregate(groupby=t.g, aggregations={'total': t.x.sum})
-    _assert_tables_identical(_pure(run), run())
+    fast, pure = run(), _pure(run)
+    _assert_tables_identical(pure, fast)
+    assert list(fast.g) == ['a', None]
+    assert list(fast.total) == [4, 6]
 
 
 def test_window_string_groupby_conforms():

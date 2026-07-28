@@ -369,8 +369,8 @@ class Table(Vector):
 
     def __iter__(self):
         """
-        Iterate over rows using the Fast View.
-        Snapshots data state at start of iteration for performance.
+        Iterate over distinct, stable Row values.
+        Rows share a column snapshot captured when iteration starts.
         """
         return _iter_rows(self)
 

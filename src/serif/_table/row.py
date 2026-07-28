@@ -1,4 +1,4 @@
-"""Read-only Table row views and row-iteration coordination."""
+"""Read-only, stable Table row views and row-iteration coordination."""
 
 from ..errors import SerifTypeError
 from ..vector import Vector
@@ -9,7 +9,7 @@ from . import columns as _columns
 class Row(Vector):
     """
     Row behaves like a Vector (math, logic, isinstance), but it is a
-    zero-copy view into the Table's columns.
+    stable read-only view over a snapshot of the Table's columns.
 
     We deliberately bypass Vector.__init__ to avoid O(N) scans and alias
     tracking during iteration.
@@ -24,15 +24,16 @@ class Row(Vector):
 
     def __init__(self, table, index=0):
         # Grab the raw backing store for each column.
-        # For non-nullable ArrayStorage we use the array.array directly — this
-        # avoids materialising O(N) Python int/float objects upfront (which would
-        # happen inside to_tuple()).  Per-element access is slightly slower for
-        # array.array than for a plain tuple, but the savings from not having
-        # ~N*ncols live objects during iteration easily wins at any realistic N.
-        # For nullable ArrayStorage or TupleStorage, fall back to the existing
-        # tuple path so null-handling stays correct.
+        # For non-nullable ArrayStorage we normally use the array.array directly
+        # — this avoids materialising O(N) Python int/float objects upfront
+        # (which would happen inside to_tuple()). If iteration starts inside a
+        # batch() scope, copy that already-mutable buffer once so retained rows
+        # remain stable. For nullable ArrayStorage or TupleStorage, fall back to
+        # the existing tuple path so null-handling stays correct.
         def _backing(storage):
             if isinstance(storage, ArrayStorage) and storage._mask is None:
+                if table._unlocked:
+                    return storage._data[:]
                 return storage._data  # array.array — O(1) index, lazy boxing
             return storage.to_tuple()
 
@@ -67,10 +68,16 @@ class Row(Vector):
         # calling Vector.__init__ would materialize the data and kill performance.
         # We are a "Hollow" Vector.
 
-    def set_index(self, index):
-        """ Mutable iterator pattern for speed """
-        self._index = index
-        return self
+    @classmethod
+    def _from_shared_snapshot(cls, source, index):
+        """Create a fixed-index Row sharing an existing column snapshot."""
+        row = object.__new__(cls)
+        row._columns = source._columns
+        row._raw_cols = source._raw_cols
+        row._column_map = source._column_map
+        row._index = index
+        row._dtype = source._dtype
+        return row
 
     @property
     def _storage(self):
@@ -155,8 +162,12 @@ class Row(Vector):
 
 
 def iter_rows(table):
-    """Iterate with one mutable Row view parked on each successive index."""
-    row_view = Row(table, 0)
+    """Yield distinct fixed-index Rows over one shared column snapshot."""
     n = len(table)
-    for index in range(n):
-        yield row_view.set_index(index)
+    if n == 0:
+        return
+
+    first = Row(table, 0)
+    yield first
+    for index in range(1, n):
+        yield Row._from_shared_snapshot(first, index)

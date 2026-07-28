@@ -36,7 +36,7 @@ from datetime import date as _date, datetime as _datetime, timedelta as _timedel
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
 from .._execution import DECLINED
-from ..errors import SerifTypeError, SerifValueError
+from ..errors import SerifIndexError, SerifTypeError, SerifValueError
 from ..vector import Vector
 from .._vector.nullable import BitMask
 from .._vector.nullable import _BitMaskBuilder
@@ -2323,7 +2323,7 @@ class _ParquetTable(_Table):
         if self._mat is None and isinstance(key, int):
             idx = key if key >= 0 else key + len(self._schema_cols)
             if not 0 <= idx < len(self._schema_cols):
-                raise IndexError(
+                raise SerifIndexError(
                     f"Column index {key} out of range (table has "
                     f"{len(self._schema_cols)} columns)")
             return self._gather_column(idx)

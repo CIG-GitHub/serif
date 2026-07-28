@@ -63,6 +63,14 @@ many-to-many key match raises instead of silently multiplying rows.
 `full_join` defaults both flags to `False`. State the cardinality you
 expect; the join enforces it.
 
+### Null Join Keys
+
+A join key containing `None` never matches another key. Inner joins omit
+null-key rows; left and full joins retain them only as unmatched rows. For a
+multi-column key, `None` in any component makes the whole key non-matching.
+Repeated null keys do not violate uniqueness expectations because they cannot
+produce multiple matches.
+
 **Complexity:** O(n + m) where n and m are table lengths. Uses hash-based lookups.
 
 ---
@@ -121,6 +129,13 @@ result = t.aggregate(
     aggregations={'total_revenue': t.revenue.sum}
 )
 ```
+
+### Null Grouping Keys
+
+`aggregate()` and `window()` retain null grouping keys. Rows with the same
+complete key—including the same `None` components—share one group. Composite
+keys still use every component, so `(None, 'A')` and `(None, 'B')` are distinct
+groups.
 
 ### Custom Aggregation
 

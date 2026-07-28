@@ -1,5 +1,6 @@
 """Deferred boolean-mask Table coordination."""
 
+from ..errors import SerifIndexError
 from .._vector.selection import popcount
 from .._vector.storage import TupleStorage
 from ..table import Table
@@ -196,7 +197,7 @@ class MaskedTable(Table):
         if self._mat is None and isinstance(key, int):
             idx = key if key >= 0 else key + len(self._captured)
             if not (0 <= idx < len(self._captured)):
-                raise IndexError(
+                raise SerifIndexError(
                     f"Column index {key} out of range (table has "
                     f"{len(self._captured)} columns)")
             return self._gather_column(idx)

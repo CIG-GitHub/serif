@@ -519,11 +519,11 @@ class Vector():
         """
         True if every valid (non-null) element is truthy.
 
-        A verdict needs evidence: over zero valid values (empty vector, or
-        all null after skipping) all() raises SerifEmptyReductionError
-        unless on_empty supplies the empty-case verdict — the value you
-        pass (True or False) is the value returned. See
-        docs/null-semantics.md.
+        Over zero valid values (empty vector, or all null after skipping)
+        all() returns True — the identity, as Python's all([]) does — and
+        warns SerifEmptyReductionWarning. Pass on_empty (True or False) to
+        state the empty-case verdict yourself and silence the warning; the
+        value you pass is the value returned. See docs/null-semantics.md.
         """
         return _reductions.all(self, on_empty=on_empty)
 
@@ -531,11 +531,11 @@ class Vector():
         """
         True if any valid (non-null) element is truthy.
 
-        A verdict needs evidence: over zero valid values (empty vector, or
-        all null after skipping) any() raises SerifEmptyReductionError
-        unless on_empty supplies the empty-case verdict — the value you
-        pass (True or False) is the value returned. See
-        docs/null-semantics.md.
+        Over zero valid values (empty vector, or all null after skipping)
+        any() returns False — the identity, as Python's any([]) does — and
+        warns SerifEmptyReductionWarning. Pass on_empty (True or False) to
+        state the empty-case verdict yourself and silence the warning; the
+        value you pass is the value returned. See docs/null-semantics.md.
         """
         return _reductions.any(self, on_empty=on_empty)
 
@@ -659,7 +659,7 @@ class Vector():
         Users often mistakenly use 'if vec' when they mean 'if vec.any()' or 'if vec.all()'.
         Use len(vec) > 0 to check for emptiness.
         """
-        raise TypeError(
+        raise SerifTypeError(
             "Vector cannot be used in a boolean context (e.g., 'if vector:'). "
             "Use .any() or .all() for element-wise checks, or len(vector) > 0 to check for emptiness."
         )

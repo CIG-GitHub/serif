@@ -4,8 +4,10 @@ Reductions consume the innermost dimension. Rank-2 values lift the same
 reduction over their columns; rank-1 values reduce their scalar storage.
 """
 
+import warnings
+
 from .._execution import DECLINED
-from ..errors import SerifEmptyReductionError
+from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ._python import reductions as _python_reductions
 
@@ -22,7 +24,8 @@ def _check_on_empty(method_name, on_empty):
         return
     raise SerifTypeError(
         f"{method_name}(): on_empty must be True or False (or None, the "
-        f"default, which raises on zero valid values); got {on_empty!r}"
+        f"default, which returns the identity and warns on zero valid "
+        f"values); got {on_empty!r}"
     )
 
 
@@ -68,16 +71,20 @@ def sum(vector):
     )
 
 
-def _no_verdict(vector, method_name, on_empty):
+def _no_verdict(vector, method_name, on_empty, identity):
     if on_empty is not None:
         return on_empty
     n = len(vector._storage)
     detail = "empty vector" if n == 0 else f"length {n}, all null"
-    raise SerifEmptyReductionError(
-        f"{method_name}() over zero valid values ({detail}): no verdict "
-        f"is possible. Pass on_empty=True or on_empty=False to choose "
-        f"the empty-case verdict, or fillna()/dropna() upstream."
+    warnings.warn(
+        f"{method_name}() over zero valid values ({detail}): returning "
+        f"{identity}, the identity, as Python's {method_name}([]) does. "
+        f"Pass on_empty=True or on_empty=False to state the empty-case "
+        f"verdict yourself and silence this warning.",
+        SerifEmptyReductionWarning,
+        stacklevel=4,
     )
+    return identity
 
 
 def all(vector, on_empty=None):
@@ -89,7 +96,7 @@ def all(vector, on_empty=None):
         )
     verdict = _python_reductions.all_(vector._storage)
     if verdict is None:
-        return _no_verdict(vector, 'all', on_empty)
+        return _no_verdict(vector, 'all', on_empty, True)
     return verdict
 
 
@@ -102,7 +109,7 @@ def any(vector, on_empty=None):
         )
     verdict = _python_reductions.any_(vector._storage)
     if verdict is None:
-        return _no_verdict(vector, 'any', on_empty)
+        return _no_verdict(vector, 'any', on_empty, False)
     return verdict
 
 

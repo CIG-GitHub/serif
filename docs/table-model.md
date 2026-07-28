@@ -26,16 +26,14 @@ However built, the table stores columns.
 - dtype is per-column, never per-row  
 
 ## 4. Row iteration
-`for row in table:` yields a **ride-along Row view** — one Row object whose
-index advances each step. This is deliberate: iteration allocates nothing
-per row, and the view machinery is what enables zero-copy fast paths.
+`for row in table:` yields a distinct, read-only `Row` value for each
+position. Retained rows are stable, so `list(table)` behaves like an ordinary
+Python container and preserves every row.
 
-Consequences:
-- Consume each row inside the loop (read fields, do math) — this covers the
-  CSV/SQL iteration pattern.
-- Do **not** stash the yielded rows: `list(table)` gives N references to the
-  same view, all pointing at the final row. To materialize rows, copy
-  explicitly: `[tuple(row) for row in table]`.
+An iterator prepares the column backing once, then each lightweight `Row`
+shares that immutable snapshot with a fixed index. Mutating the table after
+iteration starts does not change rows already yielded or later rows from that
+iterator.
 
 ## 5. Why column-major
 Real-world data workflows are column-major, even though Python lists are

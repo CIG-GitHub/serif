@@ -2,7 +2,7 @@ import pytest
 import warnings
 from serif import Table
 from serif import Vector
-from serif import SerifEmptyReductionError
+from serif import SerifEmptyReductionWarning
 
 
 class TestAggregate:
@@ -40,6 +40,22 @@ class TestAggregate:
 			if result.year[i] == 2023 and result.month[i] == 1:
 				assert result.revenue_sum[i] == 150
 				break
+
+	def test_aggregate_null_components_share_composite_key_groups(self):
+		table = Table({
+			'region': [None, None, None, None],
+			'tier': ['A', 'A', 'B', 'B'],
+			'value': [1, 2, 4, 8],
+		})
+
+		result = table.aggregate(
+			groupby=[table.region, table.tier],
+			aggregations={'total': table.value.sum},
+		)
+
+		assert list(result.region) == [None, None]
+		assert list(result.tier) == ['A', 'B']
+		assert list(result.total) == [3, 12]
 	
 	def test_aggregate_multiple_aggregations(self):
 		table = Table({
@@ -179,6 +195,19 @@ class TestWindow:
 		assert result.amount_sum[4] == 80
 		assert result.amount_sum[2] == 70
 		assert result.amount_sum[3] == 70
+
+	def test_window_null_keys_share_one_group(self):
+		table = Table({
+			'group': ['A', None, None, 'A'],
+			'amount': [1, 10, 20, 4],
+		})
+
+		result = table.window(
+			groupby=table.group,
+			aggregations={'amount_sum': table.amount.sum},
+		)
+
+		assert list(result.amount_sum) == [5, 30, 30, 5]
 
 	def test_window_multiple_partitions(self):
 		"""Window with multiple partition keys"""
@@ -359,43 +388,54 @@ class TestAggregateWindowEdgeCases:
 
 
 class TestVerdictReductionsInAggregations:
-	"""all()/any() over a group with zero valid values raises with the
-	group's coordinates attached (docs/null-semantics.md)."""
+	"""all()/any() over a group with zero valid values returns the identity
+	and warns once per aggregation, naming the empty groups
+	(docs/null-semantics.md)."""
 
-	def test_aggregate_all_null_group_raises_with_group_key(self):
+	def test_aggregate_all_null_group_warns_with_group_key(self):
 		table = Table({
 			'region': ['E', 'E', 'W', 'W'],
 			'ok':     [True, True, None, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning, match=r"'flags'.*'W'"):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'flags': table.ok.all}
 			)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is True
+		assert flags['W'] is True  # the all() identity
 
-	def test_aggregate_qualified_via_lambda(self):
+	def test_aggregate_qualified_via_lambda_is_silent(self):
 		table = Table({
 			'region': ['E', 'E', 'W', 'W'],
 			'ok':     [True, True, None, None],
 		})
-		result = table.aggregate(
-			groupby=table.region,
-			aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
-		)
+		with warnings.catch_warnings():
+			warnings.simplefilter("error", SerifEmptyReductionWarning)
+			result = table.aggregate(
+				groupby=table.region,
+				aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
+			)
 		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
 		assert flags['E'] is True
 		assert flags['W'] is False
 
-	def test_aggregate_callable_gets_group_context_too(self):
+	def test_aggregate_callable_warns_from_the_reduction(self):
+		# A callable's inner any() warns at the vector level — no group
+		# coordinates, but the identity lands in the result.
 		table = Table({
 			'region': ['E', 'W'],
 			'ok':     [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"'flags'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'flags': lambda g: g.ok.any()}
 			)
+		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
+		assert flags['E'] is True
+		assert flags['W'] is False  # the any() identity
 
 	def test_aggregate_block_names_the_column(self):
 		table = Table({
@@ -403,23 +443,26 @@ class TestVerdictReductionsInAggregations:
 			'a':      [True, True],
 			'b':      [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"column 'b'.*'W'"):
-			table.aggregate(
+		with pytest.warns(SerifEmptyReductionWarning, match=r"column 'b'.*'W'"):
+			result = table.aggregate(
 				groupby=table.region,
 				aggregations={'ok_': table['a', 'b'].all}
 			)
+		assert list(result.ok_a) == [True, True]
+		assert list(result.ok_b) == [True, True]  # identity at 'W'
 
 	def test_aggregate_whole_table_says_so(self):
 		table = Table({'ok': [None, None]})
-		with pytest.raises(SerifEmptyReductionError, match='whole table'):
-			table.aggregate(aggregations={'flags': table.ok.all})
+		with pytest.warns(SerifEmptyReductionWarning, match='whole table'):
+			result = table.aggregate(aggregations={'flags': table.ok.all})
+		assert result.flags[0] is True
 
-	def test_window_all_null_group_raises_with_group_key(self):
+	def test_window_all_null_group_warns_with_group_key(self):
 		table = Table({
 			'region': ['E', 'W'],
 			'ok':     [True, None],
 		})
-		with pytest.raises(SerifEmptyReductionError, match=r"window\(\).*'W'"):
+		with pytest.warns(SerifEmptyReductionWarning, match=r"window\(\).*'W'"):
 			table.window(
 				groupby=table.region,
 				aggregations={'flags': table.ok.all}

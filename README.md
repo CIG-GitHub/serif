@@ -40,7 +40,9 @@ t
 pip install serif
 ```
 
-Serif has no required runtime dependencies. Its pure-Python implementation defines the result.
+Serif has no required runtime dependencies. Its pure-Python implementation
+defines the semantics; optional accelerators improve performance without
+changing behavior.
 
 NumPy and PyArrow are used when available, but only when they preserve the same Python values and behavior. Otherwise, Serif falls back to pure Python.
 
@@ -87,7 +89,7 @@ t._                            # what do I have again?
 
 ### None means missing
 
-Element-wise, unknown in is unknown out. Aggregates summarize what you know. And a verdict needs evidence — `all()`/`any()` over zero valid values raise rather than guess.
+Element-wise, unknown in is unknown out. Aggregates summarize what you know.
 
 ```python
 v = Vector([10, None, 30])
@@ -96,9 +98,6 @@ v + 1        # 11, None, 31
 v > 15       # False, None, True
 v.sum()      # 40
 len(v)       # 3
-
-Vector([None, None]).any()                 # raises SerifEmptyReductionError
-Vector([None, None]).any(on_empty=False)   # False — you supplied the verdict
 ```
 
 ### Joins and aggregation
