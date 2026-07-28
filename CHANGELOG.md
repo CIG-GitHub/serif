@@ -16,6 +16,7 @@
   one warning per output column naming the affected group keys, instead
   of raising on the first empty group.
 
+
 ## 0.2.1 – Column Rename Clarity
 
 ### Changed
