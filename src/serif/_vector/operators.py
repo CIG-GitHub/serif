@@ -207,6 +207,28 @@ def _validate_forward_division(left, right, op_func):
             op_func(left_value, right)
 
 
+def null_literal_compare(vector, op):
+    """`v == None` / `v != None` — the missingness test.
+
+    The scalar None is the symbol for absence, not an unknown value
+    (docs/null-semantics.md, rule three): `v == None` is `v.is_na()` and
+    `v != None` is `~v.is_na()`, returning a total, non-nullable bool
+    mask — Python's answer, since `None == None` is True. Warns, because
+    a None that leaked in through a variable silently turns a value
+    comparison into a missingness test.
+    """
+    warnings.warn(
+        "Comparing against None tests for missing values: `v == None` is "
+        "`v.is_na()` and `v != None` is `~v.is_na()`. Call is_na() "
+        "directly to say this deliberately and silence this warning.",
+        stacklevel=3,
+    )
+    mask = vector.is_na()
+    if op is operator.ne:
+        mask = ~mask
+    return mask
+
+
 def elementwise_compare(vector, other, op):
     other = vector._check_duplicate(other)
     Vector = _vector_class()
@@ -249,11 +271,7 @@ def elementwise_compare(vector, other, op):
         )
 
     if other is None and op in (operator.eq, operator.ne):
-        warnings.warn(
-            "Null comparison: `v == None` yields null for every element. "
-            "Use `v.is_na()` to test for nulls.",
-            stacklevel=3,
-        )
+        return null_literal_compare(vector, op)
     nullable = (
         (vector._dtype.nullable if vector._dtype is not None else True)
         or other is None

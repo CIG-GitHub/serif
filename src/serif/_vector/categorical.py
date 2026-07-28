@@ -261,6 +261,10 @@ class _Category(Vector):
         # was produced.
         is_ordering = op in _ORDERING_OPS
 
+        if other is None and not is_ordering:
+            from .operators import null_literal_compare
+            return null_literal_compare(self, op)
+
         def _wrap(result):
             return Vector._from_iterable_known_dtype(
                 result, Schema(bool, any(v is None for v in result)))

@@ -226,6 +226,10 @@ class Table(Vector):
         """Return a same-shaped bool Table applying ``isinstance`` per cell."""
         return _lifting.is_type(self, types)
 
+    def is_in(self, members):
+        """Return a same-shaped bool Table testing membership per cell."""
+        return _lifting.is_in(self, members)
+
     def dropna(self):
         """Return rows having no null cells (complete-case filtering)."""
         return _rows.dropna(self)

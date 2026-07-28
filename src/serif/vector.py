@@ -261,6 +261,21 @@ class Vector():
         """
         return _transforms.is_na(self)
 
+    def is_in(self, members):
+        """
+        Element-wise membership: True where the element equals any member.
+
+        Membership is Python ``==`` — ``Vector([1, 2]).is_in([2.0])`` is
+        ``[False, True]``, because ``2 == 2.0``. ``None`` among the
+        members names absence itself (docs/null-semantics.md): null
+        positions match and the mask is total —
+        ``v.is_in([1, None])`` is ``v.is_in([1]) | v.is_na()``. Without
+        it, null positions yield null: unknown in, unknown out. Members
+        whose type can never equal this vector's dtype warn — they match
+        nothing, and a dead member is usually a typo'd group.
+        """
+        return _transforms.is_in(self, members)
+
 
     def is_type(self, types):
         """
