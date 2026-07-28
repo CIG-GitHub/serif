@@ -29,10 +29,10 @@ else, when Python has an answer, serif gives Python's answer.
 >
 > **Explicit absence collapses the unknowns.**
 > The moment you name absence yourself — `is_na()`, `fillna()`,
-> `v == None`, `on_empty=` — the question has a total answer and the
-> unknowns leave the result. `v == None` asks "is this position
-> missing" and returns a plain `bool` mask, exactly as mapping
-> `== None` over a Python list would.
+> `v == None`, `None` among `is_in()` members, `on_empty=` — the
+> question has a total answer and the unknowns leave the result.
+> `v == None` asks "is this position missing" and returns a plain
+> `bool` mask, exactly as mapping `== None` over a Python list would.
 
 Everything else in this document is a consequence of those three rules.
 
@@ -70,6 +70,22 @@ missingness test — `True` at v's nulls — while `v == w` at position 2 is
 null. The scalar is the symbol; the column cell is data. The warning
 fires on every scalar-`None` comparison precisely so that crossing is
 never silent.
+
+### `is_in()`: membership, and absence as a category
+
+`is_in()` follows both halves of the doctrine. Membership is Python `==`
+(`Vector([1, 2]).is_in([2.0])` matches — the numeric tower is Python's),
+and null positions yield null: whether an unknown value is in the group
+is unknown. But `None` *among the members* names absence itself:
+`v.is_in([1, None])` is `v.is_in([1]) | v.is_na()`, and the mask is
+total. This is the classification reading, the same one grouping uses —
+the group enumerates categories, and "missing" is a category you may
+list. No warning: an enumerated group is deliberate. (A group sourced
+from data can carry incidental nulls — `v.is_in(other.key)` — and they
+claim your null rows under the same uniform rule; `dropna()` the group
+if that is not what you meant.) Members whose *type* can never equal
+the vector's dtype do warn: the answer — they match nothing — is
+Python's, but a dead member is usually a typo'd group.
 
 ### Kleene tables for `&` and `|` (bool vectors)
 
@@ -203,9 +219,11 @@ case loud without breaking Python's answer.
 `is_na()` — which positions are null. `fillna(x)` — replace nulls with a
 value. `dropna()` — remove null positions. `v == None` / `v != None` —
 the comparison spellings of `is_na()` / `~is_na()` (they warn; the named
-methods are the deliberate form). These are the only operations that
-*look at* nullness; everything else either propagates it (element-wise)
-or skips it (aggregate).
+methods are the deliberate form). `is_in([..., None])` — membership with
+absence as one of the categories (no warning; an enumerated group is
+deliberate). These are the only operations that *look at* nullness;
+everything else either propagates it (element-wise) or skips it
+(aggregate).
 
 ## Null keys in joins and grouping
 
