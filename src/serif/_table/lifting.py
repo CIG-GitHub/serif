@@ -2,6 +2,7 @@
 
 import operator
 import warnings
+from collections.abc import Iterable
 
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
@@ -58,6 +59,15 @@ def is_na(table):
 
 def is_type(table, types):
     return map_columns(table, lambda column: column.is_type(types))
+
+
+def is_in(table, members):
+    if isinstance(members, Iterable) and not isinstance(
+        members,
+        (str, bytes, bytearray),
+    ):
+        members = list(members)  # a generator must survive every column
+    return map_columns(table, lambda column: column.is_in(members))
 
 
 def compare(table, other, op):

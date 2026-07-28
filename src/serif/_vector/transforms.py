@@ -1,6 +1,9 @@
 """Vector cast, null, type, uniqueness, and ordering transforms."""
 
 import builtins as _builtins
+import numbers
+import warnings
+from collections.abc import Iterable
 from datetime import date
 from datetime import datetime
 
@@ -192,6 +195,72 @@ def is_na(vector):
         (element is None for element in storage),
         Schema(bool, False),
     )
+
+
+def _member_can_match(kind, member):
+    """Can a member of this type ever be == to a value of `kind`?"""
+    if kind in (int, float, bool):
+        return isinstance(member, numbers.Number)  # the numeric tower
+    if kind is date:
+        # datetime subclasses date but never equals a pure date
+        return isinstance(member, date) and not isinstance(member, datetime)
+    if kind is datetime:
+        return isinstance(member, datetime)
+    return isinstance(member, kind)
+
+
+def is_in(vector, members):
+    """Element-wise membership by Python `==` (docs/null-semantics.md)."""
+    Vector = _vector_class()
+    if isinstance(members, (str, bytes, bytearray)) or not isinstance(
+        members,
+        Iterable,
+    ):
+        raise SerifTypeError(
+            "is_in() takes an iterable of members (list, tuple, Vector, "
+            f"...); got {type(members).__name__!r}. A bare string would "
+            "iterate as characters — wrap it: is_in(['abc'])."
+        )
+    members = list(members)
+    # None among the members names absence itself (doctrine rule three):
+    # null positions match, and the result mask is total.
+    match_null = any(member is None for member in members)
+    valid = [member for member in members if member is not None]
+
+    schema = vector.schema()
+    kind = schema.kind if schema is not None else None
+    if kind is not None and kind is not object:
+        dead = [m for m in valid if not _member_can_match(kind, m)]
+        if dead:
+            shown = ", ".join(repr(member) for member in dead[:5])
+            if len(dead) > 5:
+                shown += ", ..."
+            warnings.warn(
+                f"is_in(): group member(s) {shown} can never match "
+                f"Vector<{kind.__name__}> — they will match nothing. "
+                f"Fix or cast the group to silence this warning.",
+                stacklevel=3,
+            )
+        # Typed values are always hashable; object vectors may not be.
+        try:
+            lookup = set(valid)
+        except TypeError:
+            lookup = valid
+    else:
+        lookup = valid  # linear membership: plain Python `in`, plain `==`
+
+    result = []
+    saw_null = False
+    for value in vector:
+        if value is None:
+            if match_null:
+                result.append(True)
+            else:
+                result.append(None)
+                saw_null = True
+        else:
+            result.append(value in lookup)
+    return Vector._from_iterable_known_dtype(result, Schema(bool, saw_null))
 
 
 def is_type(vector, types):
