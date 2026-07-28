@@ -1,27 +1,102 @@
 # Changelog
 
-## Unreleased – Verdict Reductions Answer Like Python
+## 0.2.1 – Recursive Semantics & Direct Storage
 
-### Changed
-- Breaking, pre-1.0: `all()`/`any()` over zero valid values (empty vector,
-  or all null after skipping) no longer raise. They return the Python
-  identity — `all()` → `True`, `any()` → `False`, matching `all([])` /
-  `any([])` — and emit `SerifEmptyReductionWarning`. Pass `on_empty=True`
-  or `on_empty=False` to state the empty-case verdict and silence the
-  warning; `warnings.simplefilter('error', SerifEmptyReductionWarning)`
-  restores the old hard failure.
-- `SerifEmptyReductionError` is gone; `SerifEmptyReductionWarning`
-  (a `UserWarning`) replaces it in `serif`'s exports.
-- In `aggregate()`/`window()`, empty-verdict groups get the identity and
-  one warning per output column naming the affected group keys, instead
-  of raising on the first empty group.
+This release is a project-wide refactor of Serif's semantic and physical
+execution layers. Vector and Table now follow one explicit recursive operation
+model; pure Python remains the semantic authority, optional backends implement
+deterministic physical kernels, and construction, execution, and I/O keep data
+in canonical Serif storage instead of repeatedly boxing whole columns into
+Python containers.
 
-
-## 0.2.1 – Column Rename Clarity
-
-### Changed
+### Breaking Changes
+- Breaking, pre-1.0: `Vector.isna()` is now `Vector.is_na()`.
 - Breaking, pre-1.0: `Table.rename({old: new})` is now
   `Table.rename_columns({old: new})`. Behavior is otherwise unchanged.
+- Breaking, pre-1.0: `Vector.pluck()` and the fingerprinting API were removed.
+- Breaking, pre-1.0: the optional dependency extra `serif[arrow]` is now
+  `serif[pyarrow]`.
+- Breaking, pre-1.0: `all()`/`any()` over zero valid values no longer raise.
+  They return the Python identities — `True` and `False`, respectively — and
+  emit `SerifEmptyReductionWarning`. `on_empty=` states the empty-case verdict
+  explicitly and silences the warning. `SerifEmptyReductionError` was removed
+  from the public exports.
+- Comparing a Vector with scalar `None` now follows Python's missingness answer:
+  `v == None` returns the same total boolean mask as `v.is_na()`, and
+  `v != None` returns its inverse. These spellings warn so accidental scalar
+  `None` comparisons remain visible. Vector-to-Vector comparisons still
+  propagate null where either side is unknown.
+
+### Added
+- Applicable Vector operations now lift consistently over Tables while
+  preserving shape and column names. This includes comparisons, unary and
+  reverse arithmetic, logical and bitwise operations, casts, `to_object()`,
+  `fillna()`, `is_na()`, and `is_type()`.
+- `Vector.coalesce()` and same-shaped `Table.coalesce()` select the first
+  non-null value positionally.
+- `Vector.is_in()` and `Table.is_in()` provide element-wise membership using
+  Python equality. Including `None` among the members explicitly includes
+  missing positions.
+- Tables gain row-aware `dropna()` and stable row-wise `unique()`.
+- Table selection accepts a list of column names:
+  `t[['col 1', 'col 2']]`.
+- Table mutation supports Vector-valued masked assignment and fully validated
+  two-dimensional assignment, including `t[mask, 'col'] = v[mask]`.
+- Python keywords are treated as reserved dot-access names, so columns such as
+  `class` sanitize to reachable accessors such as `.class_`.
+
+### Changed
+- Null behavior now follows the rule “Python governs values and answers; SQL
+  governs row matching.” Joins never match a key containing null, while
+  grouping and aggregation retain `None` as a group.
+- Empty-verdict groups in `aggregate()` and `window()` receive the `all()` or
+  `any()` identity and emit one warning per output column naming the affected
+  group keys.
+- Table iteration now yields distinct, stable row values. Retaining one row no
+  longer causes it to change as iteration advances.
+- Table-owned column metadata is frozen along with its values; rename columns
+  through the Table.
+- Table assignments are fully validated before mutation, preventing partial
+  writes when a later value or column is invalid.
+- `Table.to_dict()` raises on duplicate export keys instead of silently losing
+  a column.
+- The repr footer no longer repeats per-dtype column counts.
+- Appending `None` correctly promotes established schemas to nullable, and
+  untyped mixed-kind construction infers `object` without a spurious fallback
+  warning.
+- Public exception behavior is normalized: explicit dtype violations and
+  ambiguous `bool(Vector(...))` raise `SerifTypeError`; out-of-range
+  `Table.cols()` access raises `SerifIndexError` across eager, deferred, and
+  lazy-Parquet tables.
+
+### Performance
+- Numeric, boolean, string, decimal, and validity data now build directly into
+  canonical storage, including pre-allocation for dense known-size results.
+- NumPy join/group indexers stay as arrays through selection, and Arrow grouped
+  keys and sums stay in Serif storage instead of round-tripping through Python
+  lists.
+- Python grouping, joins, sorting, categorical transforms, and known-dtype
+  operations no longer box complete columns into tuples or lists.
+- CSV reading accumulates cells column-first, performs one inference pass per
+  column, and constructs the result without an intermediate row matrix or
+  constructor recopy.
+- The pure Parquet reader decodes nullable numeric and other supported physical
+  values directly into canonical storage, concatenating pages and row groups
+  once.
+- Parquet writing encodes directly from Serif storage and streams validated
+  pages instead of materializing non-null Python lists or buffering the entire
+  file.
+
+### Internal
+- The former Vector and Table monoliths were decomposed into thin public
+  classes, semantic modules, row/column mechanics, and isolated Table algebra
+  for transpose, joins, grouping, aggregation, and windows.
+- Execution now uses an explicit `DECLINED` contract. Optional NumPy and Arrow
+  backends may decline unsupported physical cases, but invalid operations and
+  backend defects raise normally; pure Python is the mandatory final path.
+- Physical implementations are separated into Python, NumPy, and Arrow backend
+  packages, the legacy `_accel` package was retired, and structural tests lock
+  the dependency direction.
 
 ## 0.2.0 – Optional Acceleration & Value Semantics
 
