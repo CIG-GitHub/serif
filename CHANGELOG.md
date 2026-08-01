@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.2 – Unreleased
+
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
 This release is a project-wide refactor of Serif's semantic and physical
