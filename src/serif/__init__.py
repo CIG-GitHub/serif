@@ -38,7 +38,7 @@ from .errors import SerifEmptyReductionWarning
 from .io import read_csv, read_parquet, write_parquet
 from .display import set_repr_rows
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 __all__ = [
     "Vector",
     "Table",

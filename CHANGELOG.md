@@ -2,6 +2,11 @@
 
 ## 0.2.2 – Unreleased
 
+### Fixed
+- Categorical payload columns no longer degrade to strings during joins;
+  category domains and ordering are preserved, and null padding produces
+  nullable categoricals on optional join sides.
+
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
 This release is a project-wide refactor of Serif's semantic and physical
