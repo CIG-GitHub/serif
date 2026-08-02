@@ -485,3 +485,9 @@ class _CategoryStorage:
 
     def take(self, indices):
         return _CategoryStorage(self._codes.take(indices), self._categories)
+
+    def take_pad(self, indices):
+        return _CategoryStorage(
+            self._codes.take_pad(indices),
+            self._categories,
+        )

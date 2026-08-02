@@ -444,19 +444,20 @@ def test_invalid_mask_raises_before_filter_dispatch(monkeypatch):
         Vector([1, 2])[Vector([True])]
 
 
-def test_padded_take_decline_remains_caller_visible(monkeypatch):
+def test_padded_take_decline_falls_back_to_python(monkeypatch):
     monkeypatch.setattr(
         numpy_selection,
         'take_pad_storage',
         lambda storage, indices: execution.DECLINED,
     )
 
-    assert vector_selection.take_pad_storage(
-        object(),
-        object(),
-    ) is execution.DECLINED
+    source = Vector([10, 20])._storage
+    result = vector_selection.take_pad_storage(source, [1, -1, 0])
+
+    assert type(result) is type(source)
+    assert list(result) == [20, None, 10]
     assert vector_selection.take_pad_values(
-        Vector([10, 20])._storage,
+        source,
         [1, -1, 0],
     ) == [20, None, 10]
 
