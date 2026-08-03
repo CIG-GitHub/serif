@@ -346,6 +346,73 @@ class TestCategorizeNone:
         assert list(sorted_c) == ['l', 'l', 'xs', 'm']
 
 
+class TestCategoricalConcatenation:
+    def test_in_domain_scalar_preserves_category(self):
+        c = Vector(['low', 'medium', 'high']).categorize(
+            ['low', 'medium', 'high', 'extreme']
+        )
+
+        result = c << 'extreme'
+
+        assert isinstance(result, _Category)
+        assert result.categories == ('low', 'medium', 'high', 'extreme')
+        assert list(result) == ['low', 'medium', 'high', 'extreme']
+
+    def test_none_preserves_category_and_widens_nullability(self):
+        c = make_cat(['s', 'm'])
+
+        result = c << None
+
+        assert isinstance(result, _Category)
+        assert result.categories == tuple(SIZES)
+        assert result.schema().nullable is True
+        assert list(result) == ['s', 'm', None]
+
+    def test_out_of_domain_scalar_raises(self):
+        c = make_cat(['s', 'm'])
+
+        with pytest.raises(SerifValueError, match="not in the category list"):
+            c << 'xxl'
+
+    def test_matching_category_columns_preserve_domain(self):
+        left = make_cat(['s', 'm'])
+        right = make_cat(['l', None])
+
+        result = left << right
+
+        assert isinstance(result, _Category)
+        assert result.categories == tuple(SIZES)
+        assert result.schema().nullable is True
+        assert list(result) == ['s', 'm', 'l', None]
+
+    def test_different_category_columns_demote_to_string(self):
+        left = Vector(['s', 'm']).categorize(['s', 'm', 'l'])
+        right = Vector(['l', None]).categorize(['l', 'm', 's'])
+
+        result = left << right
+
+        assert not isinstance(result, _Category)
+        assert result.schema().kind is str
+        assert result.schema().nullable is True
+        assert list(result) == ['s', 'm', 'l', None]
+
+    @pytest.mark.parametrize('category_on_left', [True, False])
+    def test_category_and_string_columns_produce_string(self, category_on_left):
+        category = Vector(['s', 'm']).categorize(['s', 'm', 'l'])
+        strings = Vector(['l'])
+        left, right = (
+            (category, strings)
+            if category_on_left
+            else (strings, category)
+        )
+
+        result = left << right
+
+        assert not isinstance(result, _Category)
+        assert result.schema().kind is str
+        assert list(result) == list(left) + list(right)
+
+
 class TestSetCategories:
     def test_reorder(self):
         c = Vector(['s', 'm', 'l']).categorize(['s', 'm', 'l'])
