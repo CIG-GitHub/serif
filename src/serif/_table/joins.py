@@ -307,7 +307,7 @@ def _join(
 def _gather_join_column(original_column, indices, nullable_pad):
     """Gather one output column, padding unmatched lanes with null."""
     schema = original_column.schema()
-    if schema is not None and schema.kind is not object:
+    if schema is not None:
         fast = take_pad_storage(original_column._storage, indices)
         if fast is not DECLINED:
             return original_column._clone(

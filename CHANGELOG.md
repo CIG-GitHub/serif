@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2 – Unreleased
+
+### Fixed
+- Categorical payload columns no longer degrade to strings during joins;
+  category domains and ordering are preserved, and null padding produces
+  nullable categoricals on optional join sides.
+- Vector concatenation now resolves a common result schema for Vector, scalar,
+  and iterable inputs: nullability widens, compatible numeric kinds promote,
+  and incompatible ordinary kinds become `object`. Matching categorical
+  domains remain categorical, while conflicting domains or categorical/plain
+  string columns become `str`.
+
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
 This release is a project-wide refactor of Serif's semantic and physical

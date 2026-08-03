@@ -33,8 +33,11 @@ def take_storage(storage, indices):
 
 
 def take_pad_storage(storage, indices):
-    """Try the optional padded gather; its caller owns pure wrapping."""
-    return _numpy_selection().take_pad_storage(storage, indices)
+    """Gather with null padding through NumPy, then canonical storage."""
+    result = _numpy_selection().take_pad_storage(storage, indices)
+    if result is not DECLINED:
+        return result
+    return _python_selection.take_pad_storage(storage, indices)
 
 
 def take_pad_values(storage, indices):

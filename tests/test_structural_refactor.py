@@ -294,6 +294,32 @@ def test_left_join_right_columns_become_nullable():
     assert j['id'].schema() == Schema(int, False)
 
 
+def test_left_join_preserves_categorical_payload_domains_and_nullability():
+    left = Table([
+        Vector([1, 2], name='id'),
+        Vector(['A', 'B'], name='b').categorize(['B', 'A', 'left-only']),
+    ])
+    right = Table([
+        Vector([1], name='id'),
+        Vector(['A'], name='b').categorize(['right-only', 'A', 'B']),
+    ])
+
+    with pytest.warns(UserWarning, match="Duplicate column name 'b'"):
+        joined = left.left_join(right, 'id', 'id')
+
+    left_payload = joined.cols(1)
+    right_payload = joined.cols(2)
+
+    assert isinstance(left_payload, _Category)
+    assert isinstance(right_payload, _Category)
+    assert left_payload.categories == ('B', 'A', 'left-only')
+    assert right_payload.categories == ('right-only', 'A', 'B')
+    assert left_payload.schema() == Schema(str, False)
+    assert right_payload.schema() == Schema(str, True)
+    assert list(left_payload) == ['A', 'B']
+    assert list(right_payload) == ['A', None]
+
+
 def test_inner_join_int_column_stays_arraystorage(tmp_path):
     t1 = Table({'id': [1, 2, 3], 'a': [10, 20, 30]})
     t2 = Table({'id': [2, 3], 'b': [200, 300]})

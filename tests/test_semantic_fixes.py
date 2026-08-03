@@ -212,6 +212,103 @@ def test_empty_vector_lshift_concatenates():
     assert list(Vector() << [1, 2]) == [1, 2]
 
 
+@pytest.mark.parametrize(
+    ('left', 'right', 'expected_values', 'expected_schema'),
+    [
+        (Vector([1]), Vector([2.5]), [1.0, 2.5], Schema(float, False)),
+        (Vector([1]), Vector(['A']), [1, 'A'], Schema(object, False)),
+        (
+            Vector([1]),
+            Vector(['A', None]),
+            [1, 'A', None],
+            Schema(object, True),
+        ),
+        (
+            Vector(['A', None]),
+            Vector([1]),
+            ['A', None, 1],
+            Schema(object, True),
+        ),
+    ],
+)
+def test_vector_lshift_uses_common_result_schema(
+    left,
+    right,
+    expected_values,
+    expected_schema,
+):
+    result = left << right
+
+    assert list(result) == expected_values
+    assert result.schema() == expected_schema
+
+
+def test_vector_lshift_widens_nullability_for_same_kind():
+    result = Vector([1, 2]) << Vector([3, None])
+
+    assert list(result) == [1, 2, 3, None]
+    assert result.schema() == Schema(int, True)
+
+
+@pytest.mark.parametrize(
+    ('left', 'other', 'expected_values', 'expected_schema'),
+    [
+        (Vector([1]), 2.5, [1.0, 2.5], Schema(float, False)),
+        (Vector([1]), 'A', [1, 'A'], Schema(object, False)),
+        (Vector([1]), None, [1, None], Schema(int, True)),
+        (
+            Vector([1]),
+            [2.5, 3],
+            [1.0, 2.5, 3.0],
+            Schema(float, False),
+        ),
+        (
+            Vector([1]),
+            ['A', None],
+            [1, 'A', None],
+            Schema(object, True),
+        ),
+        (
+            Vector([1]),
+            [2.5, 'A'],
+            [1, 2.5, 'A'],
+            Schema(object, False),
+        ),
+        (
+            Vector(['A']),
+            [1, None],
+            ['A', 1, None],
+            Schema(object, True),
+        ),
+    ],
+)
+def test_vector_lshift_scalar_and_iterable_use_common_result_schema(
+    left,
+    other,
+    expected_values,
+    expected_schema,
+):
+    result = left << other
+
+    assert list(result) == expected_values
+    assert result.schema() == expected_schema
+
+
+def test_vector_lshift_consumes_one_shot_iterable_once():
+    visited = []
+
+    def values():
+        for value in (2.5, 3):
+            visited.append(value)
+            yield value
+
+    result = Vector([1]) << values()
+
+    assert visited == [2.5, 3]
+    assert list(result) == [1.0, 2.5, 3.0]
+    assert result.schema() == Schema(float, False)
+
+
 def test_length_mismatch_is_serif_value_error():
     with pytest.raises(SerifValueError):
         Vector([1, 2]) + Vector([1, 2, 3])

@@ -96,6 +96,21 @@ class ArrayStorage:
             validity.append(mask is not None and mask.is_null(i))
         return ArrayStorage(new_data, validity.finish())
 
+    def take_pad(self, indices) -> ArrayStorage:
+        """Gather positions, treating negative indices as null padding."""
+        data = self._data
+        mask = self._mask
+        new_data = array(data.typecode)
+        validity = _BitMaskBuilder()
+        for i in indices:
+            if i < 0:
+                new_data.append(0)
+                validity.append(True)
+            else:
+                new_data.append(data[i])
+                validity.append(mask is not None and mask.is_null(i))
+        return ArrayStorage(new_data, validity.finish())
+
     def to_tuple(self) -> tuple:
         return tuple(self)
 
@@ -181,6 +196,13 @@ class TupleStorage:
 
     def take(self, indices) -> TupleStorage:
         return TupleStorage(tuple(self._data[i] for i in indices))
+
+    def take_pad(self, indices) -> TupleStorage:
+        """Gather positions, treating negative indices as null padding."""
+        return TupleStorage(tuple(
+            None if i < 0 else self._data[i]
+            for i in indices
+        ))
 
     def __bool__(self) -> bool:
         return len(self._data) > 0
@@ -271,6 +293,21 @@ class BoolStorage:
         for i in indices:
             new_data.append(data[i])
             validity.append(mask is not None and mask.is_null(i))
+        return BoolStorage(new_data, validity.finish())
+
+    def take_pad(self, indices) -> BoolStorage:
+        """Gather positions, treating negative indices as null padding."""
+        data = self._data
+        mask = self._mask
+        new_data = bytearray()
+        validity = _BitMaskBuilder()
+        for i in indices:
+            if i < 0:
+                new_data.append(0)
+                validity.append(True)
+            else:
+                new_data.append(data[i])
+                validity.append(mask is not None and mask.is_null(i))
         return BoolStorage(new_data, validity.finish())
 
     def to_tuple(self) -> tuple:
@@ -440,6 +477,31 @@ class StringStorage:
         return StringStorage(
             bytes(new_buf), new_offsets, validity.finish())
 
+    def take_pad(self, indices) -> StringStorage:
+        """Gather positions, treating negative indices as null padding."""
+        buf = self._buf
+        offsets = self._offsets
+        mask = self._mask
+        length = len(self)
+        new_buf = bytearray()
+        new_offsets = array('I', [0])
+        validity = _BitMaskBuilder()
+
+        for i in indices:
+            if i < 0:
+                is_null = True
+            else:
+                if not 0 <= i < length:
+                    raise IndexError('string index out of range')
+                is_null = mask is not None and mask.is_null(i)
+                if not is_null:
+                    new_buf.extend(buf[offsets[i]:offsets[i + 1]])
+            new_offsets.append(len(new_buf))
+            validity.append(is_null)
+
+        return StringStorage(
+            bytes(new_buf), new_offsets, validity.finish())
+
     def to_tuple(self) -> tuple:
         return tuple(self)
 
@@ -570,6 +632,25 @@ class DecimalStorage:
         for i in indices:
             if i < 0:
                 i += length
+            if not 0 <= i < length:
+                raise IndexError('decimal index out of range')
+            new_buf.extend(buf[i * 16:(i + 1) * 16])
+            validity.append(mask is not None and mask.is_null(i))
+        return DecimalStorage(
+            new_buf, self._scale, self._precision, validity.finish())
+
+    def take_pad(self, indices) -> 'DecimalStorage':
+        """Gather positions, treating negative indices as null padding."""
+        buf = self._buf
+        mask = self._mask
+        length = len(self)
+        new_buf = bytearray()
+        validity = _BitMaskBuilder()
+        for i in indices:
+            if i < 0:
+                new_buf.extend(b'\x00' * 16)
+                validity.append(True)
+                continue
             if not 0 <= i < length:
                 raise IndexError('decimal index out of range')
             new_buf.extend(buf[i * 16:(i + 1) * 16])

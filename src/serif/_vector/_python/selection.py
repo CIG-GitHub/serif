@@ -14,6 +14,10 @@ def take_storage(storage, indices):
     return storage.take(indices)
 
 
+def take_pad_storage(storage, indices):
+    return storage.take_pad(indices)
+
+
 def take_pad_values(storage, indices):
     return [
         None if index < 0 else storage[index]
