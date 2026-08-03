@@ -13,8 +13,12 @@ Properties:
 """
 
 from __future__ import annotations
+from collections.abc import Iterable
+from itertools import chain
+
 from ..vector import Vector
 from .storage import ArrayStorage
+from .storage import concatenate_storages
 from .dtype import Schema
 from .selection import take_storage
 from ..errors import SerifValueError, SerifTypeError
@@ -222,6 +226,45 @@ class _Category(Vector):
             new_storage,
             use_dtype,
             name=use_name,
+        )
+
+    def __lshift__(self, other):
+        """Append values without inventing or discarding category metadata."""
+        if isinstance(other, _Category):
+            if self._categories == other._categories:
+                return _Category(
+                    concatenate_storages((
+                        self._code_storage,
+                        other._code_storage,
+                    )),
+                    self._categories,
+                    name=self._name,
+                    nullable=(
+                        self._dtype.nullable
+                        or other._dtype.nullable
+                    ),
+                )
+            return super().__lshift__(other)
+
+        if isinstance(other, Vector):
+            return super().__lshift__(other)
+
+        appended = (
+            other
+            if isinstance(other, Iterable)
+            and not isinstance(other, (str, bytes, bytearray))
+            else (other,)
+        )
+        result = _Category.from_values(
+            chain(self._storage, appended),
+            self._categories,
+            name=self._name,
+        )
+        return _Category(
+            result._code_storage,
+            self._categories,
+            name=self._name,
+            nullable=self._dtype.nullable or result._dtype.nullable,
         )
 
     def __setitem__(self, key, value):
