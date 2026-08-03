@@ -14,6 +14,7 @@ from ._vector import reductions as _reductions
 from ._vector import selection as _selection
 from ._vector import transforms as _transforms
 from ._vector.dtype import Schema
+from ._vector.dtype import promote_kinds
 from ._vector.storage import TupleStorage
 
 from datetime import date
@@ -699,11 +700,28 @@ class Vector():
             return self._clone(storage, dtype=result_dtype)
 
         if isinstance(other, Vector):
-            if not self._dtype.nullable and not other.schema().nullable and self._dtype.kind != other.schema().kind:
-                raise SerifTypeError("Cannot concatenate two typesafe Vectors of different types")
+            right_schema = other.schema()
+            if self._dtype is None or right_schema is None:
+                return Vector(
+                    chain(self._storage, other._storage),
+                    name=self._name,
+                )
+            if self._dtype.kind is not right_schema.kind:
+                result_kind = promote_kinds(
+                    self._dtype.kind,
+                    right_schema.kind,
+                ) or object
+                return Vector._from_iterable_known_dtype(
+                    chain(self._storage, other._storage),
+                    Schema(
+                        result_kind,
+                        self._dtype.nullable or right_schema.nullable,
+                    ),
+                    name=self._name,
+                )
             return concatenate(
                 chain(self._storage, other._storage),
-                nullable or other.schema().nullable,
+                nullable or right_schema.nullable,
             )
         if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
             return concatenate(chain(self._storage, other))
