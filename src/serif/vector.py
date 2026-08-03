@@ -723,9 +723,18 @@ class Vector():
                 chain(self._storage, other._storage),
                 nullable or right_schema.nullable,
             )
-        if isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            return concatenate(chain(self._storage, other))
-        return concatenate(chain(self._storage, (other,)))
+        if other is None:
+            return concatenate(chain(self._storage, (None,)))
+        if isinstance(other, Iterable) and not isinstance(
+            other,
+            (str, bytes, bytearray),
+        ):
+            right = Vector(other)
+        else:
+            right = Vector((other,))
+        if len(right) == 0:
+            return self.copy()
+        return self << right
 
 
     def __rshift__(self, other):
