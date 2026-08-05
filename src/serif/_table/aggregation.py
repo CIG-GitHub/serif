@@ -159,16 +159,25 @@ def aggregate(table, groupby=None, aggregations=None):
         )
 
     if aggregations:
-        for output_name, output_values in _grouping.apply_aggregations(
+        outputs = _grouping.apply_aggregations(
             table,
             aggregations,
             group_items,
             nrows,
             allow_blocks=True,
             function_name="aggregate",
-        ):
-            result_columns.append(
-                Vector(output_values, name=uniquify(output_name))
-            )
+        )
+        for output_name, output_values, output_schema in outputs:
+            output_name = uniquify(output_name)
+            if output_schema is None:
+                result_columns.append(Vector(output_values, name=output_name))
+            else:
+                result_columns.append(
+                    Vector._from_iterable_known_dtype(
+                        output_values,
+                        output_schema,
+                        name=output_name,
+                    )
+                )
 
     return Table(result_columns)
