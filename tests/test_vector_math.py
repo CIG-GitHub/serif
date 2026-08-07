@@ -5,6 +5,7 @@ import math
 import pytest
 
 from serif import Schema
+from serif import SerifValueError
 from serif import Table
 from serif import Vector
 
@@ -102,4 +103,112 @@ def test_unary_math_lifts_over_table_columns_and_preserves_names():
     assert result.to_dict() == {
         'a': [math.log(1.0), math.log(math.e)],
         'b': [math.log(math.e ** 2), None],
+    }
+
+
+MULTI_ARGUMENT_CASES = (
+    pytest.param('comb', [5, None, 6], (Vector([2, 3, None]),), {}, id='comb'),
+    pytest.param('gcd', [12, None, 9], (18, Vector([24, 30, None])), {}, id='gcd'),
+    pytest.param('lcm', [4, None, 6], (10,), {}, id='lcm'),
+    pytest.param('perm', [5, None, 6], (Vector([2, 3, None]),), {}, id='perm'),
+    pytest.param('copysign', [1.0, None, -2.0], (Vector([-1.0, 1.0, None]),), {}, id='copysign'),
+    pytest.param('fmod', [5.5, None, 8.0], (2.0,), {}, id='fmod'),
+    pytest.param(
+        'isclose',
+        [1.0, None, 3.0],
+        (Vector([1.0001, 2.0, None]),),
+        {'rel_tol': Vector([1e-3, 1e-3, 1e-3])},
+        id='isclose',
+    ),
+    pytest.param('ldexp', [1.5, None, 2.0], (Vector([2, 3, None]),), {}, id='ldexp'),
+    pytest.param('nextafter', [1.0, None, 3.0], (math.inf,), {}, id='nextafter'),
+    pytest.param('remainder', [5.5, None, 8.0], (2.0,), {}, id='remainder'),
+    pytest.param('pow', [2.0, None, 4.0], (Vector([3.0, 2.0, None]),), {}, id='pow'),
+    pytest.param('atan2', [1.0, None, -1.0], (Vector([1.0, 2.0, None]),), {}, id='atan2'),
+    pytest.param('hypot', [3.0, None, 5.0], (4.0, Vector([12.0, 8.0, None])), {}, id='hypot'),
+    pytest.param('log', [8.0, None, 16.0], (Vector([2.0, 4.0, None]),), {}, id='log'),
+)
+
+
+@pytest.mark.parametrize(
+    ('function_name', 'values', 'args', 'kwargs'),
+    MULTI_ARGUMENT_CASES,
+)
+def test_multi_argument_math_broadcasts_scalars_and_vectors(
+    function_name,
+    values,
+    args,
+    kwargs,
+):
+    result = getattr(Vector(values, name='source').math, function_name)(
+        *args,
+        **kwargs,
+    )
+    function = getattr(math, function_name)
+    expected = []
+    for index, value in enumerate(values):
+        lane_args = [
+            operand[index] if isinstance(operand, Vector) else operand
+            for operand in args
+        ]
+        lane_kwargs = {
+            name: operand[index] if isinstance(operand, Vector) else operand
+            for name, operand in kwargs.items()
+        }
+        if (
+            value is None
+            or any(operand is None for operand in lane_args)
+            or any(operand is None for operand in lane_kwargs.values())
+        ):
+            expected.append(None)
+        else:
+            expected.append(function(value, *lane_args, **lane_kwargs))
+
+    assert list(result) == expected
+    assert result.vector_name is None
+
+
+def test_perm_scalar_none_uses_python_default_but_vector_null_propagates():
+    values = Vector([4, None, 5])
+
+    assert list(values.math.perm(None)) == [24, None, 120]
+    assert list(values.math.perm(Vector([None, 2, 3]))) == [None, None, 60]
+
+
+def test_scalar_none_propagates_for_required_math_argument():
+    assert list(Vector([8.0, 16.0]).math.log(None)) == [None, None]
+
+
+def test_multi_argument_math_rejects_length_mismatch_before_computing():
+    with pytest.raises(SerifValueError, match='Length mismatch'):
+        Vector([2.0, 3.0]).math.pow(Vector([2.0]))
+
+
+def test_multi_argument_math_preserves_python_domain_errors():
+    with pytest.raises(ValueError):
+        Vector([-1.0]).math.pow(0.5)
+
+
+def test_multi_argument_math_lifts_scalar_over_table_columns():
+    table = Table({'a': [10.0, 100.0], 'b': [1000.0, None]})
+
+    result = table.math.log(10.0)
+
+    assert result.column_names() == ['a', 'b']
+    assert result.to_dict() == {
+        'a': [math.log(10.0, 10.0), math.log(100.0, 10.0)],
+        'b': [math.log(1000.0, 10.0), None],
+    }
+
+
+def test_multi_argument_math_aligns_corresponding_table_columns():
+    magnitude = Table({'a': [1.0, 2.0], 'b': [3.0, None]})
+    sign = Table({'x': [-1.0, 1.0], 'y': [1.0, -1.0]})
+
+    result = magnitude.math.copysign(sign)
+
+    assert result.column_names() == ['a', 'b']
+    assert result.to_dict() == {
+        'a': [-1.0, 2.0],
+        'b': [3.0, None],
     }
