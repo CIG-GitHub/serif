@@ -5,11 +5,13 @@ reduction over their columns; rank-1 values reduce their scalar storage.
 """
 
 import warnings
+from collections.abc import Iterable
 from itertools import repeat
 
 from .._execution import DECLINED
 from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
+from ..errors import SerifValueError
 from .dtype import Schema
 from .dtype import infer_kind
 from .dtype import validate_scalar
@@ -115,6 +117,101 @@ def sum(vector):
         vector._storage,
         vector.schema().kind,
     )
+
+
+def fsum(vector):
+    if vector.ndims() == 2:
+        return vector.copy((c.math.fsum() for c in vector.cols()), name=None)
+    return _python_reductions.fsum(vector._storage)
+
+
+def prod(vector):
+    if vector.ndims() == 2:
+        return vector.copy((c.math.prod() for c in vector.cols()), name=None)
+    schema = vector.schema()
+    return _python_reductions.prod(
+        vector._storage,
+        schema.kind if schema is not None else object,
+    )
+
+
+def gcd(vector):
+    if vector.ndims() == 2:
+        return vector.copy((c.math.gcd() for c in vector.cols()), name=None)
+    return _python_reductions.gcd(vector._storage)
+
+
+def lcm(vector):
+    if vector.ndims() == 2:
+        return vector.copy((c.math.lcm() for c in vector.cols()), name=None)
+    return _python_reductions.lcm(vector._storage)
+
+
+def hypot(vector):
+    if vector.ndims() == 2:
+        return vector.copy((c.math.hypot() for c in vector.cols()), name=None)
+    return _python_reductions.hypot(vector._storage)
+
+
+def _vector_class():
+    from ..vector import Vector
+    return Vector
+
+
+def _dist_values(vector, other):
+    Vector = _vector_class()
+    if isinstance(other, Vector):
+        if other.ndims() != 1:
+            raise SerifTypeError(
+                "dist() cannot compare a Vector with a Table"
+            )
+        values = other._storage
+    elif isinstance(other, Iterable) and not isinstance(
+        other,
+        (str, bytes, bytearray),
+    ):
+        values = tuple(other)
+    else:
+        raise SerifTypeError(
+            "dist() requires another Vector or numeric iterable"
+        )
+
+    if len(vector) != len(values):
+        raise SerifValueError(
+            f"Length mismatch: {len(vector)} != {len(values)}"
+        )
+    return values
+
+
+def dist(vector, other):
+    Vector = _vector_class()
+    if vector.ndims() == 2:
+        left_columns = tuple(vector.cols())
+        if isinstance(other, Vector) and other.ndims() == 2:
+            right_columns = tuple(other.cols())
+            if len(left_columns) != len(right_columns):
+                raise SerifValueError(
+                    f"Table width mismatch: "
+                    f"{len(left_columns)} != {len(right_columns)}"
+                )
+            return vector.copy(
+                (
+                    left.math.dist(right)
+                    for left, right in zip(
+                        left_columns,
+                        right_columns,
+                        strict=True,
+                    )
+                ),
+                name=None,
+            )
+        return vector.copy(
+            (column.math.dist(other) for column in left_columns),
+            name=None,
+        )
+
+    right_values = _dist_values(vector, other)
+    return _python_reductions.dist(vector._storage, right_values)
 
 
 def _no_verdict(vector, method_name, on_empty, identity):

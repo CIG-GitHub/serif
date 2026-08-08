@@ -126,6 +126,28 @@ def _reject_nonscalar(aggregation_name, value, detail, function_name):
         )
 
 
+def _bound_reduction(function):
+    """Return (source, method, accessor) for a Serif-bound operation."""
+    owner = getattr(function, '__self__', None)
+    if isinstance(owner, Vector):
+        return owner, function.__name__, None
+
+    source = getattr(owner, '_serif_bound_vector', None)
+    accessor_name = getattr(owner, '_serif_accessor_name', None)
+    if isinstance(source, Vector) and accessor_name is not None:
+        return source, function.__name__, accessor_name
+    return None
+
+
+def _invoke_bound_reduction(vector, method_name, accessor_name):
+    target = (
+        vector
+        if accessor_name is None
+        else getattr(vector, accessor_name)
+    )
+    return getattr(target, method_name)()
+
+
 # Verdict reductions whose empty case has a Python identity to return.
 _VERDICT_IDENTITY = {'all': True, 'any': False}
 
@@ -180,11 +202,9 @@ def apply_aggregations(
             yield aggregation_name, group_results(group_items), result_schema
             continue
 
-        if hasattr(function, "__self__") and isinstance(
-            function.__self__, Vector
-        ):
-            source = function.__self__
-            method_name = function.__name__
+        bound_reduction = _bound_reduction(function)
+        if bound_reduction is not None:
+            source, method_name, accessor_name = bound_reduction
             if len(source) != nrows:
                 raise SerifValueError(
                     f"aggregations['{aggregation_name}']: vector length "
@@ -225,7 +245,11 @@ def apply_aggregations(
                             empty_by_column[index].append(key)
                             value = identity
                         else:
-                            value = getattr(column_slice, method_name)()
+                            value = _invoke_bound_reduction(
+                                column_slice,
+                                method_name,
+                                accessor_name,
+                            )
                         _reject_nonscalar(
                             aggregation_name,
                             value,
@@ -271,7 +295,11 @@ def apply_aggregations(
                         empty_keys.append(key)
                         value = identity
                     else:
-                        value = getattr(group_vector, method_name)()
+                        value = _invoke_bound_reduction(
+                            group_vector,
+                            method_name,
+                            accessor_name,
+                        )
                     _reject_nonscalar(
                         aggregation_name,
                         value,
