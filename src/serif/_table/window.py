@@ -35,18 +35,27 @@ def window(table, groupby, aggregations=None):
 
     if aggregations:
         keys_in_order = [key for key, _ in group_items]
-        for output_name, output_values in _grouping.apply_aggregations(
+        outputs = _grouping.apply_aggregations(
             table,
             aggregations,
             group_items,
             nrows,
             allow_blocks=False,
             function_name="window",
-        ):
+        )
+        for output_name, output_values, output_schema in outputs:
             group_map = dict(zip(keys_in_order, output_values))
             expanded = [group_map[row_keys[index]] for index in range(nrows)]
-            result_columns.append(
-                Vector(expanded, name=uniquify(output_name))
-            )
+            output_name = uniquify(output_name)
+            if output_schema is None:
+                result_columns.append(Vector(expanded, name=output_name))
+            else:
+                result_columns.append(
+                    Vector._from_iterable_known_dtype(
+                        expanded,
+                        output_schema,
+                        name=output_name,
+                    )
+                )
 
     return Table(result_columns)

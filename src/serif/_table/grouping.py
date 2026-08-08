@@ -192,10 +192,16 @@ def apply_aggregations(
     allow_blocks,
     function_name,
 ):
-    """Yield one named scalar-result sequence per aggregation output."""
+    """Yield each output's name, scalar-result sequence, and known schema."""
     Table = _table_class()
 
     for aggregation_name, function in aggregations.items():
+        result_schema = getattr(function, '_serif_result_schema', None)
+        group_results = getattr(function, '_serif_group_results', None)
+        if group_results is not None:
+            yield aggregation_name, group_results(group_items), result_schema
+            continue
+
         bound_reduction = _bound_reduction(function)
         if bound_reduction is not None:
             source, method_name, accessor_name = bound_reduction
@@ -275,7 +281,7 @@ def apply_aggregations(
                         if source_names[index] is not None
                         else f"col{index}_"
                     )
-                    yield f"{aggregation_name}{base}", fanned[index]
+                    yield f"{aggregation_name}{base}", fanned[index], None
             else:
                 slicer = _make_group_slicer(source)
                 identity = _VERDICT_IDENTITY.get(method_name)
@@ -310,7 +316,7 @@ def apply_aggregations(
                         method_name,
                         function_name,
                     )
-                yield aggregation_name, output
+                yield aggregation_name, output, None
         elif callable(function):
             slicers = [
                 (column, _make_group_slicer(column))
@@ -330,7 +336,7 @@ def apply_aggregations(
                     function_name,
                 )
                 output.append(value)
-            yield aggregation_name, output
+            yield aggregation_name, output, result_schema
         else:
             hint = (
                 f" (got {type(function).__name__} {function!r}; did you call "

@@ -538,6 +538,20 @@ class Vector():
     def sum(self):
         return _reductions.sum(self)
 
+    def constant(self, value, *, dtype=None, nullable=None):
+        """Return a reduction that emits one fixed value per group.
+
+        The receiver provides the fluent Serif surface; its values are not
+        inspected. ``dtype`` may be a Python type or Schema. When ``nullable``
+        is omitted, None makes the result nullable and other values do not.
+        """
+        return _reductions.constant(
+            self,
+            value,
+            dtype=dtype,
+            nullable=nullable,
+        )
+
     def all(self, on_empty=None):
         """
         True if every valid (non-null) element is truthy.
