@@ -310,7 +310,7 @@ class Vector():
 
     @property
     def math(self):
-        """Pointwise, null-propagating access to Python's ``math`` module."""
+        """Access Python's ``math`` functions with Vector-aware semantics."""
         return _math.MathAccessor(self)
 
 

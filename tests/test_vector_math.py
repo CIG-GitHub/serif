@@ -108,8 +108,6 @@ def test_unary_math_lifts_over_table_columns_and_preserves_names():
 
 MULTI_ARGUMENT_CASES = (
     pytest.param('comb', [5, None, 6], (Vector([2, 3, None]),), {}, id='comb'),
-    pytest.param('gcd', [12, None, 9], (18, Vector([24, 30, None])), {}, id='gcd'),
-    pytest.param('lcm', [4, None, 6], (10,), {}, id='lcm'),
     pytest.param('perm', [5, None, 6], (Vector([2, 3, None]),), {}, id='perm'),
     pytest.param('copysign', [1.0, None, -2.0], (Vector([-1.0, 1.0, None]),), {}, id='copysign'),
     pytest.param('fmod', [5.5, None, 8.0], (2.0,), {}, id='fmod'),
@@ -125,7 +123,6 @@ MULTI_ARGUMENT_CASES = (
     pytest.param('remainder', [5.5, None, 8.0], (2.0,), {}, id='remainder'),
     pytest.param('pow', [2.0, None, 4.0], (Vector([3.0, 2.0, None]),), {}, id='pow'),
     pytest.param('atan2', [1.0, None, -1.0], (Vector([1.0, 2.0, None]),), {}, id='atan2'),
-    pytest.param('hypot', [3.0, None, 5.0], (4.0, Vector([12.0, 8.0, None])), {}, id='hypot'),
     pytest.param('log', [8.0, None, 16.0], (Vector([2.0, 4.0, None]),), {}, id='log'),
 )
 

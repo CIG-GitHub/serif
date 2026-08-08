@@ -1,4 +1,4 @@
-"""Explicit pointwise access to Python's :mod:`math` functions."""
+"""Vector-aware access to Python's :mod:`math` functions."""
 
 import math as _math
 
@@ -143,12 +143,18 @@ def _apply_pointwise(
 
 
 class MathAccessor:
-    """Pointwise, null-propagating access to Python's ``math`` module."""
+    """Pointwise functions and whole-vector reductions from ``math``."""
 
     __slots__ = ('_vector',)
+    _serif_accessor_name = 'math'
 
     def __init__(self, vector):
         self._vector = vector
+
+    @property
+    def _serif_bound_vector(self):
+        """Source Vector used by aggregate()/window() bound-method dispatch."""
+        return self._vector
 
     def log(self, base=_MISSING):
         """Apply ``math.log`` pointwise, optionally broadcasting ``base``."""
@@ -157,12 +163,6 @@ class MathAccessor:
 
     def comb(self, k):
         return _apply_pointwise(self._vector, 'comb', int, (k,))
-
-    def gcd(self, *integers):
-        return _apply_pointwise(self._vector, 'gcd', int, integers)
-
-    def lcm(self, *integers):
-        return _apply_pointwise(self._vector, 'lcm', int, integers)
 
     def perm(self, k=None):
         # Scalar None is math.perm's documented default. A None inside a
@@ -206,13 +206,35 @@ class MathAccessor:
     def atan2(self, x):
         return _apply_pointwise(self._vector, 'atan2', float, (x,))
 
-    def hypot(self, *coordinates):
-        return _apply_pointwise(
-            self._vector,
-            'hypot',
-            float,
-            coordinates,
-        )
+    def fsum(self):
+        """Accurately sum non-null values using Python's ``math.fsum``."""
+        from . import reductions
+        return reductions.fsum(self._vector)
+
+    def prod(self):
+        """Multiply non-null values, returning the identity when empty."""
+        from . import reductions
+        return reductions.prod(self._vector)
+
+    def gcd(self):
+        """Greatest common divisor of the non-null values."""
+        from . import reductions
+        return reductions.gcd(self._vector)
+
+    def lcm(self):
+        """Least common multiple of the non-null values."""
+        from . import reductions
+        return reductions.lcm(self._vector)
+
+    def hypot(self):
+        """Euclidean norm of the non-null values using ``math.hypot``."""
+        from . import reductions
+        return reductions.hypot(self._vector)
+
+    def dist(self, other):
+        """Euclidean distance over coordinate pairs known on both sides."""
+        from . import reductions
+        return reductions.dist(self._vector, other)
 
 
 def _unary_method(function_name, result_kind):

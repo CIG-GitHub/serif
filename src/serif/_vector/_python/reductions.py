@@ -42,6 +42,55 @@ def sum_(storage, kind):
         )
 
 
+def fsum(storage):
+    """Return math.fsum over the known values, including its strict errors."""
+    return math.fsum(value for value in storage if value is not None)
+
+
+def prod(storage, kind):
+    """Return the multiplicative fold over known values."""
+    values = (value for value in storage if value is not None)
+    if kind is float:
+        # Match sum_'s typed identity for an empty fixed-width float vector.
+        return math.prod(values, start=1.0)
+    return math.prod(values)
+
+
+def gcd(storage):
+    result = 0
+    for value in storage:
+        if value is not None:
+            result = math.gcd(result, value)
+    return result
+
+
+def lcm(storage):
+    result = 1
+    for value in storage:
+        if value is not None:
+            result = math.lcm(result, value)
+    return result
+
+
+def hypot(storage):
+    return math.hypot(*(value for value in storage if value is not None))
+
+
+def dist(left_storage, right_storage):
+    left = []
+    right = []
+    for left_value, right_value in zip(
+        left_storage,
+        right_storage,
+        strict=True,
+    ):
+        if left_value is None or right_value is None:
+            continue
+        left.append(left_value)
+        right.append(right_value)
+    return math.dist(left, right)
+
+
 def all_(storage):
     seen_valid = False
     for value in storage:
