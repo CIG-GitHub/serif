@@ -2,6 +2,12 @@
 
 ## 0.2.2 – Unreleased
 
+### Added
+- `Vector.constant(value, *, dtype=None, nullable=None)` creates a constant
+  reduction for `aggregate()` and `window()`. Tables inherit the same fluent
+  method; explicit result schemas preserve dtype and nullability even for empty
+  grouped results, and impossible value/schema combinations raise immediately.
+
 ### Fixed
 - Categorical payload columns no longer degrade to strings during joins;
   category domains and ordering are preserved, and null padding produces
@@ -11,6 +17,11 @@
   and incompatible ordinary kinds become `object`. Matching categorical
   domains remain categorical, while conflicting domains or categorical/plain
   string columns become `str`.
+
+### Performance
+- Schema-known reductions build canonical packed result storage directly
+  without a second inference pass. Constant reductions also produce group
+  results without materializing group slices.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 

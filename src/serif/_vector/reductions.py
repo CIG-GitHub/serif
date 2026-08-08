@@ -5,11 +5,57 @@ reduction over their columns; rank-1 values reduce their scalar storage.
 """
 
 import warnings
+from itertools import repeat
 
 from .._execution import DECLINED
 from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
+from .dtype import Schema
+from .dtype import infer_kind
+from .dtype import validate_scalar
 from ._python import reductions as _python_reductions
+
+
+class _ConstantReduction:
+    """A schema-known reduction that returns one fixed value per group."""
+
+    __slots__ = ('value', '_serif_result_schema')
+
+    def __init__(self, value, schema):
+        self.value = value
+        self._serif_result_schema = schema
+
+    def _serif_group_results(self, group_items):
+        return repeat(self.value, len(group_items))
+
+    def __call__(self, _group):
+        return self.value
+
+
+def constant(vector, value, *, dtype=None, nullable=None):
+    """Return a reduction that emits ``value`` once for every group."""
+    if nullable is not None and nullable is not True and nullable is not False:
+        raise SerifTypeError(
+            "constant(): nullable must be True, False, or None; "
+            f"got {nullable!r}"
+        )
+
+    if isinstance(dtype, Schema):
+        schema = Schema(
+            dtype.kind,
+            dtype.nullable if nullable is None else nullable,
+        )
+    else:
+        kind = dtype
+        if kind is None:
+            kind = infer_kind(value) or object
+        schema = Schema(
+            kind,
+            value is None if nullable is None else nullable,
+        )
+
+    value = validate_scalar(value, schema)
+    return _ConstantReduction(value, schema)
 
 
 def _numpy_reductions():
