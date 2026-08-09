@@ -508,6 +508,7 @@ class Vector():
         else:
             # For backwards compat, raise error if trying invalid promotion
             raise SerifTypeError(f'Cannot convert Vector from {self._dtype.kind.__name__} to {target_kind.__name__}.')
+        self.__class__ = _construction._pick_target_class(self._dtype)
         return
 
     def ndims(self):

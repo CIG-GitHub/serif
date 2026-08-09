@@ -382,16 +382,28 @@ class TestTypedSubclasses:
         assert isinstance(v, _Date)
         assert v.schema().kind is date
 
-    def test_promotion_does_not_change_class_but_changes_schema(self):
-        from serif._vector.numeric import _Int
+    def test_promotion_changes_class_with_schema(self):
+        from serif._vector.dates import _Date
+        from serif._vector.numeric import _Float, _Int
+
         v = Vector([1, 2, 3])
         assert isinstance(v, _Int)
         assert v.schema().kind is int
 
         v._promote(float)
-        # class stays the same, dtype changes
-        assert isinstance(v, _Int)
+        assert isinstance(v, _Float)
         assert v.schema().kind is float
+
+        v._promote(complex)
+        assert type(v) is Vector
+        assert v.schema().kind is complex
+
+        v = Vector([date(2020, 1, 1)])
+        assert isinstance(v, _Date)
+
+        v._promote(datetime)
+        assert type(v) is Vector
+        assert v.schema().kind is datetime
 
 
 
