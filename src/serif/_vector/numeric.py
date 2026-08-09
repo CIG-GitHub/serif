@@ -14,10 +14,6 @@ class _Real(Vector):
         return _math.MathAccessor(self)
 
 
-class _Bool(_Real):
-    pass
-
-
 class _Float(_Real):
     typecode = 'd'
 

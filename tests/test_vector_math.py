@@ -54,13 +54,13 @@ UNARY_CASES = (
 
 def test_math_accessor_belongs_to_real_numeric_vectors():
     supported = (
-        Vector([True, False]),
         Vector([1, 2]),
         Vector([1.0, 2.0]),
         Vector([], dtype=float),
     )
     unsupported = (
         Vector([]),
+        Vector([True, False]),
         Vector([1 + 2j]),
         Vector(['a']),
         Vector([date(2026, 8, 9)]),
@@ -73,8 +73,6 @@ def test_math_accessor_belongs_to_real_numeric_vectors():
     for vector in unsupported:
         assert not hasattr(vector, 'math')
         assert 'math' not in dir(vector)
-
-    assert list(Vector([False, True]).math.sqrt()) == [0.0, 1.0]
 
 
 @pytest.mark.parametrize(('function_name', 'value'), UNARY_CASES)
