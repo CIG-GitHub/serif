@@ -1,6 +1,7 @@
 """Pure-Python pointwise ``Vector.math`` semantics."""
 
 import math
+from datetime import date
 
 import pytest
 
@@ -49,6 +50,31 @@ UNARY_CASES = (
     ('gamma', 5.0),
     ('lgamma', 5.0),
 )
+
+
+def test_math_accessor_belongs_to_real_numeric_vectors():
+    supported = (
+        Vector([True, False]),
+        Vector([1, 2]),
+        Vector([1.0, 2.0]),
+        Vector([], dtype=float),
+    )
+    unsupported = (
+        Vector([]),
+        Vector([1 + 2j]),
+        Vector(['a']),
+        Vector([date(2026, 8, 9)]),
+        Vector([object()]),
+    )
+
+    for vector in supported:
+        assert hasattr(vector, 'math')
+        assert 'math' in dir(vector)
+    for vector in unsupported:
+        assert not hasattr(vector, 'math')
+        assert 'math' not in dir(vector)
+
+    assert list(Vector([False, True]).math.sqrt()) == [0.0, 1.0]
 
 
 @pytest.mark.parametrize(('function_name', 'value'), UNARY_CASES)

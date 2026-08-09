@@ -8,7 +8,6 @@ from .naming import _sanitize_user_name
 from ._vector import coalesce as _coalesce
 from ._vector import construction as _construction
 from ._vector import element_api as _element_api
-from ._vector import math as _math
 from ._vector import mutation as _mutation
 from ._vector import operators as _operators
 from ._vector import reductions as _reductions
@@ -306,16 +305,6 @@ class Vector():
         Vector([False, False, False, True])
         """
         return _transforms.is_type(self, types)
-
-
-    @property
-    def math(self):
-        """Access Python's ``math`` functions with Vector-aware semantics."""
-        if self.ndims() != 1:
-            raise AttributeError(
-                f"{type(self).__name__} has no attribute 'math'"
-            )
-        return _math.MathAccessor(self)
 
 
     def __iter__(self):

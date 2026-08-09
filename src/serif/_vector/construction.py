@@ -119,6 +119,9 @@ def _pick_target_class(dtype):
     if dtype.kind is str:
         from .string import _String
         return _String
+    if dtype.kind is bool:
+        from .numeric import _Bool
+        return _Bool
     if dtype.kind is int:
         from .numeric import _Int
         return _Int
