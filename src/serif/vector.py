@@ -311,6 +311,10 @@ class Vector():
     @property
     def math(self):
         """Access Python's ``math`` functions with Vector-aware semantics."""
+        if self.ndims() != 1:
+            raise AttributeError(
+                f"{type(self).__name__} has no attribute 'math'"
+            )
         return _math.MathAccessor(self)
 
 

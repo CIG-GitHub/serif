@@ -77,7 +77,10 @@ def test_unary_math_has_known_nullable_result_schema(
     function_name,
     expected_kind,
 ):
-    result = getattr(Vector([None, None]).math, function_name)()
+    result = getattr(
+        Vector([None, None], dtype=Schema(float, True)).math,
+        function_name,
+    )()
 
     assert list(result) == [None, None]
     assert result.schema() == Schema(expected_kind, True)
@@ -91,19 +94,14 @@ def test_unary_math_preserves_python_domain_and_overflow_errors():
         Vector([1000.0]).math.exp()
 
 
-def test_unary_math_lifts_over_table_columns_and_preserves_names():
-    table = Table({
-        'a': [1.0, math.e],
-        'b': [math.e ** 2, None],
-    })
+def test_math_is_not_exposed_on_tables():
+    table = Table({'a': [1.0], 'b': [2.0]})
 
-    result = table.math.log()
-
-    assert result.column_names() == ['a', 'b']
-    assert result.to_dict() == {
-        'a': [math.log(1.0), math.log(math.e)],
-        'b': [math.log(math.e ** 2), None],
-    }
+    with pytest.raises(
+        AttributeError,
+        match="Table object has no attribute 'math'",
+    ):
+        table.math
 
 
 MULTI_ARGUMENT_CASES = (
@@ -186,26 +184,3 @@ def test_multi_argument_math_preserves_python_domain_errors():
         Vector([-1.0]).math.pow(0.5)
 
 
-def test_multi_argument_math_lifts_scalar_over_table_columns():
-    table = Table({'a': [10.0, 100.0], 'b': [1000.0, None]})
-
-    result = table.math.log(10.0)
-
-    assert result.column_names() == ['a', 'b']
-    assert result.to_dict() == {
-        'a': [math.log(10.0, 10.0), math.log(100.0, 10.0)],
-        'b': [math.log(1000.0, 10.0), None],
-    }
-
-
-def test_multi_argument_math_aligns_corresponding_table_columns():
-    magnitude = Table({'a': [1.0, 2.0], 'b': [3.0, None]})
-    sign = Table({'x': [-1.0, 1.0], 'y': [1.0, -1.0]})
-
-    result = magnitude.math.copysign(sign)
-
-    assert result.column_names() == ['a', 'b']
-    assert result.to_dict() == {
-        'a': [-1.0, 2.0],
-        'b': [3.0, None],
-    }

@@ -16,65 +16,6 @@ def _vector_class():
     return Vector
 
 
-def _table_class():
-    from ..table import Table
-    return Table
-
-
-def _table_operand_columns(operand):
-    Vector = _vector_class()
-    if isinstance(operand, Vector) and operand.ndims() == 2:
-        return tuple(operand.cols())
-    return None
-
-
-def _apply_table(vector, function_name, result_kind, args, kwargs):
-    """Lift one pointwise math call over corresponding Table columns."""
-    source_columns = tuple(vector.cols())
-    positional_columns = tuple(_table_operand_columns(arg) for arg in args)
-    keyword_columns = {
-        name: _table_operand_columns(value)
-        for name, value in kwargs.items()
-    }
-
-    for columns in (
-        *positional_columns,
-        *keyword_columns.values(),
-    ):
-        if columns is not None and len(columns) != len(source_columns):
-            raise SerifValueError(
-                f"Table width mismatch: "
-                f"{len(source_columns)} != {len(columns)}"
-            )
-
-    result_columns = []
-    for index, source in enumerate(source_columns):
-        column_args = tuple(
-            columns[index] if columns is not None else arg
-            for arg, columns in zip(args, positional_columns, strict=True)
-        )
-        column_kwargs = {
-            name: (
-                keyword_columns[name][index]
-                if keyword_columns[name] is not None
-                else value
-            )
-            for name, value in kwargs.items()
-        }
-        result = _apply_pointwise(
-            source,
-            function_name,
-            result_kind,
-            column_args,
-            column_kwargs,
-        )
-        result._name = source._name
-        result._wild = False
-        result_columns.append(result)
-
-    return _table_class()(result_columns, name=vector._name)
-
-
 def _normalize_operand(vector, function_name, operand):
     """Resolve a scalar or same-length Vector broadcast operand."""
     Vector = _vector_class()
@@ -101,14 +42,6 @@ def _apply_pointwise(
     """Apply one scalar ``math`` call, broadcasting Vector arguments."""
     if kwargs is None:
         kwargs = {}
-    if vector.ndims() == 2:
-        return _apply_table(
-            vector,
-            function_name,
-            result_kind,
-            args,
-            kwargs,
-        )
 
     function = getattr(_math, function_name)
     positional_operands = tuple(
