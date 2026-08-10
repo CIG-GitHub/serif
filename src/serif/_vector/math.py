@@ -2,8 +2,10 @@
 
 import math as _math
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from .dtype import Schema
 
 
 _MISSING = object()
@@ -42,6 +44,13 @@ def _apply_pointwise(
     """Apply one scalar ``math`` call, broadcasting Vector arguments."""
     if kwargs is None:
         kwargs = {}
+
+    if not args and not kwargs:
+        from ._numpy import math as _numpy_math
+        storage = _numpy_math.unary_storage(vector._storage, function_name)
+        if storage is not DECLINED:
+            dtype = Schema(result_kind, storage._mask is not None)
+            return _vector_class()._from_storage(storage, dtype)
 
     function = getattr(_math, function_name)
     positional_operands = tuple(
