@@ -70,6 +70,52 @@ def test_fixed_width_ints_are_supported():
     )
 
 
+@pytest.mark.parametrize('function_name', ['ceil', 'floor', 'trunc'])
+@pytest.mark.parametrize(
+    'values',
+    [
+        [-2, None, 3],
+        [-1.75, None, 2.25],
+        [float(-2**63), float(2**63 - 1024)],
+    ],
+)
+def test_rounding_to_int_matches_pure(function_name, values):
+    vector = Vector(values)
+    fast = getattr(vector.math, function_name)()
+    pure = _pure(lambda: getattr(vector.math, function_name)())
+
+    _assert_identical(fast, pure)
+    assert isinstance(fast._storage, ArrayStorage)
+
+
+@pytest.mark.parametrize('function_name', ['ceil', 'floor', 'trunc'])
+def test_rounding_declines_for_python_exceptions(function_name):
+    with pytest.raises(OverflowError):
+        getattr(Vector([float('inf')]).math, function_name)()
+    with pytest.raises(ValueError):
+        getattr(Vector([float('nan')]).math, function_name)()
+
+
+@pytest.mark.parametrize('function_name', ['ceil', 'floor', 'trunc'])
+@pytest.mark.parametrize('value', [float(2**63), 1e20])
+def test_rounding_declines_for_bigint_results(function_name, value):
+    vector = Vector([value])
+    _assert_identical(
+        getattr(vector.math, function_name)(),
+        _pure(lambda: getattr(vector.math, function_name)()),
+    )
+
+
+@pytest.mark.parametrize('function_name', ['ceil', 'floor', 'trunc'])
+def test_rounding_does_not_execute_null_lanes(function_name):
+    vector = Vector([float('inf')])
+    vector[0] = None
+    _assert_identical(
+        getattr(vector.math, function_name)(),
+        _pure(lambda: getattr(vector.math, function_name)()),
+    )
+
+
 def test_all_valid_mask_is_not_retained():
     vector = Vector([1.0, None])[:1]
     assert vector.schema().nullable
@@ -103,6 +149,8 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     monkeypatch.setattr(math_mod, 'unary_storage', spy)
     Vector([-1.0, None]).math.fabs()
     Vector([1, 2]).math.isfinite()
+    Vector([1.5, None]).math.floor()
     Vector([4.0]).math.sqrt()
+    Vector([1e20]).math.floor()
     Vector([2**80]).math.fabs()
-    assert engaged == [True, True, False, False]
+    assert engaged == [True, True, True, False, False, False]
