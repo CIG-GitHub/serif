@@ -120,14 +120,10 @@ def sum(vector):
 
 
 def fsum(vector):
-    if vector.ndims() == 2:
-        return vector.copy((c.math.fsum() for c in vector.cols()), name=None)
     return _python_reductions.fsum(vector._storage)
 
 
 def prod(vector):
-    if vector.ndims() == 2:
-        return vector.copy((c.math.prod() for c in vector.cols()), name=None)
     schema = vector.schema()
     return _python_reductions.prod(
         vector._storage,
@@ -136,20 +132,14 @@ def prod(vector):
 
 
 def gcd(vector):
-    if vector.ndims() == 2:
-        return vector.copy((c.math.gcd() for c in vector.cols()), name=None)
     return _python_reductions.gcd(vector._storage)
 
 
 def lcm(vector):
-    if vector.ndims() == 2:
-        return vector.copy((c.math.lcm() for c in vector.cols()), name=None)
     return _python_reductions.lcm(vector._storage)
 
 
 def hypot(vector):
-    if vector.ndims() == 2:
-        return vector.copy((c.math.hypot() for c in vector.cols()), name=None)
     return _python_reductions.hypot(vector._storage)
 
 
@@ -184,32 +174,6 @@ def _dist_values(vector, other):
 
 
 def dist(vector, other):
-    Vector = _vector_class()
-    if vector.ndims() == 2:
-        left_columns = tuple(vector.cols())
-        if isinstance(other, Vector) and other.ndims() == 2:
-            right_columns = tuple(other.cols())
-            if len(left_columns) != len(right_columns):
-                raise SerifValueError(
-                    f"Table width mismatch: "
-                    f"{len(left_columns)} != {len(right_columns)}"
-                )
-            return vector.copy(
-                (
-                    left.math.dist(right)
-                    for left, right in zip(
-                        left_columns,
-                        right_columns,
-                        strict=True,
-                    )
-                ),
-                name=None,
-            )
-        return vector.copy(
-            (column.math.dist(other) for column in left_columns),
-            name=None,
-        )
-
     right_values = _dist_values(vector, other)
     return _python_reductions.dist(vector._storage, right_values)
 

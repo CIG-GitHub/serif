@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from serif import Schema
 from serif import SerifValueError
 from serif import Table
 from serif import Vector
@@ -36,13 +37,12 @@ def test_prod_preserves_exact_bigints():
 
 
 def test_empty_and_all_null_math_reductions_return_identities():
-    empty_untyped = Vector([])
     empty_int = Vector([], dtype=int)
     empty_float = Vector([], dtype=float)
     all_null_int = Vector([1, None])[Vector([False, True])]
     all_null_float = Vector([1.0, None])[Vector([False, True])]
 
-    for vector in (empty_untyped, empty_int, all_null_int):
+    for vector in (empty_int, all_null_int):
         assert vector.math.fsum() == 0.0
         assert vector.math.prod() == 1
         assert type(vector.math.prod()) is int
@@ -74,17 +74,10 @@ def test_dist_validates_original_dimensions_before_skipping_nulls():
 
 
 def test_dist_returns_identity_with_no_known_coordinate_pairs():
-    assert Vector([None, None]).math.dist([None, None]) == 0.0
-    assert Vector([]).math.dist([]) == 0.0
-
-
-def test_math_reductions_lift_over_table_columns():
-    table = Table({'a': [3.0, 4.0], 'b': [5.0, None]})
-    other = Table({'x': [0.0, 0.0], 'y': [2.0, 9.0]})
-
-    assert list(table.math.prod()) == [12.0, 5.0]
-    assert list(table.math.hypot()) == [5.0, 5.0]
-    assert list(table.math.dist(other)) == [5.0, 3.0]
+    assert Vector([None, None], dtype=Schema(float, True)).math.dist(
+        [None, None]
+    ) == 0.0
+    assert Vector([], dtype=float).math.dist([]) == 0.0
 
 
 def test_math_reductions_work_as_bound_grouped_aggregations():

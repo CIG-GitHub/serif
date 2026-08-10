@@ -7,6 +7,11 @@
   reduction for `aggregate()` and `window()`. Tables inherit the same fluent
   method; explicit result schemas preserve dtype and nullability even for empty
   grouped results, and impossible value/schema combinations raise immediately.
+- Integer and floating-point Vectors expose a dtype-owned `v.math` namespace.
+  Its pure-Python pointwise functions follow Python 3.10 `math` semantics with
+  scalar or same-length Vector broadcasting and null propagation. Namespaced
+  `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist` reductions skip nulls and
+  work as bound `aggregate()` and `window()` operations.
 
 ### Fixed
 - Categorical payload columns no longer degrade to strings during joins;
@@ -17,6 +22,8 @@
   and incompatible ordinary kinds become `object`. Matching categorical
   domains remain categorical, while conflicting domains or categorical/plain
   string columns become `str`.
+- Dtype promotion now changes the concrete typed Vector subclass together with
+  `Schema.kind`, preventing stale dtype-specific APIs after promotion.
 
 ### Performance
 - Schema-known reductions build canonical packed result storage directly

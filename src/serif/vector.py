@@ -8,7 +8,6 @@ from .naming import _sanitize_user_name
 from ._vector import coalesce as _coalesce
 from ._vector import construction as _construction
 from ._vector import element_api as _element_api
-from ._vector import math as _math
 from ._vector import mutation as _mutation
 from ._vector import operators as _operators
 from ._vector import reductions as _reductions
@@ -308,12 +307,6 @@ class Vector():
         return _transforms.is_type(self, types)
 
 
-    @property
-    def math(self):
-        """Access Python's ``math`` functions with Vector-aware semantics."""
-        return _math.MathAccessor(self)
-
-
     def __iter__(self):
         """ iterate over the underlying tuple """
         return iter(self._storage)
@@ -504,6 +497,7 @@ class Vector():
         else:
             # For backwards compat, raise error if trying invalid promotion
             raise SerifTypeError(f'Cannot convert Vector from {self._dtype.kind.__name__} to {target_kind.__name__}.')
+        self.__class__ = _construction._pick_target_class(self._dtype)
         return
 
     def ndims(self):
