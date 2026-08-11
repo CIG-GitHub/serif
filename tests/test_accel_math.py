@@ -30,6 +30,7 @@ def _assert_identical(fast, pure):
     for actual, expected in zip(fast, pure):
         if isinstance(expected, float) and math.isnan(expected):
             assert isinstance(actual, float) and math.isnan(actual)
+            assert math.copysign(1.0, actual) == math.copysign(1.0, expected)
         else:
             assert actual == expected
             assert type(actual) is type(expected)
@@ -159,6 +160,50 @@ def test_sqrt_declines_for_bigint_storage():
     )
 
 
+@pytest.mark.parametrize(
+    ('values', 'sign'),
+    [
+        ([1.5, -0.0, None, float('nan')], -0.0),
+        (
+            [1.5, None, -0.0, float('nan')],
+            Vector([-1.0, 1.0, None, -1.0]),
+        ),
+        ([1, -2, None, 3], -1),
+    ],
+)
+def test_copysign_matches_pure(values, sign):
+    vector = Vector(values)
+    fast = vector.math.copysign(sign)
+    pure = _pure(lambda: vector.math.copysign(sign))
+
+    _assert_identical(fast, pure)
+    assert isinstance(fast._storage, ArrayStorage)
+
+
+@pytest.mark.parametrize(
+    'sign',
+    [
+        -(2**80),
+        Vector([2**80]),
+        None,
+    ],
+)
+def test_copysign_declines_for_unsupported_signs(sign):
+    vector = Vector([1.0])
+    _assert_identical(
+        vector.math.copysign(sign),
+        _pure(lambda: vector.math.copysign(sign)),
+    )
+
+
+def test_copysign_declines_for_bigint_storage():
+    vector = Vector([2**80])
+    _assert_identical(
+        vector.math.copysign(-1.0),
+        _pure(lambda: vector.math.copysign(-1.0)),
+    )
+
+
 def test_all_valid_mask_is_not_retained():
     vector = Vector([1.0, None])[:1]
     assert vector.schema().nullable
@@ -199,3 +244,20 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     Vector([1e20]).math.floor()
     Vector([2**80]).math.fabs()
     assert engaged == [True, True, True, True, False, False, False]
+
+
+def test_binary_fast_path_engages_and_declines_where_designed(monkeypatch):
+    engaged = []
+    original = math_mod.binary_storage
+
+    def spy(storage, other, function_name):
+        result = original(storage, other, function_name)
+        engaged.append(result is not DECLINED)
+        return result
+
+    monkeypatch.setattr(math_mod, 'binary_storage', spy)
+    Vector([1.0, None]).math.copysign(-1.0)
+    Vector([1, 2]).math.copysign(Vector([-1, 1]))
+    Vector([1.0]).math.copysign(2**80)
+    Vector([1.0]).math.fmod(2.0)
+    assert engaged == [True, True, False, False]

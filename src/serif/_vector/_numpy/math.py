@@ -7,6 +7,7 @@ from . import _np
 from . import _USE_NUMPY
 from .storage import NP_DTYPES
 from .storage import valid_bits
+from ..nullable import BitMask
 from ..storage import ArrayStorage
 from ..storage import BoolStorage
 
@@ -64,6 +65,54 @@ def unary_storage(storage, function_name):
             return DECLINED
         return BoolStorage(bytearray(output.tobytes()), mask)
 
+    if output.dtype != _np.float64:
+        return DECLINED
+    data = _pyarray.array('d')
+    data.frombytes(output.tobytes())
+    return ArrayStorage(data, mask)
+
+
+def binary_storage(storage, other, function_name):
+    """Return exact binary math storage or DECLINED."""
+    if (
+        not _USE_NUMPY
+        or function_name != 'copysign'
+        or not isinstance(storage, ArrayStorage)
+    ):
+        return DECLINED
+
+    np_dtype = NP_DTYPES.get(storage._data.typecode)
+    if np_dtype is None:
+        return DECLINED
+    left = _np.frombuffer(storage._data, dtype=np_dtype)
+
+    right_mask = None
+    if isinstance(other, ArrayStorage):
+        right_dtype = NP_DTYPES.get(other._data.typecode)
+        if right_dtype is None or len(other) != len(storage):
+            return DECLINED
+        right = _np.frombuffer(other._data, dtype=right_dtype)
+        right_mask = other._mask
+    elif type(other) is float:
+        right = other
+    elif type(other) is int and -2**63 <= other < 2**63:
+        right = other
+    else:
+        return DECLINED
+
+    valid = None
+    if storage._mask is not None:
+        valid = valid_bits(storage._mask, len(storage))
+    if right_mask is not None:
+        right_valid = valid_bits(right_mask, len(storage))
+        valid = right_valid if valid is None else valid & right_valid
+
+    mask = None
+    if valid is not None and not valid.all():
+        packed = _np.packbits(valid, bitorder='little')
+        mask = BitMask(bytearray(packed.tobytes()), len(storage))
+
+    output = _np.copysign(left, right)
     if output.dtype != _np.float64:
         return DECLINED
     data = _pyarray.array('d')
