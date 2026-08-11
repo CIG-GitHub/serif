@@ -13,7 +13,7 @@ from ..storage import BoolStorage
 
 _PREDICATES = {'isfinite', 'isinf', 'isnan'}
 _ROUND_TO_INT = {'ceil', 'floor', 'trunc'}
-_SUPPORTED = _PREDICATES | _ROUND_TO_INT | {'fabs'}
+_SUPPORTED = _PREDICATES | _ROUND_TO_INT | {'fabs', 'sqrt'}
 
 
 def unary_storage(storage, function_name):
@@ -51,7 +51,13 @@ def unary_storage(storage, function_name):
         data.frombytes(output.tobytes())
         return ArrayStorage(data, mask)
 
-    output = getattr(_np, function_name)(values)
+    if function_name == 'sqrt':
+        effective = values if valid is None else _np.where(valid, values, 0)
+        if (effective < 0).any():
+            return DECLINED
+        output = _np.sqrt(effective)
+    else:
+        output = getattr(_np, function_name)(values)
 
     if function_name in _PREDICATES:
         if output.dtype != _np.bool_:

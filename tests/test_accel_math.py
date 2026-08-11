@@ -33,6 +33,11 @@ def _assert_identical(fast, pure):
         else:
             assert actual == expected
             assert type(actual) is type(expected)
+            if isinstance(expected, float) and expected == 0.0:
+                assert math.copysign(1.0, actual) == math.copysign(
+                    1.0,
+                    expected,
+                )
 
 
 @pytest.mark.parametrize(
@@ -116,6 +121,44 @@ def test_rounding_does_not_execute_null_lanes(function_name):
     )
 
 
+@pytest.mark.parametrize(
+    'values',
+    [
+        [0, 1, None, 2**62],
+        [0.0, -0.0, None, 2.0, float('inf'), float('nan')],
+    ],
+)
+def test_sqrt_matches_pure(values):
+    vector = Vector(values)
+    fast = vector.math.sqrt()
+    pure = _pure(lambda: vector.math.sqrt())
+
+    _assert_identical(fast, pure)
+    assert isinstance(fast._storage, ArrayStorage)
+
+
+def test_sqrt_declines_for_python_domain_errors():
+    with pytest.raises(ValueError):
+        Vector([4.0, -1.0]).math.sqrt()
+
+
+def test_sqrt_does_not_execute_null_lanes():
+    vector = Vector([-1.0])
+    vector[0] = None
+    _assert_identical(
+        vector.math.sqrt(),
+        _pure(lambda: vector.math.sqrt()),
+    )
+
+
+def test_sqrt_declines_for_bigint_storage():
+    vector = Vector([2**80])
+    _assert_identical(
+        vector.math.sqrt(),
+        _pure(lambda: vector.math.sqrt()),
+    )
+
+
 def test_all_valid_mask_is_not_retained():
     vector = Vector([1.0, None])[:1]
     assert vector.schema().nullable
@@ -129,7 +172,7 @@ def test_unsupported_storage_and_functions_decline():
     fixed_width = Vector([1.0])._storage
     bigint = Vector([2**80])._storage
 
-    assert math_mod.unary_storage(fixed_width, 'sqrt') is DECLINED
+    assert math_mod.unary_storage(fixed_width, 'exp') is DECLINED
     assert math_mod.unary_storage(bigint, 'fabs') is DECLINED
     _assert_identical(
         Vector([2**80]).math.fabs(),
@@ -151,6 +194,8 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     Vector([1, 2]).math.isfinite()
     Vector([1.5, None]).math.floor()
     Vector([4.0]).math.sqrt()
+    with pytest.raises(ValueError):
+        Vector([-1.0]).math.sqrt()
     Vector([1e20]).math.floor()
     Vector([2**80]).math.fabs()
-    assert engaged == [True, True, True, False, False, False]
+    assert engaged == [True, True, True, True, False, False, False]
