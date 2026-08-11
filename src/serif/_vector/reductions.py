@@ -132,6 +132,9 @@ def prod(vector):
 
 
 def gcd(vector):
+    fast = _numpy_reductions().gcd(vector._storage)
+    if fast is not DECLINED:
+        return fast
     return _python_reductions.gcd(vector._storage)
 
 

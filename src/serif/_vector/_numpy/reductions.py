@@ -10,6 +10,7 @@ from ..storage import ArrayStorage
 
 
 _U64 = 2**64
+_I64_MIN = -(2**63)
 
 
 def _prepared(storage):
@@ -42,6 +43,21 @@ def sum_(storage):
     if values.size == 0:
         return 0.0
     return float(values.sum())
+
+
+def gcd(storage):
+    """Return the exact integer gcd, or ``DECLINED``."""
+    values = _prepared(storage)
+    if values is None or values.dtype.kind != 'i':
+        return DECLINED
+    if values.size == 0:
+        return 0
+    # abs(-2**63) is not representable in int64. Keep that exceptional
+    # lane on the canonical Python path instead of relying on NumPy's
+    # platform/version-specific overflow result.
+    if (values == _I64_MIN).any():
+        return DECLINED
+    return int(_np.gcd.reduce(values))
 
 
 def _minmax(storage, numpy_reduce):

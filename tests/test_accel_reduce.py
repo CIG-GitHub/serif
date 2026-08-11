@@ -227,6 +227,70 @@ def test_nan_sum_propagates_on_both_paths():
 
 
 # ---------------------------------------------------------------------------
+# Exact integer gcd
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [48, -18, None, 30],
+        [0, None, 0],
+        [-7],
+    ],
+)
+def test_gcd_conformance_exact(values):
+    v = Vector(values)
+    fast = v.math.gcd()
+    pure = _pure(lambda: v.math.gcd())
+
+    assert reduce_mod.gcd(v._storage) is not DECLINED
+    assert fast == pure == math.gcd(
+        *(value for value in values if value is not None)
+    )
+    assert type(fast) is int
+
+
+def test_gcd_empty_and_all_null_identities_accelerate():
+    empty = Vector([], dtype=int)
+    all_null = Vector([1, None])[Vector([False, True])]
+
+    for v in (empty, all_null):
+        assert reduce_mod.gcd(v._storage) == 0
+        assert v.math.gcd() == 0 == _pure(lambda: v.math.gcd())
+        assert type(v.math.gcd()) is int
+
+
+def test_gcd_declines_for_int64_minimum():
+    v = Vector([-(2**63), 0])
+
+    assert reduce_mod.gcd(v._storage) is DECLINED
+    assert v.math.gcd() == 2**63 == _pure(lambda: v.math.gcd())
+
+
+def test_gcd_declines_for_bigint_storage():
+    v = Vector([2**80, 2**64])
+
+    assert reduce_mod.gcd(v._storage) is DECLINED
+    assert v.math.gcd() == 2**64 == _pure(lambda: v.math.gcd())
+
+
+def test_gcd_fast_path_engages_and_declines_where_designed(monkeypatch):
+    engaged = []
+    original = reduce_mod.gcd
+
+    def spy(storage):
+        result = original(storage)
+        engaged.append(result is not DECLINED)
+        return result
+
+    monkeypatch.setattr(reduce_mod, 'gcd', spy)
+    Vector([12, None, 18]).math.gcd()
+    Vector([-(2**63), 0]).math.gcd()
+    Vector([2**80, 2**64]).math.gcd()
+    assert engaged == [True, False, False]
+
+
+# ---------------------------------------------------------------------------
 # Float doctrine: both paths anchored against the exactly rounded sum
 # ---------------------------------------------------------------------------
 
