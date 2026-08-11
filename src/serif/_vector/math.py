@@ -2,8 +2,10 @@
 
 import math as _math
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from .dtype import Schema
 
 
 _MISSING = object()
@@ -43,6 +45,14 @@ def _apply_pointwise(
     if kwargs is None:
         kwargs = {}
 
+    from ._numpy import math as _numpy_math
+
+    if not args and not kwargs:
+        storage = _numpy_math.unary_storage(vector._storage, function_name)
+        if storage is not DECLINED:
+            dtype = Schema(result_kind, storage._mask is not None)
+            return _vector_class()._from_storage(storage, dtype)
+
     function = getattr(_math, function_name)
     positional_operands = tuple(
         _normalize_operand(vector, function_name, operand)
@@ -52,6 +62,18 @@ def _apply_pointwise(
         name: _normalize_operand(vector, function_name, operand)
         for name, operand in kwargs.items()
     }
+
+    if len(positional_operands) == 1 and not keyword_operands:
+        is_vector, operand = positional_operands[0]
+        if is_vector or type(operand) in (int, float):
+            storage = _numpy_math.binary_storage(
+                vector._storage,
+                operand,
+                function_name,
+            )
+            if storage is not DECLINED:
+                dtype = Schema(result_kind, storage._mask is not None)
+                return _vector_class()._from_storage(storage, dtype)
 
     def values():
         for index, value in enumerate(vector._storage):

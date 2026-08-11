@@ -29,6 +29,10 @@
 - Schema-known reductions build canonical packed result storage directly
   without a second inference pass. Constant reductions also produce group
   results without materializing group slices.
+- NumPy accelerates exact fixed-width `v.math` operations: `fabs`,
+  `isfinite`, `isinf`, `isnan`, `ceil`, `floor`, `trunc`, `sqrt`,
+  `copysign`, and `nextafter`. Unsupported storage and Python-specific
+  exception or bigint cases fall back to the pure-Python path.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
