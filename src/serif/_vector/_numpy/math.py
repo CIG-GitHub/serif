@@ -15,6 +15,7 @@ from ..storage import BoolStorage
 _PREDICATES = {'isfinite', 'isinf', 'isnan'}
 _ROUND_TO_INT = {'ceil', 'floor', 'trunc'}
 _SUPPORTED = _PREDICATES | _ROUND_TO_INT | {'fabs', 'sqrt'}
+_BINARY = {'copysign', 'nextafter'}
 
 
 def unary_storage(storage, function_name):
@@ -76,7 +77,7 @@ def binary_storage(storage, other, function_name):
     """Return exact binary math storage or DECLINED."""
     if (
         not _USE_NUMPY
-        or function_name != 'copysign'
+        or function_name not in _BINARY
         or not isinstance(storage, ArrayStorage)
     ):
         return DECLINED
@@ -112,7 +113,7 @@ def binary_storage(storage, other, function_name):
         packed = _np.packbits(valid, bitorder='little')
         mask = BitMask(bytearray(packed.tobytes()), len(storage))
 
-    output = _np.copysign(left, right)
+    output = getattr(_np, function_name)(left, right)
     if output.dtype != _np.float64:
         return DECLINED
     data = _pyarray.array('d')

@@ -204,6 +204,53 @@ def test_copysign_declines_for_bigint_storage():
     )
 
 
+@pytest.mark.parametrize(
+    ('values', 'target'),
+    [
+        (
+            [0.0, -0.0, None, 1.0, float('inf'), float('nan')],
+            -0.0,
+        ),
+        (
+            [0.0, -0.0, 1.0, float('inf'), float('nan')],
+            Vector([-0.0, 0.0, 2.0, None, float('-inf')]),
+        ),
+        ([0, 1, None, 2**62 + 1], 2),
+    ],
+)
+def test_nextafter_matches_pure(values, target):
+    vector = Vector(values)
+    fast = vector.math.nextafter(target)
+    pure = _pure(lambda: vector.math.nextafter(target))
+
+    _assert_identical(fast, pure)
+    assert isinstance(fast._storage, ArrayStorage)
+
+
+@pytest.mark.parametrize(
+    'target',
+    [
+        2**80,
+        Vector([2**80]),
+        None,
+    ],
+)
+def test_nextafter_declines_for_unsupported_targets(target):
+    vector = Vector([1.0])
+    _assert_identical(
+        vector.math.nextafter(target),
+        _pure(lambda: vector.math.nextafter(target)),
+    )
+
+
+def test_nextafter_declines_for_bigint_storage():
+    vector = Vector([2**80])
+    _assert_identical(
+        vector.math.nextafter(0.0),
+        _pure(lambda: vector.math.nextafter(0.0)),
+    )
+
+
 def test_all_valid_mask_is_not_retained():
     vector = Vector([1.0, None])[:1]
     assert vector.schema().nullable
@@ -258,6 +305,8 @@ def test_binary_fast_path_engages_and_declines_where_designed(monkeypatch):
     monkeypatch.setattr(math_mod, 'binary_storage', spy)
     Vector([1.0, None]).math.copysign(-1.0)
     Vector([1, 2]).math.copysign(Vector([-1, 1]))
+    Vector([0.0, 1.0]).math.nextafter(2.0)
+    Vector([0, 1]).math.nextafter(Vector([1, 2]))
     Vector([1.0]).math.copysign(2**80)
     Vector([1.0]).math.fmod(2.0)
-    assert engaged == [True, True, False, False]
+    assert engaged == [True, True, True, True, False, False]
