@@ -33,6 +33,11 @@
   `isfinite`, `isinf`, `isnan`, `ceil`, `floor`, `trunc`, `sqrt`,
   `copysign`, and `nextafter`. Unsupported storage and Python-specific
   exception or bigint cases fall back to the pure-Python path.
+- NumPy accelerates fixed-width integer `v.math.gcd()`, plus `lcm()` and
+  `prod()` when a preflight proves signed-int64 intermediates cannot overflow.
+  Null skipping, empty identities, and zero-product cases remain exact;
+  unsupported or unproven inputs fall back to Python. `fsum()`, `hypot()`, and
+  `dist()` remain pure to preserve Python's numerical behavior.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
