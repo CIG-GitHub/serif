@@ -101,6 +101,24 @@ def lcm(storage):
     return abs(int(_np.lcm.reduce(values)))
 
 
+def prod(storage):
+    """Return the exact integer product, or ``DECLINED``."""
+    values = _prepared(storage)
+    if values is None or values.dtype.kind != 'i':
+        return DECLINED
+    if values.size == 0:
+        return 1
+    if (values == 0).any():
+        return 0
+    if (values == _I64_MIN).any():
+        return DECLINED
+
+    magnitudes = _np.abs(values)
+    if not _magnitude_product_fits_i64(magnitudes):
+        return DECLINED
+    return int(_np.prod(values))
+
+
 def _minmax(storage, numpy_reduce):
     values = _prepared(storage)
     if values is None:

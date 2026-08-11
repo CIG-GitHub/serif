@@ -124,6 +124,9 @@ def fsum(vector):
 
 
 def prod(vector):
+    fast = _numpy_reductions().prod(vector._storage)
+    if fast is not DECLINED:
+        return fast
     schema = vector.schema()
     return _python_reductions.prod(
         vector._storage,

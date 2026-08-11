@@ -372,6 +372,91 @@ def test_lcm_fast_path_engages_and_declines_where_designed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Guarded integer product
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [2, 3, None, -4],
+        [-7],
+        [1, -1, 1, -1, None],
+        [2**31, 2**31 - 1],
+    ],
+)
+def test_prod_conformance_exact(values):
+    v = Vector(values)
+    fast = v.math.prod()
+    pure = _pure(lambda: v.math.prod())
+
+    assert reduce_mod.prod(v._storage) is not DECLINED
+    assert fast == pure == math.prod(
+        value for value in values if value is not None
+    )
+    assert type(fast) is int
+
+
+def test_prod_empty_and_all_null_integer_identities_accelerate():
+    empty = Vector([], dtype=int)
+    all_null = Vector([1, None])[Vector([False, True])]
+
+    for v in (empty, all_null):
+        assert reduce_mod.prod(v._storage) == 1
+        assert v.math.prod() == 1 == _pure(lambda: v.math.prod())
+        assert type(v.math.prod()) is int
+
+
+def test_prod_zero_shortcut_is_exact_for_every_int64_lane():
+    v = Vector([-(2**63), 0, 3])
+
+    assert reduce_mod.prod(v._storage) == 0
+    assert v.math.prod() == 0 == _pure(lambda: v.math.prod())
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [-(2**63)],
+        [2**62, 3],
+        [-(2**62), 2],
+    ],
+)
+def test_prod_declines_when_the_int64_proof_fails(values):
+    v = Vector(values)
+
+    assert reduce_mod.prod(v._storage) is DECLINED
+    assert v.math.prod() == _pure(lambda: v.math.prod())
+
+
+def test_prod_declines_for_bigint_and_float_storage():
+    bigint = Vector([2**80, 3])
+    floats = Vector([1.5, None, 2.0])
+
+    assert reduce_mod.prod(bigint._storage) is DECLINED
+    assert bigint.math.prod() == math.prod([2**80, 3])
+    assert reduce_mod.prod(floats._storage) is DECLINED
+    assert floats.math.prod() == _pure(lambda: floats.math.prod())
+
+
+def test_prod_fast_path_engages_and_declines_where_designed(monkeypatch):
+    engaged = []
+    original = reduce_mod.prod
+
+    def spy(storage):
+        result = original(storage)
+        engaged.append(result is not DECLINED)
+        return result
+
+    monkeypatch.setattr(reduce_mod, 'prod', spy)
+    Vector([2, None, -3]).math.prod()
+    Vector([-(2**63), 0]).math.prod()
+    Vector([2**62, 3]).math.prod()
+    Vector([2**80, 3]).math.prod()
+    Vector([1.5, 2.0]).math.prod()
+    assert engaged == [True, True, False, False, False]
+
+
+# ---------------------------------------------------------------------------
 # Float doctrine: both paths anchored against the exactly rounded sum
 # ---------------------------------------------------------------------------
 
