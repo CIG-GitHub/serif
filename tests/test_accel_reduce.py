@@ -291,6 +291,87 @@ def test_gcd_fast_path_engages_and_declines_where_designed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Guarded integer lcm
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [6, None, 10],
+        [-3, 4, -5],
+        [-7],
+        [2, 4, 8, 8, None],
+    ],
+)
+def test_lcm_conformance_exact(values):
+    v = Vector(values)
+    fast = v.math.lcm()
+    pure = _pure(lambda: v.math.lcm())
+
+    assert reduce_mod.lcm(v._storage) is not DECLINED
+    assert fast == pure == math.lcm(
+        *(value for value in values if value is not None)
+    )
+    assert type(fast) is int
+
+
+def test_lcm_empty_and_all_null_identities_accelerate():
+    empty = Vector([], dtype=int)
+    all_null = Vector([1, None])[Vector([False, True])]
+
+    for v in (empty, all_null):
+        assert reduce_mod.lcm(v._storage) == 1
+        assert v.math.lcm() == 1 == _pure(lambda: v.math.lcm())
+        assert type(v.math.lcm()) is int
+
+
+def test_lcm_zero_shortcut_is_exact_for_every_int64_lane():
+    v = Vector([-(2**63), 0, 3])
+
+    assert reduce_mod.lcm(v._storage) == 0
+    assert v.math.lcm() == 0 == _pure(lambda: v.math.lcm())
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [-(2**63), 1],
+        [2**62, 3],
+        [2**32, 2**31],
+    ],
+)
+def test_lcm_declines_when_the_int64_proof_fails(values):
+    v = Vector(values)
+
+    assert reduce_mod.lcm(v._storage) is DECLINED
+    assert v.math.lcm() == _pure(lambda: v.math.lcm())
+
+
+def test_lcm_declines_for_bigint_storage():
+    v = Vector([2**80, 3])
+
+    assert reduce_mod.lcm(v._storage) is DECLINED
+    assert v.math.lcm() == math.lcm(2**80, 3)
+
+
+def test_lcm_fast_path_engages_and_declines_where_designed(monkeypatch):
+    engaged = []
+    original = reduce_mod.lcm
+
+    def spy(storage):
+        result = original(storage)
+        engaged.append(result is not DECLINED)
+        return result
+
+    monkeypatch.setattr(reduce_mod, 'lcm', spy)
+    Vector([6, None, 10]).math.lcm()
+    Vector([-(2**63), 0]).math.lcm()
+    Vector([2**62, 3]).math.lcm()
+    Vector([2**80, 3]).math.lcm()
+    assert engaged == [True, True, False, False]
+
+
+# ---------------------------------------------------------------------------
 # Float doctrine: both paths anchored against the exactly rounded sum
 # ---------------------------------------------------------------------------
 

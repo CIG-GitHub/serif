@@ -139,6 +139,9 @@ def gcd(vector):
 
 
 def lcm(vector):
+    fast = _numpy_reductions().lcm(vector._storage)
+    if fast is not DECLINED:
+        return fast
     return _python_reductions.lcm(vector._storage)
 
 

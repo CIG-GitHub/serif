@@ -11,6 +11,7 @@ from ..storage import ArrayStorage
 
 _U64 = 2**64
 _I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
 
 
 def _prepared(storage):
@@ -58,6 +59,46 @@ def gcd(storage):
     if (values == _I64_MIN).any():
         return DECLINED
     return int(_np.gcd.reduce(values))
+
+
+def _magnitude_product_fits_i64(values):
+    """Whether the product of the nontrivial magnitudes fits int64."""
+    factors = values[values > 1]
+    # At least 63 factors of magnitude two already exceed signed int64.
+    # This also caps the scalar proof below at 62 iterations.
+    if factors.size > 62:
+        return False
+    product = 1
+    for factor in factors:
+        factor = int(factor)
+        if product > _I64_MAX // factor:
+            return False
+        product *= factor
+    return True
+
+
+def lcm(storage):
+    """Return the exact integer lcm, or ``DECLINED``."""
+    values = _prepared(storage)
+    if values is None or values.dtype.kind != 'i':
+        return DECLINED
+    if values.size == 0:
+        return 1
+    if (values == 0).any():
+        return 0
+    if (values == _I64_MIN).any():
+        return DECLINED
+
+    # Repeated magnitudes do not change an lcm. Their distinct product is
+    # an upper bound on the final result and therefore on every intermediate
+    # result of the reduction.
+    magnitudes = _np.unique(_np.abs(values))
+    if not _magnitude_product_fits_i64(magnitudes):
+        return DECLINED
+    # NumPy leaves a singleton reduction untouched, while math.lcm(-n)
+    # normalizes its result to positive. _I64_MIN was declined above, so
+    # taking the Python-int absolute value is exact.
+    return abs(int(_np.lcm.reduce(values)))
 
 
 def _minmax(storage, numpy_reduce):
