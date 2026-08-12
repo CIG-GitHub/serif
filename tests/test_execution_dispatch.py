@@ -21,10 +21,12 @@ from serif._table._python import joins as python_joins
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
 from serif._vector import selection as vector_selection
+from serif._vector import statistics as vector_statistics
 from serif._vector._arrow import operators as arrow_ops
 from serif._vector._numpy import operators as numpy_ops
 from serif._vector._numpy import reductions as numpy_reductions
 from serif._vector._numpy import selection as numpy_selection
+from serif._vector._numpy import statistics as numpy_statistics
 from serif._vector._python import reductions as python_reductions
 from serif._vector._python import selection as python_selection
 from serif._vector.storage import ArrayStorage
@@ -276,7 +278,7 @@ def test_reduction_none_is_a_completed_backend_result(monkeypatch):
     assert calls == ['numpy']
 
 
-def test_reduction_decline_reaches_mandatory_python_path(monkeypatch):
+def test_statistics_decline_reaches_mandatory_python_path(monkeypatch):
     calls = []
 
     def decline_numpy(storage):
@@ -287,8 +289,8 @@ def test_reduction_decline_reaches_mandatory_python_path(monkeypatch):
         calls.append('python')
         return 1.5
 
-    monkeypatch.setattr(numpy_reductions, 'mean', decline_numpy)
-    monkeypatch.setattr(python_reductions, 'mean', accept_python)
+    monkeypatch.setattr(numpy_statistics, 'mean', decline_numpy)
+    monkeypatch.setattr(vector_statistics._statistics, 'mean', accept_python)
 
     assert Vector([1, 2]).mean() == 1.5
     assert calls == ['numpy', 'python']

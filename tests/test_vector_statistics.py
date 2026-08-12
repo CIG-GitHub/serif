@@ -242,3 +242,49 @@ def test_all_null_typed_vector_keeps_stats_accessor():
     vector = Vector([None, None], dtype=Schema(float, True))
 
     assert vector.stats.mean() is None
+
+
+@pytest.mark.parametrize(
+    'vector',
+    [
+        Vector([1, None, 2, 3]),
+        Vector([1.5, None, 2.25, 8.0]),
+        Vector([], dtype=float),
+    ],
+)
+def test_numeric_mean_is_an_alias_for_canonical_statistics(vector):
+    result = vector.mean()
+    canonical = vector.stats.mean()
+
+    assert result == canonical
+    assert type(result) is type(canonical)
+
+
+@pytest.mark.parametrize(
+    'vector',
+    [
+        Vector([1, None, 2, 3]),
+        Vector([1.5, None, 2.25, 8.0]),
+        Vector([], dtype=float),
+    ],
+)
+def test_numeric_std_is_an_alias_for_sample_standard_deviation(vector):
+    result = vector.std()
+    canonical = vector.stats.stdev()
+
+    assert result == canonical
+    assert type(result) is type(canonical)
+
+
+def test_population_standard_deviation_remains_explicit():
+    vector = Vector([1.0, 2.0, 3.0])
+
+    assert vector.std() == vector.stats.stdev()
+    assert vector.stats.pstdev() < vector.std()
+
+
+def test_std_is_exposed_only_on_real_numeric_vectors():
+    assert hasattr(Vector([1, 2]), 'std')
+    assert hasattr(Vector([1.0, 2.0]), 'std')
+    assert not hasattr(Vector(['1', '2']), 'std')
+    assert not hasattr(Vector([True, False]), 'std')

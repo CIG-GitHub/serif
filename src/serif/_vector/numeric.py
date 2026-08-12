@@ -9,6 +9,14 @@ from .storage import TupleStorage
 
 
 class _Real(Vector):
+    def mean(self):
+        """Alias for the canonical ``stats.mean()`` reduction."""
+        return self.stats.mean()
+
+    def std(self):
+        """Alias for the canonical sample ``stats.stdev()`` reduction."""
+        return self.stats.stdev()
+
     @property
     def math(self):
         """Access Python's ``math`` functions with Vector-aware semantics."""
