@@ -3,6 +3,7 @@
 # ============================================================
 from ..vector import Vector
 from . import math as _math
+from . import statistics as _statistics
 from .storage import ArrayStorage
 from .storage import TupleStorage
 
@@ -12,6 +13,11 @@ class _Real(Vector):
     def math(self):
         """Access Python's ``math`` functions with Vector-aware semantics."""
         return _math.MathAccessor(self)
+
+    @property
+    def stats(self):
+        """Access Python's ``statistics`` functions over known values."""
+        return _statistics.StatisticsAccessor(self)
 
 
 class _Float(_Real):
