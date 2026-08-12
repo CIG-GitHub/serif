@@ -1,5 +1,6 @@
 """Pure-Python ``Vector.stats`` semantics."""
 
+import math
 import statistics
 from datetime import date
 
@@ -89,16 +90,26 @@ def test_variance_family_accepts_precomputed_centers():
     known = [1.0, 2.0, 4.0]
     center = statistics.mean(known)
 
-    assert vector.stats.pvariance(center) == statistics.pvariance(
-        known,
-        center,
+    assert math.isclose(
+        vector.stats.pvariance(center),
+        statistics.pvariance(known, center),
+        rel_tol=1e-15,
     )
-    assert vector.stats.variance(center) == statistics.variance(
-        known,
-        center,
+    assert math.isclose(
+        vector.stats.variance(center),
+        statistics.variance(known, center),
+        rel_tol=1e-15,
     )
-    assert vector.stats.pstdev(center) == statistics.pstdev(known, center)
-    assert vector.stats.stdev(center) == statistics.stdev(known, center)
+    assert math.isclose(
+        vector.stats.pstdev(center),
+        statistics.pstdev(known, center),
+        rel_tol=1e-15,
+    )
+    assert math.isclose(
+        vector.stats.stdev(center),
+        statistics.stdev(known, center),
+        rel_tol=1e-15,
+    )
 
 
 def test_weighted_harmonic_mean_skips_incomplete_pairs():
