@@ -12,6 +12,19 @@
   scalar or same-length Vector broadcasting and null propagation. Namespaced
   `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist` reductions skip nulls and
   work as bound `aggregate()` and `window()` operations.
+- Real numeric Vectors expose a dtype-owned `v.stats` namespace based on
+  Python 3.10's `statistics` module: arithmetic, floating, geometric, and
+  harmonic means; median variants and quantiles; modes; population and sample
+  variance/deviation; covariance, correlation, and linear regression.
+  `median_grouped()` is intentionally omitted. Statistics skip nulls, paired
+  statistics skip incomplete coordinate pairs after validating original
+  lengths, and insufficient samples return `None` (`multimode()` retains its
+  meaningful empty-list result). Bound methods work in `aggregate()` and
+  `window()`.
+- Numeric `mean()` is an alias for `v.stats.mean()`, and `std()` is an alias
+  for the sample standard deviation `v.stats.stdev()`. Population deviation is
+  explicit as `v.stats.pstdev()`; the existing parameterized `stdev()` remains
+  available for compatibility.
 
 ### Fixed
 - Categorical payload columns no longer degrade to strings during joins;
@@ -38,6 +51,11 @@
   Null skipping, empty identities, and zero-product cases remain exact;
   unsupported or unproven inputs fall back to Python. `fsum()`, `hypot()`, and
   `dist()` remain pure to preserve Python's numerical behavior.
+- NumPy accelerates fixed-width `v.stats` medians and quantiles, `fmean()`,
+  floating-point `mean()`, and floating-point population/sample variance and
+  standard deviation. Discrete results preserve Python values and scalar
+  types; floating results preserve the formula with normal rounding tolerance.
+  Exact-result integer and non-finite cases fall back to Python where needed.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 

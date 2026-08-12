@@ -121,6 +121,7 @@ remains (all-null or empty input), there are three tiers:
 | `max`     | `None`                  | no identity exists         |
 | `min`     | `None`                  | no identity exists         |
 | `mean`    | `None`                  | no identity exists         |
+| `std`     | `None`                  | insufficient sample        |
 | `stdev`   | `None`                  | no identity exists         |
 | `all`     | `True`, warns unless `on_empty=`  | AND identity; a verdict from no evidence warns |
 | `any`     | `False`, warns unless `on_empty=` | OR identity; a verdict from no evidence warns  |
@@ -132,6 +133,30 @@ any arithmetic downstream. `all([None, True]) is True` is not "None is
 truthy" — the null was skipped, and no known value violated the condition.
 The element-wise layer already reported the unknown before you aggregated;
 aggregation is where you decide to summarize what's known.
+
+### `v.stats`: strip unknown observations before calculating
+
+Real numeric vectors expose Python-style statistics through `v.stats`.
+Univariate statistics remove null observations before calculating. If too few
+known observations remain for the requested statistic, the result is `None`:
+one known value is enough for population variance but not sample variance, and
+two are required for quantiles. `multimode()` is the deliberate exception; it
+returns `[]` over zero known observations, matching Python's meaningful empty
+answer. Invalid known values still raise the underlying Python domain or type
+error.
+
+`covariance()`, `correlation()`, and `linear_regression()` first require equal
+original lengths, then remove every position where either side is null. They
+return `None` when fewer than two complete pairs remain. Weighted
+`harmonic_mean()` follows the same pairwise rule for values and weights. This
+is the same coordinate policy as `v.math.dist()`: dimensions describe the
+original data, while the calculation summarizes only complete observations.
+
+`v.mean()` aliases `v.stats.mean()` and `v.std()` aliases the sample
+`v.stats.stdev()`. Use `v.stats.pstdev()` when the observations are the entire
+population. NumPy may accelerate fixed-width statistics; discrete results
+retain exact Python semantics, while floating reductions can differ in their
+last bits because reduction order is not numerically associative.
 
 ### `all()` / `any()`: identity, but say so out loud
 
