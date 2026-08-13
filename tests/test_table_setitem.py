@@ -426,6 +426,56 @@ class TestErrorConditions:
 			t[0, True] = 9
 		assert t.to_dict() == {'a': [1, 2], 'b': [3, 4]}
 
+	@pytest.mark.parametrize(
+		'row_spec,value_factory',
+		[
+			pytest.param(slice(None), lambda: 1.5, id='scalar'),
+			pytest.param(0, lambda: [1.5, 99], id='row'),
+			pytest.param(
+				slice(None),
+				lambda: Table({'left': [1.5, 2.5], 'right': [99, 100]}),
+				id='table',
+			),
+			pytest.param(
+				slice(None),
+				lambda: [[1.5, 2.5], [99, 100]],
+				id='column-iterables',
+			),
+		],
+	)
+	def test_non_batch_multi_column_assignment_is_atomic(
+		self,
+		row_spec,
+		value_factory,
+	):
+		t = Table({'number': [1, 2], 'text': ['a', 'b']})
+		original_storage = t._storage
+		original_columns = tuple(t._storage)
+
+		with pytest.raises(SerifTypeError):
+			t[row_spec, ['number', 'text']] = value_factory()
+
+		assert t.to_dict() == {'number': [1, 2], 'text': ['a', 'b']}
+		assert t._storage is original_storage
+		assert all(
+			current is original
+			for current, original in zip(t._storage, original_columns)
+		)
+
+	def test_batch_multi_column_assignment_retains_partial_mutation(self):
+		t = Table({'number': [1, 2], 'text': ['a', 'b']})
+
+		with pytest.raises(SerifTypeError):
+			with t.batch() as editable:
+				editable[:, ['number', 'text']] = 1.5
+
+		assert t.to_dict() == {
+			'number': [1.5, 1.5],
+			'text': ['a', 'b'],
+		}
+		assert t.number.schema().kind is float
+		assert t.text.schema().kind is str
+
 
 class TestMixedTypeAssignment:
 	"""Assignment across different column types."""

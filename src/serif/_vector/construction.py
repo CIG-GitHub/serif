@@ -3,6 +3,7 @@
 from datetime import date
 from itertools import repeat
 
+from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from .dtype import Schema
 from .dtype import infer_dtype
@@ -195,8 +196,17 @@ def from_iterable_known_kind(cls, iterable, kind, *, name=None):
 
 
 def filled(cls, value, length, typesafe=False):
-    if length:
-        assert isinstance(length, int)
+    if isinstance(length, bool) or not isinstance(length, int):
+        raise SerifTypeError(
+            "Vector.filled() length must be a non-negative integer, "
+            f"got {type(length).__name__}"
+        )
+    if length < 0:
+        raise SerifValueError(
+            f"Vector.filled() length must be non-negative, got {length}"
+        )
+
+    if length > 0:
         dtype = infer_dtype([value])
         if typesafe:
             dtype = Schema(dtype.kind, False)

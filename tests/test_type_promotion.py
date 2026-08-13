@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 import pytest
 
-from serif import Vector
+from serif import SerifTypeError, Table, Vector
 from serif._vector.dtype import Schema, infer_dtype
 
 
@@ -311,8 +311,56 @@ class TestSetitemPromotion:
 
     def test_setitem_invalid_promotion_raises(self):
         v = Vector([1, 2, 3])
-        with pytest.raises(Exception):
+        with pytest.raises(
+            SerifTypeError,
+            match='Cannot set str in int vector',
+        ):
             v[0] = "hello"  # int -> str should not be silently allowed
+
+    def test_failed_assignment_after_promotion_is_atomic(self):
+        v = Vector([1, 2, 3])
+        original_storage = v._storage
+        original_class = type(v)
+
+        with pytest.raises(SerifTypeError):
+            v[:] = [None, 2.5, 'bad']
+
+        assert list(v) == [1, 2, 3]
+        assert v.schema() == Schema(int, False)
+        assert v._storage is original_storage
+        assert type(v) is original_class
+
+    def test_promoted_tuple_storage_validates_every_value(self):
+        v = Vector([1, 2])
+        original_storage = v._storage
+        original_class = type(v)
+
+        with pytest.raises(SerifTypeError):
+            v[:] = [1 + 2j, 'bad']
+
+        assert list(v) == [1, 2]
+        assert v.schema() == Schema(int, False)
+        assert v._storage is original_storage
+        assert type(v) is original_class
+
+    def test_failed_assignment_is_atomic_inside_batch(self):
+        table = Table({'value': [1, 2, 3]})
+
+        with table.batch() as editable:
+            column = editable.value
+            original_storage = column._storage
+            original_class = type(column)
+
+            with pytest.raises(SerifTypeError):
+                column[:] = [None, 2.5, 'bad']
+
+            assert list(column) == [1, 2, 3]
+            assert column.schema() == Schema(int, False)
+            assert column._storage is original_storage
+            assert type(column) is original_class
+
+        assert list(table.value) == [1, 2, 3]
+        assert table.value.schema() == Schema(int, False)
 
 
 class TestNullableBehavior:

@@ -1,6 +1,8 @@
 """Tests for Table.sort_by() method."""
 import pytest
-from serif import Table, Vector
+from serif import Schema, Table, Vector
+from serif._vector.categorical import _Category
+from serif._vector.categorical import _CategoryStorage
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
 from serif._vector.storage import StringStorage
@@ -121,12 +123,41 @@ def test_sort_by_with_none_reverse_true_na_last_false():
 	assert list(result['id']) == [2, 5, 1, 4, 3]
 
 
-def test_sort_by_empty_table():
-	"""Test sorting an empty table."""
-	t = Table({'name': [], 'age': []})
-	result = t.sort_by('name')
+def test_sort_by_empty_table_preserves_schema_and_storage():
+	t = Table({
+		'integer': Vector([], dtype=Schema(int, True)),
+		'flag': Vector([], dtype=bool),
+		'label': Vector([], dtype=str),
+		'object': Vector([], dtype=Schema(object, True)),
+		'category': Vector([], dtype=str).categorize(['low', 'high']),
+	})
+
+	result = t.sort_by('integer')
+
 	assert len(result) == 0
-	assert result.column_names() == ['name', 'age']
+	assert result.column_names() == [
+		'integer',
+		'flag',
+		'label',
+		'object',
+		'category',
+	]
+	assert [column.schema() for column in result.cols()] == [
+		Schema(int, True),
+		Schema(bool, False),
+		Schema(str, False),
+		Schema(object, True),
+		Schema(str, False),
+	]
+	assert [type(column._storage) for column in result.cols()] == [
+		ArrayStorage,
+		BoolStorage,
+		StringStorage,
+		TupleStorage,
+		_CategoryStorage,
+	]
+	assert isinstance(result.category, _Category)
+	assert result.category.categories == ('low', 'high')
 
 
 def test_sort_by_stable_sort():

@@ -1,4 +1,6 @@
 """Tests for _Category vector — ordered string categories."""
+import operator
+
 import pytest
 from serif import Vector
 from serif._vector.categorical import _Category
@@ -77,6 +79,42 @@ class TestCategoricalConstruction:
 
 
 class TestCategoricalComparisons:
+    @pytest.mark.parametrize(
+        'comparison',
+        [
+            operator.eq,
+            operator.ne,
+            operator.lt,
+            operator.le,
+            operator.gt,
+            operator.ge,
+        ],
+        ids=['eq', 'ne', 'lt', 'le', 'gt', 'ge'],
+    )
+    @pytest.mark.parametrize(
+        'right_factory',
+        [
+            pytest.param(
+                lambda: Vector(['s']).categorize(SIZES),
+                id='same-categories',
+            ),
+            pytest.param(
+                lambda: Vector(['s']).categorize(['m', 's', 'l']),
+                id='different-categories',
+            ),
+            pytest.param(lambda: Vector(['s']), id='string-vector'),
+        ],
+    )
+    def test_vector_length_mismatch_raises(
+        self,
+        comparison,
+        right_factory,
+    ):
+        left = Vector(['s', 'm']).categorize(SIZES)
+
+        with pytest.raises(SerifValueError, match='Length mismatch: 2 != 1'):
+            comparison(left, right_factory())
+
     def test_equality_scalar(self):
         c = make_cat(['s', 'm', 'l'])
         result = c == 'm'

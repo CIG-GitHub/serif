@@ -107,16 +107,7 @@ def sort_by(table, by, reverse=False, na_last=True):
             )
         resolved.append(column)
 
-    # --- 4. Edge case: empty table ---
-    if nrows == 0:
-        # Preserve columns / names but with no rows
-        new_columns = [
-            Vector([], name=column._name)
-            for column in iter_columns(table)
-        ]
-        return Table(new_columns)
-
-    # --- 5. Build sorted row index using stable multi-key sort ---
+    # --- 4. Build sorted row index using stable multi-key sort ---
     indices = list(range(nrows))
 
     # Stable sort: apply keys from last to first
@@ -137,7 +128,7 @@ def sort_by(table, by, reverse=False, na_last=True):
 
         indices.sort(key=key_fn, reverse=rev)
 
-    # --- 6. Rebuild columns in sorted order ---
+    # --- 5. Rebuild columns in sorted order ---
     # Permute through the storage protocol: preserves each column's
     # backend AND subclass (a _Category stays categorical, an int column
     # keeps ArrayStorage) with zero re-inference. The columns are freshly

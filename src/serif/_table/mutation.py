@@ -268,8 +268,11 @@ def setitem(table, key, value):
         value,
         (str, bytes, bytearray),
     ):
-        for col_idx in target_indices:
-            write_column(table, col_idx, row_spec, value)
+        write_columns(
+            table,
+            row_spec,
+            ((col_idx, value) for col_idx in target_indices),
+        )
         return
 
     # CASE B: Single Row Assignment
@@ -284,23 +287,33 @@ def setitem(table, key, value):
                 f"{len(val_seq)} items."
             )
 
-        for index, col_idx in enumerate(target_indices):
-            write_column(table, col_idx, row_spec, val_seq[index])
+        write_columns(
+            table,
+            row_spec,
+            (
+                (col_idx, val_seq[index])
+                for index, col_idx in enumerate(target_indices)
+            ),
+        )
         return
 
     # CASE C: Rectangular/Table Assignment
     # t[1:3, 2:4] = other_table
     Table = _table_class()
     if isinstance(value, Table):
-        if len(value.cols()) != len(target_indices):
+        source_columns = value.cols()
+        if len(source_columns) != len(target_indices):
             raise SerifValueError(
                 f"Column count mismatch: Target has {len(target_indices)} "
-                f"cols, source table has {len(value.cols())} cols."
+                f"cols, source table has {len(source_columns)} cols."
             )
 
-        # We delegate row-length validation to the vector.__setitem__ calls below
-        for index, col_idx in enumerate(target_indices):
-            write_column(table, col_idx, row_spec, value.cols()[index])
+        # We delegate row-length validation to the vector.__setitem__ calls below.
+        write_columns(
+            table,
+            row_spec,
+            zip(target_indices, source_columns),
+        )
         return
 
     # CASE D: Vector Assignment To One Column
@@ -334,8 +347,14 @@ def setitem(table, key, value):
             )
 
         # Assume value[i] corresponds to target_indices[i]
-        for index, col_idx in enumerate(target_indices):
-            write_column(table, col_idx, row_spec, value[index])
+        write_columns(
+            table,
+            row_spec,
+            (
+                (col_idx, value[index])
+                for index, col_idx in enumerate(target_indices)
+            ),
+        )
         return
 
     raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
@@ -423,6 +442,39 @@ def write_column(table, col_idx, row_spec, value):
     _columns.adopt_columns(table, (new_column,))
     columns = list(table._storage)
     columns[col_idx] = new_column
+    table._storage = TupleStorage.from_iterable(
+        tuple(columns),
+        nullable=False,
+    )
+
+
+def write_columns(table, row_spec, assignments):
+    """Apply one statement's column writes with the correct transaction scope."""
+    assignments = tuple(assignments)
+    if table._batch_edit is not None:
+        # batch() intentionally retains statement progress when a later column
+        # fails; its documented transaction boundary is the individual write.
+        for col_idx, value in assignments:
+            write_column(table, col_idx, row_spec, value)
+        return
+
+    # Outside batch(), stage against local column clones. Even repeated target
+    # indices see earlier staged writes, but the Table remains untouched until
+    # every column assignment has succeeded.
+    columns = list(table._storage)
+    changed_indices = []
+    for col_idx, value in assignments:
+        column = columns[col_idx]
+        new_column = column._clone(column._storage)
+        new_column._setitem_impl(row_spec, value)
+        columns[col_idx] = new_column
+        changed_indices.append(col_idx)
+
+    final_indices = dict.fromkeys(changed_indices)
+    _columns.adopt_columns(
+        table,
+        (columns[col_idx] for col_idx in final_indices),
+    )
     table._storage = TupleStorage.from_iterable(
         tuple(columns),
         nullable=False,
