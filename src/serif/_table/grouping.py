@@ -3,6 +3,7 @@
 import warnings
 
 from .._execution import DECLINED
+from .._vector import Schema
 from .._vector.selection import take_storage
 from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
@@ -121,6 +122,76 @@ def _bound_reduction(function):
     return None
 
 
+def _known_reduction_schema(source, method_name, accessor_name):
+    """Return an operation-derived scalar schema, or None if unresolved.
+
+    This describes reducers whose result kind does not require observing a
+    group value. Callers remain responsible for deciding when to prefer this
+    static schema over ordinary result-value inference.
+    """
+    source_schema = source.schema()
+
+    if accessor_name is None:
+        if method_name == 'count':
+            return Schema(int, False)
+        if method_name in ('all', 'any'):
+            return Schema(bool, False)
+        if source_schema is None:
+            return None
+        if method_name in ('first', 'last', 'min', 'max'):
+            return Schema(source_schema.kind, source_schema.nullable)
+        if method_name == 'sum':
+            if source_schema.kind is bool:
+                return Schema(int, False)
+            if source_schema.kind in (int, float, complex):
+                return Schema(source_schema.kind, False)
+            return None
+        if method_name == 'mean':
+            if source_schema.kind in (bool, int, float):
+                return Schema(float, source_schema.nullable)
+            if source_schema.kind is complex:
+                return Schema(complex, source_schema.nullable)
+            return None
+        if method_name == 'stdev':
+            if source_schema.kind in (bool, int, float):
+                return Schema(float, True)
+            return None
+        return None
+
+    if accessor_name == 'math':
+        if method_name in ('fsum', 'hypot'):
+            return Schema(float, False)
+        if method_name in ('gcd', 'lcm'):
+            return Schema(int, False)
+        if method_name == 'prod' and source_schema is not None:
+            result_kind = (
+                int if source_schema.kind is bool else source_schema.kind
+            )
+            if result_kind in (int, float, complex):
+                return Schema(result_kind, False)
+        return None
+
+    if accessor_name == 'stats':
+        if source_schema is None:
+            return None
+        if method_name in ('mean', 'fmean', 'geometric_mean', 'harmonic_mean'):
+            if source_schema.kind in (bool, int, float):
+                return Schema(float, source_schema.nullable)
+            return None
+        if method_name in ('median_low', 'median_high', 'mode'):
+            return Schema(source_schema.kind, source_schema.nullable)
+        if method_name in ('variance', 'stdev'):
+            if source_schema.kind in (bool, int, float):
+                return Schema(float, True)
+            return None
+        if method_name in ('pvariance', 'pstdev'):
+            if source_schema.kind in (bool, int, float):
+                return Schema(float, source_schema.nullable)
+        return None
+
+    return None
+
+
 def _invoke_bound_reduction(vector, method_name, accessor_name):
     target = (
         vector
@@ -173,12 +244,16 @@ def apply_aggregations(
     *,
     allow_blocks,
     function_name,
+    infer_empty_schema=False,
 ):
     """Yield each output's name, scalar-result sequence, and known schema."""
     Table = _table_class()
+    infer_result_schema = infer_empty_schema and not group_items
 
     for aggregation_name, function in aggregations.items():
         result_schema = getattr(function, '_serif_result_schema', None)
+        if result_schema is None and infer_result_schema and function is len:
+            result_schema = Schema(int, False)
         group_results = getattr(function, '_serif_group_results', None)
         if group_results is not None:
             yield aggregation_name, group_results(group_items), result_schema
@@ -263,7 +338,18 @@ def apply_aggregations(
                         if source_names[index] is not None
                         else f"col{index}_"
                     )
-                    yield f"{aggregation_name}{base}", fanned[index], None
+                    output_schema = result_schema
+                    if output_schema is None and infer_result_schema:
+                        output_schema = _known_reduction_schema(
+                            source_columns[index],
+                            method_name,
+                            accessor_name,
+                        )
+                    yield (
+                        f"{aggregation_name}{base}",
+                        fanned[index],
+                        output_schema,
+                    )
             else:
                 slicer = _make_group_slicer(source)
                 identity = _VERDICT_IDENTITY.get(method_name)
@@ -298,7 +384,14 @@ def apply_aggregations(
                         method_name,
                         function_name,
                     )
-                yield aggregation_name, output, None
+                output_schema = result_schema
+                if output_schema is None and infer_result_schema:
+                    output_schema = _known_reduction_schema(
+                        source,
+                        method_name,
+                        accessor_name,
+                    )
+                yield aggregation_name, output, output_schema
         elif callable(function):
             slicers = [
                 (column, _make_group_slicer(column))

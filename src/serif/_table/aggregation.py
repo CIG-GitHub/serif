@@ -68,6 +68,11 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
 
 def _wrap_group_key_column(values, source_column, name):
     """Wrap group keys with their source column's known schema."""
+    if not values:
+        return source_column._clone(
+            source_column._storage.slice(slice(0, 0)),
+            name=name,
+        )
     schema = source_column.schema()
     if schema is None or schema.kind is object:
         return Vector(values, name=name)
@@ -158,6 +163,7 @@ def aggregate(table, groupby=None, aggregations=None):
             nrows,
             allow_blocks=True,
             function_name="aggregate",
+            infer_empty_schema=True,
         )
         for output_name, output_values, output_schema in outputs:
             output_name = uniquify(output_name)
