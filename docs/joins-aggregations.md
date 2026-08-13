@@ -71,6 +71,15 @@ multi-column key, `None` in any component makes the whole key non-matching.
 Repeated null keys do not violate uniqueness expectations because they cannot
 produce multiple matches.
 
+### Empty Join Results
+
+Join columns are determined independently of matching row pairs. An inner
+join with no matches therefore has zero rows but still contains the ordinary
+join output: left columns followed by contributed right columns, with matched
+key columns de-duplicated under the same rules as a populated join. Left and
+full joins apply their usual nullable schemas to optional sides even when an
+input or the result is empty.
+
 **Complexity:** O(n + m) where n and m are table lengths. Uses hash-based lookups.
 
 ---
@@ -120,6 +129,25 @@ result = t.window(
 # Returns 5 rows (original row count)
 # Each row gets the group's total in amount_sum
 ```
+
+### Empty Aggregate and Window Results
+
+An empty grouped `aggregate()` has zero groups and therefore zero rows, but
+its schema still contains every group key and every declared aggregation
+column in order. Known reducers derive their output schemas from the
+operation: for example, `sum`, `first`, `mean`, `count`, and `len` retain
+their appropriate dtype and nullability without needing a result value.
+A custom callable whose result type cannot be known without calling it still
+contributes its named column; that column's schema remains unresolved.
+
+An empty `window()` likewise has zero rows and retains its normal projection:
+the group keys followed by the declared window columns. `window()` does not
+implicitly include unrelated source columns. Known reducer schemas are the
+same whether the input is empty or populated.
+
+These zero-row results remain ordinary Tables: column selection, sanitized
+attribute access, joins, append, and `rename_columns()` continue to work from
+the retained schema.
 
 ### Multiple Partition Keys
 

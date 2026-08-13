@@ -32,6 +32,13 @@
   available for compatibility.
 
 ### Fixed
+- Zero-row Table operations now preserve their operation-defined schemas.
+  Row selection and projection retain source columns; grouped aggregation and
+  windows emit declared outputs with statically known reducer dtypes; joins
+  retain both sides under their normal key, naming, and nullability rules; and
+  append and rename preserve aligned column metadata. Unresolved custom
+  aggregation outputs remain present as schema-unknown columns. The contract
+  is identical across the pure Python, NumPy, and PyArrow execution paths.
 - Parquet writes now preflight dtype/storage compatibility, explicitly reject
   categorical columns unless cast to plain strings, and replace destinations
   atomically from a completed sibling temporary file. Validation and I/O
