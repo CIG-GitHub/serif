@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.2 – Unreleased
+## 0.2.2 – 2026-08-13
 
 This release adds dedicated math and statistics APIs, strengthens schema
 preservation, and improves mutation and I/O safety.

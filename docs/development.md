@@ -92,9 +92,10 @@ installed package then tracks your working tree.
 
 ## Versioning
 
-Versioned releases (currently `0.1.6` in `pyproject.toml`) with a
-changelog at `CHANGELOG.md`. Publishing runs through
-`.github/workflows/publish.yml`.
+Release versions are declared in `pyproject.toml` and
+`src/serif/__init__.py`, with release notes in `CHANGELOG.md`. Distribution
+artifacts are built with `python -m build`, validated with
+`python -m twine check`, and published to PyPI with Twine.
 
 ## Contributing
 
