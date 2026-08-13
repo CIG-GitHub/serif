@@ -42,6 +42,15 @@
   string columns become `str`.
 - Dtype promotion now changes the concrete typed Vector subclass together with
   `Schema.kind`, preventing stale dtype-specific APIs after promotion.
+- Categorical comparisons now reject Vector operands with unequal lengths
+  instead of truncating results or failing with an indexing error.
+- Sorting zero-row Tables now preserves column schemas, nullability, canonical
+  storage backends, and categorical domains.
+- `Vector.filled()` now rejects boolean, non-integer, and negative lengths with
+  explicit Serif errors while retaining zero as a valid length.
+- Failed Vector assignments and non-batch multi-column Table assignments are
+  atomic across validation and dtype promotion. `batch()` retains its
+  documented partial-mutation behavior across separate column writes.
 
 ### Performance
 - Schema-known reductions build canonical packed result storage directly
