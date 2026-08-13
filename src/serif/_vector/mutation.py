@@ -1,6 +1,8 @@
 """Vector assignment, ownership, and copy-on-write semantics."""
 
 from collections.abc import Iterable
+from datetime import date
+from datetime import datetime
 from weakref import ref
 
 from ..errors import SerifIndexError
@@ -198,47 +200,82 @@ def setitem_impl(vector, key, value):
             "int, integer vector, or list/tuple of ints."
         )
 
-    if updates:
+    target_dtype = vector._dtype
+    validated_updates = updates
+    if updates and target_dtype is not None and target_dtype.kind is not object:
         new_values = [new_value for _, new_value in updates]
+        saw_none = any(new_value is None for new_value in new_values)
+        incompatible = None
+        for new_value in new_values:
+            if new_value is None:
+                continue
+            try:
+                validate_scalar(new_value, target_dtype)
+            except SerifTypeError:
+                incompatible = new_value
+                break
 
-        if vector._dtype is not None and vector._dtype.kind is not object:
-            incompatible = None
-            saw_none = False
-            for new_value in new_values:
-                if new_value is None:
-                    saw_none = True
-                    continue
-                try:
-                    validate_scalar(new_value, vector._dtype)
-                except TypeError:
-                    incompatible = new_value
-                    break
+        if incompatible is not None:
+            required_dtype = infer_dtype([incompatible])
+            current_kind = target_dtype.kind
+            required_kind = required_dtype.kind
+            if current_kind is int and required_kind in (float, complex):
+                target_kind = required_kind
+            elif current_kind is float and required_kind is complex:
+                target_kind = complex
+            elif current_kind is date and required_kind is datetime:
+                target_kind = datetime
+            else:
+                raise SerifTypeError(
+                    f"Cannot set {required_kind.__name__} in "
+                    f"{current_kind.__name__} vector. "
+                    f"Promotion not supported."
+                )
+            target_dtype = Schema(target_kind, target_dtype.nullable)
 
-            if incompatible is not None:
-                required_dtype = infer_dtype([incompatible])
-                try:
-                    vector._promote(required_dtype.kind)
-                    underlying = vector._storage
-                except SerifTypeError:
-                    raise SerifTypeError(
-                        f"Cannot set {required_dtype.kind.__name__} in "
-                        f"{vector._dtype.kind.__name__} vector. "
-                        f"Promotion not supported."
-                    )
+        if saw_none and not target_dtype.nullable:
+            target_dtype = Schema(target_dtype.kind, True)
 
-            if saw_none and not vector._dtype.nullable:
-                vector._dtype = Schema(vector._dtype.kind, True)
+        # Validate every value against the final planned schema before any
+        # dtype, class, storage, or in-place buffer mutation occurs.
+        validated_updates = [
+            (index, validate_scalar(new_value, target_dtype))
+            for index, new_value in updates
+        ]
 
     # The active batch token is granted only after buffers are privatized.
     # Every other write rebuilds storage.
-    if _is_editable(vector) and updates:
+    if (
+        _is_editable(vector)
+        and validated_updates
+        and (
+            vector._dtype is None
+            or target_dtype.kind is vector._dtype.kind
+        )
+    ):
         write = getattr(vector._storage, 'write_inplace', None)
-        if write is not None and write(updates):
+        if write is not None and write(validated_updates):
+            vector._dtype = target_dtype
             return
 
     data = list(underlying)
-    for index, new_value in updates:
+    for index, new_value in validated_updates:
         data[index] = new_value
 
-    kind = vector._dtype.kind if vector._dtype is not None else None
-    vector._storage = storage_from_known_iterable(data, kind)
+    if target_dtype is not None and target_dtype.kind is not object:
+        data = [validate_scalar(value, target_dtype) for value in data]
+
+    kind = target_dtype.kind if target_dtype is not None else None
+    new_storage = storage_from_known_iterable(data, kind)
+    target_class = type(vector)
+    if (
+        vector._dtype is not None
+        and target_dtype.kind is not vector._dtype.kind
+    ):
+        target_class = type(Vector._from_storage(new_storage, target_dtype))
+
+    # Commit only after planning, validation, coercion, and storage building
+    # have all succeeded.
+    vector._storage = new_storage
+    vector._dtype = target_dtype
+    vector.__class__ = target_class
