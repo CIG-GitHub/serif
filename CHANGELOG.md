@@ -61,6 +61,9 @@
 ### Performance
 - PyArrow is imported only when Parquet column data needs decoding; importing
   Serif and inspecting footer-backed names, schemas, and shapes remain lazy.
+- Interactive inspection preserves deferred columns: `dir()` and tab
+  completion use cached metadata, wide Table reprs load only displayed columns,
+  and column previews read only their displayed head and tail values.
 - Schema-known reductions build canonical packed result storage directly
   without a second inference pass. Constant reductions also produce group
   results without materializing group slices.
