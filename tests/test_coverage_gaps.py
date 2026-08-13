@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from serif import Vector, Table, Schema, SerifValueError
+from serif import Schema, SerifTypeError, SerifValueError, Table, Vector
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,21 @@ def test_vector_filled_zero_length_keeps_dtype():
     v = Vector.filled(0, 0)
     assert len(v) == 0
     assert v.schema() == Schema(int, False)
+
+
+@pytest.mark.parametrize('length', [True, False, 1.5, '2', None, []])
+def test_vector_filled_rejects_non_integer_length(length):
+    with pytest.raises(
+        SerifTypeError,
+        match='length must be a non-negative integer',
+    ):
+        Vector.filled('x', length)
+
+
+@pytest.mark.parametrize('length', [-1, -10])
+def test_vector_filled_rejects_negative_length(length):
+    with pytest.raises(SerifValueError, match='length must be non-negative'):
+        Vector.filled('x', length)
 
 
 # ---------------------------------------------------------------------------
