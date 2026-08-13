@@ -15,7 +15,7 @@ from ._vector import selection as _selection
 from ._vector import transforms as _transforms
 from ._vector.dtype import Schema
 from ._vector.dtype import promote_kinds
-from ._vector.storage import TupleStorage
+from ._vector.storage import storage_from_known_iterable
 
 from datetime import date
 from datetime import datetime
@@ -480,16 +480,26 @@ class Vector():
         
         # Allow numeric promotions: int -> float, float -> complex
         if target_kind is float and self._dtype.kind is int:
-            new_tuple = tuple(float(x) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                float(x) if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(float, self._dtype.nullable)
         elif target_kind is complex and self._dtype.kind in (int, float):
-            new_tuple = tuple(complex(x) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                complex(x) if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(complex, self._dtype.nullable)
         elif target_kind is datetime and self._dtype.kind is date:
-            new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                datetime.combine(x, datetime.min.time())
+                if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(datetime, self._dtype.nullable)
         else:
             # For backwards compat, raise error if trying invalid promotion

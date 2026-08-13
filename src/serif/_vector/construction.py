@@ -1,4 +1,4 @@
-"""Vector construction, subtype selection, and storage selection."""
+"""Vector construction, dtype inference, and subtype selection."""
 
 from datetime import date
 from itertools import repeat
@@ -9,12 +9,9 @@ from .dtype import infer_dtype
 from .dtype import infer_kind
 from .dtype import promote_dtype
 from .dtype import validate_scalar
-from .storage import ArrayStorage
-from .storage import BoolStorage
-from .storage import StringStorage
-from .storage import TupleStorage
 from .storage import storage_from_dense_materialized
 from .storage import storage_from_known_iterable
+from .storage import storage_has_nulls
 
 
 def _vector_class():
@@ -79,36 +76,6 @@ def _collect_and_infer(iterable, dtype_hint):
         dtype = Schema(object, True)
 
     return data, all_vectors, dtype
-
-
-def _storage_for_dtype(dtype, data, nullable):
-    """Build storage from a Schema, including post-promotion rebuilds."""
-    kind = dtype.kind if dtype is not None else None
-    if kind is int:
-        try:
-            return ArrayStorage.from_iterable(
-                data,
-                typecode='q',
-                nullable=nullable,
-            )
-        except OverflowError:
-            # Python integers remain exact when they do not fit int64.
-            return TupleStorage.from_iterable(data, nullable=nullable)
-    if kind is float:
-        return ArrayStorage.from_iterable(
-            data,
-            typecode='d',
-            nullable=nullable,
-        )
-    if kind is str:
-        return StringStorage.from_iterable(data)
-    return TupleStorage.from_iterable(data, nullable=nullable)
-
-
-def _storage_has_nulls(storage):
-    if isinstance(storage, (ArrayStorage, BoolStorage, StringStorage)):
-        return storage._mask is not None
-    return any(value is None for value in storage)
 
 
 def _pick_target_class(dtype):
@@ -190,18 +157,9 @@ def initialize(vector, initial=(), dtype=None, name=None, **kwargs):
 
 
 def build_storage(vector, data, nullable):
-    typecode = getattr(vector, 'typecode', None)
-    if typecode is not None:
-        return ArrayStorage.from_iterable(
-            data,
-            typecode=typecode,
-            nullable=nullable,
-        )
-    if getattr(vector, '_dtype', None) is not None and vector._dtype.kind is str:
-        return StringStorage.from_iterable(data)
-    if getattr(vector, '_dtype', None) is not None and vector._dtype.kind is bool:
-        return BoolStorage.from_iterable(data, nullable=nullable)
-    return TupleStorage.from_iterable(data, nullable=nullable)
+    dtype = getattr(vector, '_dtype', None)
+    kind = dtype.kind if dtype is not None else None
+    return storage_from_known_iterable(data, kind)
 
 
 def clone(vector, new_storage, dtype=..., name=...):
@@ -236,7 +194,7 @@ def from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
 def from_iterable_known_kind(cls, iterable, kind, *, name=None):
     """Build storage first, deriving only result nullability from its mask."""
     storage = storage_from_known_iterable(iterable, kind)
-    dtype = Schema(kind, _storage_has_nulls(storage))
+    dtype = Schema(kind, storage_has_nulls(storage))
     instance = from_storage(cls, storage, dtype, name=name)
     return instance
 

@@ -6,8 +6,6 @@ from . import math as _math
 from . import statistics as _statistics
 from .element_api import _elementwise_method
 from .element_api import _elementwise_property
-from .storage import ArrayStorage
-from .storage import TupleStorage
 
 
 class _Real(Vector):
@@ -31,7 +29,6 @@ class _Real(Vector):
 
 
 class _Float(_Real):
-    typecode = 'd'
     as_integer_ratio = _elementwise_method(
         float,
         'as_integer_ratio',
@@ -49,11 +46,3 @@ class _Int(_Real):
     to_bytes = _elementwise_method(int, 'to_bytes', bytes)
     real = _elementwise_property(int, 'real', int)
     imag = _elementwise_property(int, 'imag', int)
-
-    def _build_storage(self, data, nullable):
-        if not isinstance(data, (list, tuple)):
-            data = list(data)
-        try:
-            return ArrayStorage.from_iterable(data, typecode='q', nullable=nullable)
-        except OverflowError:
-            return TupleStorage.from_iterable(data, nullable=nullable)

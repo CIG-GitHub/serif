@@ -721,6 +721,13 @@ def storage_from_known_iterable(values, kind):
     return TupleStorage.from_iterable(values)
 
 
+def storage_has_nulls(storage):
+    """Return whether physical storage contains at least one null value."""
+    if isinstance(storage, (ArrayStorage, BoolStorage, StringStorage)):
+        return storage._mask is not None
+    return any(value is None for value in storage)
+
+
 def _concatenate_masks(storages) -> BitMask | None:
     """Combine storage masks without materializing any storage values."""
     if all(storage._mask is None for storage in storages):

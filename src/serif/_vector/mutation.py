@@ -9,6 +9,7 @@ from ..errors import SerifValueError
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import validate_scalar
+from .storage import storage_from_known_iterable
 
 
 class _EditToken:
@@ -239,6 +240,5 @@ def setitem_impl(vector, key, value):
     for index, new_value in updates:
         data[index] = new_value
 
-    nullable = vector._dtype.nullable if vector._dtype is not None else True
-    from .construction import _storage_for_dtype
-    vector._storage = _storage_for_dtype(vector._dtype, data, nullable)
+    kind = vector._dtype.kind if vector._dtype is not None else None
+    vector._storage = storage_from_known_iterable(data, kind)

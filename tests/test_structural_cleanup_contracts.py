@@ -10,6 +10,7 @@ from serif import SerifTypeError
 from serif import Table
 from serif import Vector
 from serif._vector.storage import ArrayStorage
+from serif._vector.storage import BoolStorage
 from serif._vector.storage import StringStorage
 
 
@@ -169,6 +170,7 @@ def test_wild_metadata_state_is_removed():
     [
         ([1, None, 3], ArrayStorage),
         ([1.5, None, 3.5], ArrayStorage),
+        ([True, None, False], BoolStorage),
         (['a', None, 'c'], StringStorage),
     ],
 )
