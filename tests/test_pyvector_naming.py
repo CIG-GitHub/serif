@@ -301,7 +301,6 @@ def test_alias_names_unnamed_vector():
 	result = v.alias("my_name")
 	assert v._name == "my_name"
 	assert result is v  # Returns self for chaining
-	assert v._wild == True  # Marks as wild
 
 
 def test_alias_renames_named_vector():
@@ -311,7 +310,6 @@ def test_alias_renames_named_vector():
 	result = v.alias("new_name")
 	assert result is v            # returns self for chaining
 	assert v._name == "new_name"  # renames in place
-	assert v._wild == True
 
 
 def test_name_property_getter():
@@ -330,7 +328,6 @@ def test_name_property_setter():
 	
 	v.vector_name = "new"
 	assert v.vector_name == "new"
-	assert v._wild == True
 	
 	# Can also set to None
 	v.vector_name = None

@@ -2,6 +2,7 @@
 
 from ..errors import SerifTypeError
 from ..vector import Vector
+from .._vector.element_api import resolve_capability
 from .._vector.storage import ArrayStorage, TupleStorage
 from . import columns as _columns
 
@@ -32,7 +33,7 @@ class Row(Vector):
         # the existing tuple path so null-handling stays correct.
         def _backing(storage):
             if isinstance(storage, ArrayStorage) and storage._mask is None:
-                if table._unlocked:
+                if table._batch_edit is not None:
                     return storage._data[:]
                 return storage._data  # array.array — O(1) index, lazy boxing
             return storage.to_tuple()
@@ -136,8 +137,9 @@ class Row(Vector):
         if col_idx is not None:
             return self._raw_cols[col_idx][self._index]
 
-        # 2. Fall back to Vector methods (sum, mean, cast, etc.)
-        return super().__getattr__(attr)
+        # Ordinary Vector methods resolve before __getattr__. Hollow Rows use
+        # the same curated dtype capabilities as concrete typed Vectors.
+        return resolve_capability(self, attr)
 
     def __getitem__(self, key):
         # Optimized hot path for loops

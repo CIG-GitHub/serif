@@ -7,6 +7,7 @@ from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from .._vector.mutation import _EditToken
 from .._vector.storage import TupleStorage
 from . import columns as _columns
 
@@ -59,26 +60,31 @@ class _BatchScope:
 
     def __enter__(self):
         table = self._table
-        if table._unlocked:
+        if table._batch_edit is not None:
             raise SerifValueError(
                 "Table is already inside a batch() scope; "
                 "nesting is not supported."
             )
-        table._unlocked = True
-        for column in table._storage:
-            private = getattr(column._storage, 'private_copy', None)
-            if private is not None:
-                column._storage = private()
-                column._inplace_ok = True
-            column._frozen = False
+        token = _EditToken(table, _columns.refresh_column_map)
+        table._batch_edit = token
+        try:
+            for column in table._storage:
+                private = getattr(column._storage, 'private_copy', None)
+                if private is not None:
+                    column._storage = private()
+                column._owner = token
+        except Exception:
+            token.active = False
+            table._batch_edit = None
+            _columns.adopt_columns(table)
+            raise
         return table
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         table = self._table
-        for column in table._storage:
-            column._frozen = True
-            column._inplace_ok = False
-        table._unlocked = False
+        table._batch_edit.active = False
+        table._batch_edit = None
+        _columns.adopt_columns(table)
         return False
 
 
@@ -90,11 +96,11 @@ def setattr(table, attr, value):
         '_column_map',
         '_dtype',
         '_name',
-        '_wild',
+        '_owner',
         '_repr_rows',
         '_storage',
         '_warned_collisions',
-        '_unlocked',
+        '_batch_edit',
     ):
         object.__setattr__(table, attr, value)
         return
@@ -104,7 +110,6 @@ def setattr(table, attr, value):
     # 'name' must resolve to the column, not shadow a property).
     if attr == 'table_name':
         object.__setattr__(table, '_name', value)
-        object.__setattr__(table, '_wild', True)
         return
     if attr == 'vector_name':
         raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
@@ -135,14 +140,10 @@ def setattr(table, attr, value):
             columns = list(table._storage)
             value._name = table._storage[col_idx_indexed]._name
             columns[col_idx_indexed] = value
+            _columns.adopt_columns(table, (value,))
             table._storage = TupleStorage.from_iterable(
                 tuple(columns),
                 nullable=False,
-            )
-            object.__setattr__(
-                table,
-                '_column_map',
-                table._build_column_map(),
             )
             return
 
@@ -170,17 +171,12 @@ def setattr(table, attr, value):
             columns = list(table._storage)
             value._name = table._storage[col_idx]._name
             columns[col_idx] = value
+            _columns.adopt_columns(table, (value,))
             table._storage = TupleStorage.from_iterable(
                 tuple(columns),
                 nullable=False,
             )
 
-            # Rebuild column map to reflect any structural changes
-            object.__setattr__(
-                table,
-                '_column_map',
-                table._build_column_map(),
-            )
             return
 
     # Reject arbitrary attribute setting - only allow column updates
@@ -219,7 +215,7 @@ def setitem(table, key, value):
         col_spec = slice(None)
 
     # --- 2. Validate the complete selector before any write lands ---
-    table._validate_assignment_rows(row_spec)
+    validate_assignment_rows(table, row_spec)
     target_indices = []
     n_cols = len(table._storage)
 
@@ -273,7 +269,7 @@ def setitem(table, key, value):
         (str, bytes, bytearray),
     ):
         for col_idx in target_indices:
-            table._write_column(col_idx, row_spec, value)
+            write_column(table, col_idx, row_spec, value)
         return
 
     # CASE B: Single Row Assignment
@@ -289,7 +285,7 @@ def setitem(table, key, value):
             )
 
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, val_seq[index])
+            write_column(table, col_idx, row_spec, val_seq[index])
         return
 
     # CASE C: Rectangular/Table Assignment
@@ -304,7 +300,7 @@ def setitem(table, key, value):
 
         # We delegate row-length validation to the vector.__setitem__ calls below
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, value.cols()[index])
+            write_column(table, col_idx, row_spec, value.cols()[index])
         return
 
     # CASE D: Vector Assignment To One Column
@@ -312,7 +308,7 @@ def setitem(table, key, value):
     # t[mask, 'x'] = values[mask]. Multiple target columns remain ambiguous
     # and continue to the unsupported-value error below.
     if isinstance(value, Vector) and len(target_indices) == 1:
-        table._write_column(target_indices[0], row_spec, value)
+        write_column(table, target_indices[0], row_spec, value)
         return
 
     # CASE E: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
@@ -328,7 +324,7 @@ def setitem(table, key, value):
             # Check if it's a flat list (not nested)
             if not value or not isinstance(value[0], (list, tuple, Vector)):
                 # Flat list -> assign to the single column
-                table._write_column(target_indices[0], row_spec, value)
+                write_column(table, target_indices[0], row_spec, value)
                 return
 
         if len(value) != len(target_indices):
@@ -339,7 +335,7 @@ def setitem(table, key, value):
 
         # Assume value[i] corresponds to target_indices[i]
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, value[index])
+            write_column(table, col_idx, row_spec, value[index])
         return
 
     raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")
@@ -419,13 +415,12 @@ def write_column(table, col_idx, row_spec, value):
     same guarantee column replacement via __setattr__ already gives).
     """
     column = table._storage[col_idx]
-    if table._unlocked:
+    if table._batch_edit is not None:
         column._setitem_impl(row_spec, value)
         return
     new_column = column._clone(column._storage)  # O(1) storage share
     new_column._setitem_impl(row_spec, value)  # rebuild-on-write rebinds
-    new_column._wild = False
-    new_column._frozen = True
+    _columns.adopt_columns(table, (new_column,))
     columns = list(table._storage)
     columns[col_idx] = new_column
     table._storage = TupleStorage.from_iterable(

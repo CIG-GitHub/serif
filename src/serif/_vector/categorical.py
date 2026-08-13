@@ -48,7 +48,7 @@ class _Category(Vector):
         self._categories = categories
         self._dtype = Schema(str, nullable)
         self._name = name
-        self._wild = True
+        self._owner = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
         self._storage = _CategoryStorage(codes, categories)
 
@@ -266,10 +266,6 @@ class _Category(Vector):
             name=self._name,
             nullable=self._dtype.nullable or result._dtype.nullable,
         )
-
-    def __setitem__(self, key, value):
-        self._require_mutable()
-        self._setitem_impl(key, value)
 
     def _setitem_impl(self, key, value):
         """

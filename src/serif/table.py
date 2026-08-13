@@ -23,7 +23,7 @@ class Table(Vector):
     _length = None
     _repr_rows = None  # Optional table-specific repr row count override
     _ndims = 2
-    _unlocked = False  # True only inside a batch() scope
+    _batch_edit = None
     
     def __new__(cls, initial=(), dtype=None, name=None):
         return super(Vector, cls).__new__(cls)
@@ -83,15 +83,18 @@ class Table(Vector):
         # Set _dtype to None explicitly since Table bypasses Vector.__new__
         self._dtype = None
         self._column_map = None
-        # Names already warned about (reserved-method collisions) — warn once
-        # per name per table, since _build_column_map reruns on rename.
+        self._batch_edit = None
+        # Reserved-method collisions warn once per name per table.
         self._warned_collisions = set()
         
         # Call parent constructor
         super().__init__(initial, dtype=dtype, name=name)
+
+        # Columns become read-only values at the Table ownership boundary.
+        _columns.adopt_columns(self)
         
         # Build column map
-        self._column_map = self._build_column_map()
+        _columns.refresh_column_map(self)
 
     def __len__(self):
         # Nested tables are forbidden (docs/invariants.md #2), so length is
@@ -123,14 +126,6 @@ class Table(Vector):
             "Table has no 'vector_name' — use '.table_name'."
         )
 
-    def _build_column_map(self):
-        """Build mapping from sanitized column names to column indices.
-        
-        This is computed once during table initialization and used by
-        Row for O(1) attribute lookups during iteration.
-        """
-        return _columns.build_column_map(self)
-    
     def __dir__(self):
         """Return list of available attributes including sanitized column names."""
         return _columns.attribute_names(self)
@@ -158,7 +153,7 @@ class Table(Vector):
 
     def _schema_columns(self):
         """Internal metadata-only column path used by ``t._``."""
-        return _columns.schema_columns(self)
+        return _columns.columns(self)
 
     def to_dict(self):
         """Serialize table to a column-oriented dict of plain Python lists.
@@ -184,15 +179,6 @@ class Table(Vector):
     # ------------------------------------------------------------------
     # Vector-surface conformance
     # ------------------------------------------------------------------
-
-    def _map_columns(self, fn):
-        """Apply a value-producing Vector operation to every column.
-
-        Table subclasses Vector so the useful element-wise Vector surface is
-        available on tables too.  The result must still be a structurally
-        complete Table, with the source column names restored explicitly.
-        """
-        return _lifting.map_columns(self, fn)
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
@@ -245,29 +231,6 @@ class Table(Vector):
             attr,
             super().__getattribute__,
         )
-
-    def _resolve_column(self, spec):
-        """
-        Resolve a column specification to a Vector.
-        
-        Parameters
-        ----------
-        spec : str | Vector
-            Column name (string) or Vector instance
-        
-        Returns
-        -------
-        Vector
-            Resolved column from this table
-        
-        Raises
-        ------
-        SerifKeyError
-            If column name not found
-        SerifTypeError
-            If spec is neither str nor Vector
-        """
-        return _columns.resolve_column(self, spec)
 
     def __setattr__(self, attr, value):
         """Intercept column assignments (t.colname = vec) to update underlying columns."""
@@ -322,26 +285,6 @@ class Table(Vector):
         """
         return _mutation.setitem(self, key, value)
 
-    def _validate_assignment_rows(self, row_spec):
-        """Validate every row coordinate before a multi-column write starts."""
-        return _mutation.validate_assignment_rows(self, row_spec)
-
-    def _write_column(self, col_idx, row_spec, value):
-        """
-        Land one column write, owner-addressed.
-
-        Inside a batch() scope: write on the thawed column directly —
-        _setitem_impl takes the raw in-place path on the scope's private
-        buffers.
-
-        Outside: SWAP-ON-WRITE. The write is applied to a storage-sharing
-        clone which then replaces the column in the table, so the original
-        column OBJECT is never touched — a previously read-out `v = t.v`
-        is a stable snapshot, not a live view of later table writes (the
-        same guarantee column replacement via __setattr__ already gives).
-        """
-        return _mutation.write_column(self, col_idx, row_spec, value)
-
     def batch(self):
         """
         Bulk-edit scope — the fast path for imperative point-write loops.
@@ -389,7 +332,7 @@ class Table(Vector):
         Table vs Table pairs columns positionally; anything else (scalar,
         Vector, plain iterable) broadcasts to every column — mirroring how
         Table arithmetic broadcasts. Column names are preserved from the
-        left side, matching _table_elementwise_operation.
+        left side, matching Table arithmetic.
         """
         return _lifting.compare(self, other, op)
 
@@ -401,7 +344,6 @@ class Table(Vector):
         self,
         left,
         op_func,
-        op_name,
         op_symbol,
     ):
         """Lift ``left op self`` for a nested right-hand operand."""
@@ -409,7 +351,6 @@ class Table(Vector):
             self,
             left,
             op_func,
-            op_name,
             op_symbol,
         )
 
@@ -428,26 +369,6 @@ class Table(Vector):
         """
         return _rows.concatenate(self, other)
 
-    def _table_elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
-        """
-        Handle Table-specific arithmetic with column name preservation.
-        
-        Rules:
-        - Table + scalar: preserve all column names
-        - Table + Table: left-biased naming with warnings for mismatches
-        """
-        return _lifting.binary_operation(
-            self,
-            other,
-            op_func,
-            op_name,
-            op_symbol,
-        )
-
-    def _table_reverse_scalar_operation(self, other, op_func):
-        """Apply ``other op column`` while retaining the table schema."""
-        return _lifting.reverse_scalar_operation(self, other, op_func)
-
     def __neg__(self):
         return _lifting.neg(self)
 
@@ -459,10 +380,6 @@ class Table(Vector):
 
     def __invert__(self):
         return _lifting.invert(self)
-
-    def _tablewise_bitwise(self, other, op_dunder):
-        """Lift a bitwise/logical operation through the Table columns."""
-        return _lifting.bitwise(self, other, op_dunder)
 
     def __and__(self, other):
         return _lifting.bit_and(self, other)
@@ -731,7 +648,12 @@ class Table(Vector):
         return read_parquet(path)
 
     @classmethod
-    def _from_columns_nocopy(cls, columns: list) -> 'Table':
+    def _from_columns_nocopy(
+        cls,
+        columns: list,
+        *,
+        warn_duplicates: bool = True,
+    ) -> 'Table':
         """
         Assemble a Table from pre-built, freshly-owned Vector columns without
         deep-copying them.  The caller guarantees that no external reference to
@@ -740,7 +662,11 @@ class Table(Vector):
         Used by read_parquet to skip the O(n*cols) copy that Table.__init__
         normally performs for aliasing safety.
         """
-        return _columns.from_columns_nocopy(cls, columns)
+        return _columns.from_columns_nocopy(
+            cls,
+            columns,
+            warn_duplicates=warn_duplicates,
+        )
 
     @property
     def _(self):

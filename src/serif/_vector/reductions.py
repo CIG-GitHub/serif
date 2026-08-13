@@ -12,6 +12,7 @@ from .._execution import DECLINED
 from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from . import dispatch as _dispatch
 from .dtype import Schema
 from .dtype import infer_kind
 from .dtype import validate_scalar
@@ -60,12 +61,6 @@ def constant(vector, value, *, dtype=None, nullable=None):
     return _ConstantReduction(value, schema)
 
 
-def _numpy_reductions():
-    from ._numpy import reductions
-
-    return reductions
-
-
 def _check_on_empty(method_name, on_empty):
     # Identity checks, not truthiness: on_empty=1 is a bug, not a True.
     if on_empty is None or on_empty is True or on_empty is False:
@@ -80,7 +75,7 @@ def _check_on_empty(method_name, on_empty):
 def max(vector):
     if vector.ndims() == 2:
         return vector.copy((c.max() for c in vector.cols()), name=None)
-    fast = _numpy_reductions().max_(vector._storage)
+    fast = _dispatch.reduction('max_', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.max_(vector._storage)
@@ -89,7 +84,7 @@ def max(vector):
 def min(vector):
     if vector.ndims() == 2:
         return vector.copy((c.min() for c in vector.cols()), name=None)
-    fast = _numpy_reductions().min_(vector._storage)
+    fast = _dispatch.reduction('min_', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.min_(vector._storage)
@@ -110,7 +105,7 @@ def last(vector):
 def sum(vector):
     if vector.ndims() == 2:
         return vector.copy((c.sum() for c in vector.cols()), name=None)
-    fast = _numpy_reductions().sum_(vector._storage)
+    fast = _dispatch.reduction('sum_', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.sum_(
@@ -124,7 +119,7 @@ def fsum(vector):
 
 
 def prod(vector):
-    fast = _numpy_reductions().prod(vector._storage)
+    fast = _dispatch.reduction('prod', vector._storage)
     if fast is not DECLINED:
         return fast
     schema = vector.schema()
@@ -135,14 +130,14 @@ def prod(vector):
 
 
 def gcd(vector):
-    fast = _numpy_reductions().gcd(vector._storage)
+    fast = _dispatch.reduction('gcd', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.gcd(vector._storage)
 
 
 def lcm(vector):
-    fast = _numpy_reductions().lcm(vector._storage)
+    fast = _dispatch.reduction('lcm', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.lcm(vector._storage)
@@ -232,7 +227,7 @@ def any(vector, on_empty=None):
 def mean(vector):
     if vector.ndims() == 2:
         return vector.copy((c.mean() for c in vector.cols()), name=None)
-    fast = _numpy_reductions().mean(vector._storage)
+    fast = _dispatch.reduction('mean', vector._storage)
     if fast is not DECLINED:
         return fast
     return _python_reductions.mean(vector._storage)
@@ -244,7 +239,8 @@ def stdev(vector, population=False):
             (c.stdev(population) for c in vector.cols()),
             name=None,
         )
-    fast = _numpy_reductions().stdev(
+    fast = _dispatch.reduction(
+        'stdev',
         vector._storage,
         population=population,
     )

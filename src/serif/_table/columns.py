@@ -2,6 +2,7 @@
 
 import warnings
 from collections.abc import Iterable
+from weakref import ref
 
 from ..errors import SerifIndexError
 from ..errors import SerifKeyError
@@ -25,6 +26,18 @@ def _table_class():
 def iter_columns(table):
     """Iterate a table's structural columns, never its public row iterator."""
     return iter(table._storage)
+
+
+def adopt_columns(table, columns=None):
+    """Bind current columns to the Table or its active batch edit."""
+    owner = table._batch_edit
+    if owner is None:
+        # A read-out column must not keep the rest of its former Table alive.
+        owner = ref(table)
+    if columns is None:
+        columns = iter_columns(table)
+    for column in columns:
+        column._owner = owner
 
 
 def missing_column_error(name, context="Table"):
@@ -103,8 +116,8 @@ def mapped_column_index(column_map, attr):
     return column_index
 
 
-def build_column_map(table):
-    """Build the sanitized attribute-name map and freeze owned columns."""
+def build_column_map(table, changed_column=None, *, warn_duplicates=True):
+    """Build the sanitized attribute-name map."""
     column_map = {}
     seen = {}
     for index, column in enumerate(iter_columns(table)):
@@ -144,7 +157,11 @@ def build_column_map(table):
                 sanitized = f"col{index}_"
             elif base in seen:
                 other = seen[base]
-                if column._wild or other._wild:
+                if warn_duplicates and (
+                    changed_column is None
+                    or column is changed_column
+                    or other is changed_column
+                ):
                     warnings.warn(
                         f"Duplicate column name '{base}' "
                         f"(from '{other._name}' and '{column._name}') "
@@ -166,22 +183,35 @@ def build_column_map(table):
             # were introduced. Keep that programmatic access as a hidden
             # compatibility spelling; ordinary dot access uses ``class_``.
             column_map.setdefault(collision, index)
-        column._mark_tame()
-        if not table._unlocked:
-            column._frozen = True
     return column_map
+
+
+def refresh_column_map(
+    table,
+    *,
+    changed_column=None,
+    warn_duplicates=True,
+):
+    """Refresh cached attribute metadata after a name/layout change."""
+    object.__setattr__(
+        table,
+        '_column_map',
+        build_column_map(
+            table,
+            changed_column=changed_column,
+            warn_duplicates=warn_duplicates,
+        ),
+    )
 
 
 def attribute_names(table):
     """Return ordinary attributes plus the current sanitized column names."""
-    return set(table._build_column_map().keys()) | set(object.__dir__(table))
+    return set(table._column_map) | set(object.__dir__(table))
 
 
 def get_attribute(table, attr, fallback):
     """Resolve Table column dot access, including indexed accessors."""
     columns = table._storage
-    if any(column._wild for column in columns or []):
-        table._column_map = table._build_column_map()
 
     column_index = resolve_indexed_attribute(columns, attr)
     if column_index is not None:
@@ -224,11 +254,6 @@ def columns(table, key=None):
 
 def column_names(table):
     return [column._name for column in iter_columns(table)]
-
-
-def schema_columns(table):
-    """Return the metadata-only column sequence used by the schema view."""
-    return columns(table)
 
 
 def to_dict(table):
@@ -453,13 +478,13 @@ def compose(table, other):
     )
 
 
-def from_columns_nocopy(cls, columns):
+def from_columns_nocopy(cls, columns, *, warn_duplicates=True):
     """Assemble a Table from freshly owned, pre-built Vector columns."""
     table = object.__new__(cls)
     object.__setattr__(table, '_dtype', None)
     object.__setattr__(table, '_name', None)
-    object.__setattr__(table, '_wild', False)
     object.__setattr__(table, '_repr_rows', None)
+    object.__setattr__(table, '_batch_edit', None)
     object.__setattr__(
         table,
         '_length',
@@ -472,5 +497,6 @@ def from_columns_nocopy(cls, columns):
         '_storage',
         TupleStorage.from_iterable(tuple(columns), nullable=False),
     )
-    object.__setattr__(table, '_column_map', table._build_column_map())
+    adopt_columns(table)
+    refresh_column_map(table, warn_duplicates=warn_duplicates)
     return table

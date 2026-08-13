@@ -1,4 +1,4 @@
-"""_String specific tests - string method proxying"""
+"""_String-specific construction, capabilities, and operations."""
 import pytest
 from serif import Vector, _String
 
@@ -13,7 +13,7 @@ class TestStringCreation:
 
 
 class TestStringMethods:
-    """Test string method proxying"""
+    """Test explicit string capabilities."""
     
     def test_upper(self):
         v = Vector(['hello', 'world'])

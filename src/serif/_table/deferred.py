@@ -19,7 +19,7 @@ class MaskedTable(Table):
     frozen snapshot: `q = t[t.a > 10]` means "t as it was", forever, with
     no version counters. (The one exception — batch() scopes write into
     private buffers in place — never reaches here: __getitem__ keeps the
-    eager path while `t._unlocked`.)
+    eager path while `t._batch_edit` is active.)
 
     Row is the existence proof for the shape: a hollow subclass that
     bypasses __init__ and exposes `_storage` as a materialize-on-demand
@@ -50,17 +50,8 @@ class MaskedTable(Table):
 
     def __init__(self, source, mask):
         capture = getattr(type(source), '_mask_capture', None)
-        # The source's column map may be stale (a column aliased after
-        # construction). The eager path rebuilds names from the gathered
-        # columns implicitly; refresh here so the shared map matches —
-        # the same lazy rebuild Table.__getattr__ performs.
-        if capture is None:
-            if any(col._wild for col in source._storage):
-                source._column_map = source._build_column_map()
-
-        # Capture at the storage level: private shells sharing each
-        # frozen storage O(1) — never the source Table or its column
-        # objects, whose names can mutate in place via alias().
+        # Capture at the storage level: private shells sharing each frozen
+        # storage O(1), never the source Table or its column objects.
         if capture is None:
             captured = tuple(col.copy() for col in source._storage)
             source_loader = None
@@ -87,12 +78,12 @@ class MaskedTable(Table):
         # map rebuild — and a rebuild on our side can't mark the source.
         object.__setattr__(self, '_dtype',      None)
         object.__setattr__(self, '_name',       None)
-        object.__setattr__(self, '_wild',       False)
         object.__setattr__(self, '_repr_rows',  None)
         object.__setattr__(self, '_length',     n)
         object.__setattr__(self, '_column_map', source._column_map)
         object.__setattr__(self, '_warned_collisions',
                            set(source._warned_collisions))
+        object.__setattr__(self, '_batch_edit', None)
 
     # ------------------------------------------------------------------
     # The deferred core: per-column gather + the materialize-and-latch
@@ -105,8 +96,7 @@ class MaskedTable(Table):
         shell[mask] takes the accel filter or the pure zip-filter — so
         results are identical by construction. Cached: the snapshot is
         frozen, so `q.b + q.b` must not gather twice. The gathered column
-        is table-owned, hence tamed and frozen, exactly what
-        _build_column_map does to every eager table's columns.
+        is table-owned and frozen, exactly like every eager table column.
         """
         col = self._gathered.get(idx)
         if col is None:
@@ -114,8 +104,7 @@ class MaskedTable(Table):
                 col = self._captured[idx][self._mask_vec]
             else:
                 col = self._source_loader(idx, self._mask_vec)
-            col._wild = False
-            col._frozen = True
+            _columns.adopt_columns(self, (col,))
             self._gathered[idx] = col
         return col
 
@@ -137,7 +126,7 @@ class MaskedTable(Table):
 
     @_storage.setter
     def _storage(self, value):
-        # Post-latch rebinds (_write_column, column replacement) land
+        # Post-latch rebinds (cell writes and column replacement) land
         # here via Table.__setattr__'s object.__setattr__, which honors
         # data descriptors. A rebind IS a latch: whatever storage the
         # caller installed is now the whole truth.
@@ -151,18 +140,6 @@ class MaskedTable(Table):
         object.__setattr__(self, '_mask_vec', None)
         object.__setattr__(self, '_source_loader', None)
 
-    def _snapshot_names_current(self):
-        """Gathered columns are handed out live (cached) — a rename
-        through one (alias(), the wild mechanic) makes the captured map
-        stale, the very condition Table.__getattr__ repairs with a
-        rebuild. Detect it and decline the deferred shortcut: the Table
-        path latches, rebuilds the map, and fires any collision warning,
-        exactly as an eager table would."""
-        gathered = self._gathered
-        if not gathered:
-            return True
-        return not any(col._wild for col in gathered.values())
-
     # ------------------------------------------------------------------
     # Hot paths: single-column access without materializing
     # ------------------------------------------------------------------
@@ -170,9 +147,9 @@ class MaskedTable(Table):
     def __getattr__(self, attr):
         # Plain column names (and col{N}_ spellings — the captured map
         # holds those too) gather one column. Everything else — indexed
-        # accessors ('name__5'), method fallbacks, a stale map — takes
+        # accessors ('name__5') and method fallbacks take
         # Table's path, which may materialize; correct by default.
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             col_idx = self._column_map.get(attr)
             if col_idx is None:
                 col_idx = self._column_map.get(attr.lower())
@@ -181,7 +158,7 @@ class MaskedTable(Table):
         return Table.__getattr__(self, attr)
 
     def __getitem__(self, key):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             if isinstance(key, str):
                 return self._gather_column(
                     _columns.resolve_column_key(self._captured, key))
@@ -220,12 +197,12 @@ class MaskedTable(Table):
         return Table.shape.fget(self)
 
     def column_names(self):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             return [col._name for col in self._captured]
         return Table.column_names(self)
 
     def _schema_columns(self):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             return self._captured
         return Table._schema_columns(self)
 

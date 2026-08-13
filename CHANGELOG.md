@@ -2,6 +2,11 @@
 
 ## 0.2.2 – Unreleased
 
+### Breaking Changes
+- Breaking, pre-1.0: Vectors no longer treat arbitrary missing attributes as
+  element-wise Python scalar attributes or methods. Only explicitly supported
+  dtype capabilities are exposed; unsupported names now raise `AttributeError`.
+
 ### Added
 - `Vector.constant(value, *, dtype=None, nullable=None)` creates a constant
   reduction for `aggregate()` and `window()`. Tables inherit the same fluent
@@ -56,6 +61,12 @@
   standard deviation. Discrete results preserve Python values and scalar
   types; floating results preserve the formula with normal rounding tolerance.
   Exact-result integer and non-finite cases fall back to Python where needed.
+
+### Internal
+- Made table ownership the single source of editability, narrowed column
+  metadata invalidation to structural changes, centralized canonical storage
+  selection, isolated optional accelerator dispatch, and removed redundant
+  forwarding helpers.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 

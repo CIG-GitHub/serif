@@ -4,6 +4,8 @@ from .._execution import DECLINED
 from .._vector import Schema
 from ..errors import SerifValueError
 from ..vector import Vector
+from . import columns as _columns
+from . import dispatch as _dispatch
 from . import grouping as _grouping
 
 
@@ -11,12 +13,6 @@ def _table_class():
     # Local import avoids a cycle while Table delegates aggregation here.
     from ..table import Table
     return Table
-
-
-def _arrow_aggregation():
-    from ._arrow import aggregation
-
-    return aggregation
 
 
 def _bound_grouped_sums(table, groupby, aggregations, nrows):
@@ -32,7 +28,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
     if specifications is None or len(specifications) != 1:
         return DECLINED
 
-    group_column = table._resolve_column(specifications[0])
+    group_column = _columns.resolve_column(table, specifications[0])
     if len(group_column) != nrows:
         raise SerifValueError(
             f"groupby key at index 0 has length {len(group_column)}, "
@@ -60,7 +56,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
         names.append(aggregation_name)
         sources.append(source)
 
-    result = _arrow_aggregation().grouped_sums(
+    result = _dispatch.grouped_sums(
         (group_column.schema(), group_column._storage),
         [(source.schema(), source._storage) for source in sources],
     )
@@ -84,20 +80,16 @@ def _wrap_group_key_column(values, source_column, name):
 
 def _wrap_group_key_storage(storage, schema, name):
     """Wrap grouped key storage without reconstructing its values."""
-    result = Vector._from_storage(storage, schema, name=name)
-    result._wild = True
-    return result
+    return Vector._from_storage(storage, schema, name=name)
 
 
 def _wrap_group_sum(storage, source_schema, name):
     """Wrap grouped sum storage with its known non-null result schema."""
-    result = Vector._from_storage(
+    return Vector._from_storage(
         storage,
         Schema(source_schema.kind, False),
         name=name,
     )
-    result._wild = True
-    return result
 
 
 def aggregate(table, groupby=None, aggregations=None):

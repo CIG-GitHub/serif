@@ -15,7 +15,7 @@ from ._vector import selection as _selection
 from ._vector import transforms as _transforms
 from ._vector.dtype import Schema
 from ._vector.dtype import promote_kinds
-from ._vector.storage import TupleStorage
+from ._vector.storage import storage_from_known_iterable
 
 from datetime import date
 from datetime import datetime
@@ -46,16 +46,13 @@ class Vector():
     _dtype = None  # Schema instance (private)
     _storage = None
     _name = None
-    _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
     # Mutation doctrine: read through the column, write through the table.
-    # A table-owned column is FROZEN (__setitem__ raises; write via
-    # t[key, 'col'] = value, which swaps in a fresh column). _inplace_ok is
-    # set only inside a batch() scope, after copy-on-enter privatized the
-    # buffers — it licenses raw in-place writes that would corrupt shared
-    # storage anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
-    _frozen = False
-    _inplace_ok = False
+    # _owner is None for a standalone value, a weak reference to the owning
+    # Table for a frozen column, or an active edit token inside batch().
+    # Standalone vectors use rebuild-on-write; only the active token licenses
+    # raw in-place writes.
+    _owner = None
     
     def schema(self):
         """Get the Schema (kind, nullable) of this vector."""
@@ -81,10 +78,6 @@ class Vector():
             name=name,
             **kwargs,
         )
-
-
-    def _build_storage(self, data, nullable):
-        return _construction.build_storage(self, data, nullable)
 
 
     def _clone(self, new_storage, dtype=..., name=...):
@@ -150,9 +143,11 @@ class Vector():
     @vector_name.setter
     def vector_name(self, new_name):
         """Set the name of this vector."""
-        self._require_mutable_metadata()
+        _mutation.require_mutable_metadata(self)
+        if new_name == self._name:
+            return
         self._name = new_name
-        self._wild = True  # Mark as wild when renamed
+        _mutation.metadata_changed(self)
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
@@ -198,14 +193,12 @@ class Vector():
         `Table([v.alias('x'), ...])`. Works whether or not the vector is
         already named (it just sets the name).
         """
-        self._require_mutable_metadata()
+        _mutation.require_mutable_metadata(self)
+        if new_name == self._name:
+            return self
         self._name = new_name
-        self._wild = True  # Mark as wild when (re)named
+        _mutation.metadata_changed(self)
         return self
-    
-    def _mark_tame(self):
-        """Mark this vector as tame (not wild)"""
-        self._wild = False
 
     def __repr__(self):
         return(_printr(self))
@@ -321,16 +314,6 @@ class Vector():
 
 
 
-    def _require_mutable(self):
-        """Raise if this vector is a frozen table-owned column."""
-        return _mutation.require_mutable(self)
-
-
-    def _require_mutable_metadata(self):
-        """Reject metadata mutation through a table-owned column."""
-        return _mutation.require_mutable_metadata(self)
-
-
     def __setitem__(self, key, value):
         """Assign through a mutable Vector using copy-on-write semantics."""
         return _mutation.setitem(self, key, value)
@@ -365,13 +348,6 @@ class Vector():
     def __ne__(self, other):
         return _operators.ne(self, other)
 
-    def _logical_elementwise(self, other, kleene_func):
-        """Kleene three-valued logical op (docs/null-semantics.md)."""
-        return _operators.logical_elementwise(self, other, kleene_func)
-
-    def _bitwise_kind_error(self, op_symbol):
-        return _operators.bitwise_kind_error(self, op_symbol)
-
     def __and__(self, other):
         return _operators.bit_and(self, other)
 
@@ -389,20 +365,6 @@ class Vector():
 
     def __rxor__(self, other):
         return self.__xor__(other)
-
-    def _elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
-        """Handle an element-wise operation with scalar broadcasting."""
-        return _operators.elementwise_operation(
-            self,
-            other,
-            op_func,
-            op_name,
-            op_symbol,
-        )
-
-    def _unary_operation(self, op_func, op_name: str):
-        """Apply a unary operation to each element."""
-        return _operators.unary_operation(self, op_func, op_name)
 
     def __add__(self, other):
         return _operators.add(self, other)
@@ -483,16 +445,26 @@ class Vector():
         
         # Allow numeric promotions: int -> float, float -> complex
         if target_kind is float and self._dtype.kind is int:
-            new_tuple = tuple(float(x) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                float(x) if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(float, self._dtype.nullable)
         elif target_kind is complex and self._dtype.kind in (int, float):
-            new_tuple = tuple(complex(x) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                complex(x) if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(complex, self._dtype.nullable)
         elif target_kind is datetime and self._dtype.kind is date:
-            new_tuple = tuple(datetime.combine(x, datetime.min.time()) if x is not None else None for x in self._storage)
-            self._storage = TupleStorage.from_iterable(new_tuple, nullable=self._dtype.nullable)
+            values = (
+                datetime.combine(x, datetime.min.time())
+                if x is not None else None
+                for x in self._storage
+            )
+            self._storage = storage_from_known_iterable(values, target_kind)
             self._dtype = Schema(datetime, self._dtype.nullable)
         else:
             # For backwards compat, raise error if trying invalid promotion
@@ -705,7 +677,8 @@ class Vector():
         nullable = self._dtype.nullable if self._dtype is not None else True
 
         def concatenate(values, declared_nullable=nullable):
-            storage = self._build_storage(values, declared_nullable)
+            kind = self._dtype.kind if self._dtype is not None else None
+            storage = storage_from_known_iterable(values, kind)
             if self._dtype is None:
                 return self._clone(storage)
             result_dtype = Schema(
@@ -796,5 +769,13 @@ class Vector():
 
 
     def __getattr__(self, name):
-        """Proxy attribute access to the underlying scalar dtype."""
-        return _element_api.resolve(self, name)
+        """Resolve only explicitly registered capabilities for this dtype."""
+        return _element_api.resolve_capability(self, name)
+
+
+    def __dir__(self):
+        """Include the curated capabilities for this Vector's dtype."""
+        return sorted(
+            set(object.__dir__(self))
+            | _element_api.capability_names(self)
+        )

@@ -50,7 +50,6 @@ def coalesce(table, *others):
         ))
         # Coalesce is asymmetric: the primary Table owns all result metadata.
         result._name = primary._name
-        result._wild = False
         result_columns.append(result)
 
     return Table(tuple(result_columns), name=table._name)

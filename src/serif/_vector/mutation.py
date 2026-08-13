@@ -1,6 +1,7 @@
 """Vector assignment, ownership, and copy-on-write semantics."""
 
 from collections.abc import Iterable
+from weakref import ref
 
 from ..errors import SerifIndexError
 from ..errors import SerifTypeError
@@ -8,6 +9,35 @@ from ..errors import SerifValueError
 from .dtype import Schema
 from .dtype import infer_dtype
 from .dtype import validate_scalar
+from .storage import storage_from_known_iterable
+
+
+class _EditToken:
+    """Short-lived authority for mutating columns in one batch scope."""
+
+    __slots__ = ('active', '_table', '_refresh_metadata')
+
+    def __init__(self, table, refresh_metadata):
+        self.active = True
+        self._table = ref(table)
+        self._refresh_metadata = refresh_metadata
+
+    def metadata_changed(self, vector):
+        table = self._table()
+        if self.active and table is not None:
+            self._refresh_metadata(table, changed_column=vector)
+
+
+def _is_editable(vector):
+    owner = vector._owner
+    return isinstance(owner, _EditToken) and owner.active
+
+
+def metadata_changed(vector):
+    """Refresh owner metadata after an editable column is renamed."""
+    owner = vector._owner
+    if isinstance(owner, _EditToken):
+        owner.metadata_changed(vector)
 
 
 def _vector_class():
@@ -18,7 +48,7 @@ def _vector_class():
 
 def require_mutable(vector):
     """Raise if vector is a frozen table-owned column."""
-    if vector._frozen:
+    if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
@@ -32,7 +62,7 @@ def require_mutable(vector):
 
 def require_mutable_metadata(vector):
     """Reject metadata mutation through a table-owned column."""
-    if vector._frozen:
+    if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
@@ -44,7 +74,7 @@ def require_mutable_metadata(vector):
 
 
 def setitem(vector, key, value):
-    vector._require_mutable()
+    require_mutable(vector)
     vector._setitem_impl(key, value)
 
 
@@ -199,9 +229,9 @@ def setitem_impl(vector, key, value):
             if saw_none and not vector._dtype.nullable:
                 vector._dtype = Schema(vector._dtype.kind, True)
 
-    # In-place writes are legal only inside a batch scope whose buffers were
-    # privatized on entry. Every other write rebuilds storage.
-    if vector._inplace_ok and updates:
+    # The active batch token is granted only after buffers are privatized.
+    # Every other write rebuilds storage.
+    if _is_editable(vector) and updates:
         write = getattr(vector._storage, 'write_inplace', None)
         if write is not None and write(updates):
             return
@@ -210,6 +240,5 @@ def setitem_impl(vector, key, value):
     for index, new_value in updates:
         data[index] = new_value
 
-    nullable = vector._dtype.nullable if vector._dtype is not None else True
-    from .construction import _storage_for_dtype
-    vector._storage = _storage_for_dtype(vector._dtype, data, nullable)
+    kind = vector._dtype.kind if vector._dtype is not None else None
+    vector._storage = storage_from_known_iterable(data, kind)

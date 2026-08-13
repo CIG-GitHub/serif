@@ -124,7 +124,7 @@ def _disambiguate(base: str, idx: int) -> str:
     """
     Canonical suffix for duplicate sanitized column names: the column at
     position idx gets '<base>__<idx>' (single separator when base already
-    ends with '_'). This is THE one rule — Table._build_column_map,
+    ends with '_'). This is THE one rule — table metadata construction,
     Table.__getitem__, and display._compute_headers must all agree, or a
     name shown in one place won't resolve in another.
     """

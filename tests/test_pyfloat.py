@@ -1,4 +1,4 @@
-"""_Float specific tests - float method proxying"""
+"""_Float-specific construction, capabilities, and operations."""
 import pytest
 from serif import Vector, _Float
 
@@ -19,7 +19,7 @@ class TestFloatCreation:
 
 
 class TestFloatMethods:
-    """Test float method proxying"""
+    """Test explicit float capabilities."""
     
     def test_as_integer_ratio(self):
         v = Vector([0.5, 0.25, 0.75])

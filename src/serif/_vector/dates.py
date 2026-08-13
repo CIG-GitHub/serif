@@ -1,6 +1,6 @@
 from ..vector import Vector
-from .element_api import _elementwise_attribute
-from .element_api import _elementwise_proxy
+from .element_api import _elementwise_method
+from .element_api import _elementwise_property
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -228,9 +228,17 @@ _DATE_PROXY_KINDS = {
 }
 
 for _m in _DATE_PROXY_METHODS:
-    setattr(_Date, _m, _elementwise_proxy(_m, _DATE_PROXY_KINDS[_m]))
+    setattr(
+        _Date,
+        _m,
+        _elementwise_method(date, _m, _DATE_PROXY_KINDS[_m]),
+    )
 del _m
 
 for _attribute in ('year', 'month', 'day'):
-    setattr(_Date, _attribute, _elementwise_attribute(_attribute, int))
+    setattr(
+        _Date,
+        _attribute,
+        _elementwise_property(date, _attribute, int),
+    )
 del _attribute

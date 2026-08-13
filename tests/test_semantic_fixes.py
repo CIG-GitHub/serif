@@ -375,7 +375,9 @@ def test_parquet_duplicate_column_names_roundtrip(tmp_path):
         ])
     p = str(tmp_path / 'dup.parquet')
     t.to_parquet(p)
-    back = Table.from_parquet(p)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        back = Table.from_parquet(p)
     assert back.column_names() == ['x', 'x']
     assert list(back.cols(0)) == [1, 2]
     assert list(back.cols(1)) == [10.5, 20.5]

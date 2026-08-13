@@ -4,6 +4,7 @@ import operator
 import warnings
 from collections.abc import Iterable
 
+from .._vector import operators as _vector_operators
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
@@ -36,7 +37,6 @@ def map_columns(table, function):
                 "Table column operation must produce one Vector per column"
             )
         derived._name = source._name
-        derived._wild = False
         result.append(derived)
     return Table(result, name=table._name)
 
@@ -103,7 +103,6 @@ def compare(table, other, op):
         strict=True,
     ):
         result._name = source._name
-        result._wild = False
     return Table(result_columns)
 
 
@@ -115,7 +114,7 @@ def compare_from(table, left, op):
     ))
 
 
-def binary_operation(table, other, op_func, op_name, op_symbol):
+def binary_operation(table, other, op_func, op_symbol):
     """Lift an arithmetic operation with Table naming coordination."""
     Table = _table_class()
     left_columns = tuple(iter_columns(table))
@@ -131,7 +130,6 @@ def binary_operation(table, other, op_func, op_name, op_symbol):
             strict=True,
         ):
             result._name = source._name
-            result._wild = source._wild
         return Table(result_columns)
 
     right_columns = tuple(iter_columns(other))
@@ -153,7 +151,6 @@ def binary_operation(table, other, op_func, op_name, op_symbol):
             right_column._name,
         )
         result_column._name = result_name
-        result_column._wild = False
         if warning_case is not None:
             warnings_to_emit.append((
                 index,
@@ -184,13 +181,13 @@ def binary_operation(table, other, op_func, op_name, op_symbol):
     return Table(tuple(result_columns))
 
 
-def operation_from(table, left, op_func, op_name, op_symbol):
+def operation_from(table, left, op_func, op_symbol):
     """Lift ``left op table`` for a nested right-hand operand."""
     return table.copy(tuple(
-        left._elementwise_operation(
+        _vector_operators.elementwise_operation(
+            left,
             column,
             op_func,
-            op_name,
             op_symbol,
         )
         for column in iter_columns(table)
@@ -203,15 +200,15 @@ def reverse_scalar_operation(table, other, op_func):
 
 
 def add(table, other):
-    return binary_operation(table, other, operator.add, '__add__', '+')
+    return binary_operation(table, other, operator.add, '+')
 
 
 def sub(table, other):
-    return binary_operation(table, other, operator.sub, '__sub__', '-')
+    return binary_operation(table, other, operator.sub, '-')
 
 
 def mul(table, other):
-    return binary_operation(table, other, operator.mul, '__mul__', '*')
+    return binary_operation(table, other, operator.mul, '*')
 
 
 def truediv(table, other):
@@ -219,7 +216,6 @@ def truediv(table, other):
         table,
         other,
         operator.truediv,
-        '__truediv__',
         '/',
     )
 
@@ -229,17 +225,16 @@ def floordiv(table, other):
         table,
         other,
         operator.floordiv,
-        '__floordiv__',
         '//',
     )
 
 
 def mod(table, other):
-    return binary_operation(table, other, operator.mod, '__mod__', '%')
+    return binary_operation(table, other, operator.mod, '%')
 
 
 def pow(table, other):
-    return binary_operation(table, other, operator.pow, '__pow__', '**')
+    return binary_operation(table, other, operator.pow, '**')
 
 
 def radd(table, other):
@@ -289,7 +284,7 @@ def invert(table):
 def logical_from(table, left, kleene_func):
     """Lift a logical operation from a scalar Vector into a Table."""
     return table.copy(tuple(
-        left._logical_elementwise(column, kleene_func)
+        _vector_operators.logical_elementwise(left, column, kleene_func)
         for column in iter_columns(table)
     ))
 
@@ -309,7 +304,6 @@ def bitwise(table, other, op_dunder):
         strict=True,
     ):
         result._name = source._name
-        result._wild = False
     return Table(result_columns)
 
 

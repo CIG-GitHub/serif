@@ -1,5 +1,5 @@
 from ..vector import Vector
-from .element_api import _elementwise_proxy
+from .element_api import _elementwise_method
 
 
 class _String(Vector):
@@ -110,12 +110,11 @@ class _String(Vector):
 
 
 # Plain per-element str methods, stamped onto the class at definition time.
-# Vector.__getattr__'s MethodProxy would serve these identically; explicit
-# attributes keep them visible to dir()/tab-completion. Methods with custom
-# semantics (count, before/after, categorize) are defined above and excluded.
+# These are the complete scalar-derived string capabilities. Methods with
+# custom semantics (count, before/after, categorize) are defined above and
+# excluded.
 # str.maketrans is a static method — mapping it per-element is meaningless,
-# so it is deliberately not stamped (MethodProxy still resolves it for
-# anyone who insists).
+# so it is deliberately unavailable.
 _STR_PROXY_METHODS = (
     'capitalize', 'casefold', 'center', 'encode', 'endswith', 'expandtabs',
     'find', 'format', 'format_map', 'index', 'isalnum', 'isalpha', 'isascii',
@@ -176,5 +175,9 @@ _STR_PROXY_KINDS = {
 }
 
 for _m in _STR_PROXY_METHODS:
-    setattr(_String, _m, _elementwise_proxy(_m, _STR_PROXY_KINDS[_m]))
+    setattr(
+        _String,
+        _m,
+        _elementwise_method(str, _m, _STR_PROXY_KINDS[_m]),
+    )
 del _m

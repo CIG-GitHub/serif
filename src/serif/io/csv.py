@@ -6,9 +6,7 @@ from typing import TextIO
 
 from .._vector.dtype import Schema
 from .._vector.dtype import promote_kinds
-from .._vector.storage import ArrayStorage
-from .._vector.storage import StringStorage
-from .._vector.storage import TupleStorage
+from .._vector.storage import storage_from_known_iterable
 from ..errors import SerifValueError
 
 
@@ -196,31 +194,10 @@ def _normalized_cells(raw_cells, identifier_mode):
 
 def _build_column_storage(raw_cells, dtype, identifier_mode):
     """Build the selected final storage directly from normalized raw cells."""
-    values = _normalized_cells(raw_cells, identifier_mode)
-
-    if dtype.kind is int:
-        try:
-            return ArrayStorage.from_iterable(
-                values,
-                typecode='q',
-                nullable=dtype.nullable,
-            )
-        except OverflowError:
-            # Preserve exact Python integers outside int64 without retaining a
-            # converted list solely to make the fallback re-iterable.
-            return TupleStorage.from_iterable(
-                _normalized_cells(raw_cells, identifier_mode),
-                nullable=dtype.nullable,
-            )
-    if dtype.kind is float:
-        return ArrayStorage.from_iterable(
-            values,
-            typecode='d',
-            nullable=dtype.nullable,
-        )
-    if dtype.kind is str:
-        return StringStorage.from_iterable(values)
-    return TupleStorage.from_iterable(values, nullable=dtype.nullable)
+    return storage_from_known_iterable(
+        _normalized_cells(raw_cells, identifier_mode),
+        dtype.kind,
+    )
 
 
 def _infer_type(value: str):

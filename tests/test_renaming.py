@@ -11,7 +11,6 @@ def test_Vector_rename():
 
 	v.vector_name = "new_name"
 	assert v.vector_name == "new_name"
-	assert v._wild == True  # Name setter marks as wild
 
 
 def test_Vector_rename_chaining():

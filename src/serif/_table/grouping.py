@@ -8,6 +8,8 @@ from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from . import columns as _columns
+from . import dispatch as _dispatch
 from ._python import grouping as _python_grouping
 from .columns import iter_columns
 
@@ -36,30 +38,10 @@ def make_uniquifier():
     return uniquify
 
 
-def _numpy_grouping():
-    from ._numpy import grouping
-
-    return grouping
-
-
-def _arrow_grouping():
-    from ._arrow import grouping
-
-    return grouping
-
-
-def _dispatch_single_key(storage):
-    """Try useful optional single-key bucket implementations in order."""
-    result = _numpy_grouping().group_indices(storage)
-    if result is not DECLINED:
-        return result
-    return _arrow_grouping().group_strings(storage)
-
-
 def _bucket_storages(storages, nrows, *, track_row_keys=False):
     """Bucket validated key storage through optional, then Python paths."""
     if len(storages) == 1 and not track_row_keys:
-        result = _dispatch_single_key(storages[0])
+        result = _dispatch.group_single_key(storages[0])
         if result is not DECLINED:
             return result, None
     return _python_grouping.bucket_rows(
@@ -80,7 +62,7 @@ def build_partition_index(
     nrows = len(table)
     if isinstance(groupby, (str, Vector)):
         groupby = [groupby]
-    groupby = [table._resolve_column(column) for column in groupby]
+    groupby = [_columns.resolve_column(table, column) for column in groupby]
 
     for index, column in enumerate(groupby):
         if len(column) != nrows:
