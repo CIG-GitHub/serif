@@ -989,10 +989,12 @@ class TestWriterCharacterization:
         table = Table(expected)
         path = tmp_path / 'streamed.parquet'
         writes = []
+        opened_paths = []
         real_open = open
 
         class RecordingWriter:
             def __init__(self, file, mode):
+                opened_paths.append(os.path.abspath(os.fspath(file)))
                 self._handle = real_open(file, mode)
 
             def __enter__(self):
@@ -1010,9 +1012,13 @@ class TestWriterCharacterization:
                 parquet_mod, 'open', RecordingWriter, raising=False)
             table.to_parquet(str(path))
 
+        assert opened_paths != [str(path)]
+        assert len(opened_paths) == 1
+        assert os.path.dirname(opened_paths[0]) == str(tmp_path)
         assert writes[0] == len(parquet_mod._MAGIC)
         assert len(writes) == len(expected) + 4
         assert writes[-2:] == [4, len(parquet_mod._MAGIC)]
+        assert set(tmp_path.iterdir()) == {path}
 
         result = Table.from_parquet(str(path))
         result.cols()
@@ -1034,6 +1040,53 @@ class TestWriterCharacterization:
             table.to_parquet(str(path))
 
         assert path.read_bytes() == original
+
+    def test_incompatible_storage_is_rejected_before_creating_temp_file(
+            self, tmp_path, monkeypatch):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+        incompatible = Vector._from_storage(
+            TupleStorage.from_iterable([1.5]),
+            Schema(float, False),
+            name='value',
+        )
+
+        def forbidden_tempfile(*args, **kwargs):
+            raise AssertionError('temporary file created before preflight')
+
+        monkeypatch.setattr(
+            parquet_mod._tempfile, 'mkstemp', forbidden_tempfile)
+
+        with pytest.raises(SerifTypeError, match='must be backed by'):
+            Table([incompatible]).to_parquet(path)
+
+        assert path.read_bytes() == original
+
+    def test_categorical_write_requires_explicit_plain_string_cast(
+            self, tmp_path, monkeypatch):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+        categorical = Vector(['low', 'high', None]).categorize(
+            ['low', 'high'])
+
+        def forbidden_tempfile(*args, **kwargs):
+            raise AssertionError('temporary file created before preflight')
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(
+                parquet_mod._tempfile, 'mkstemp', forbidden_tempfile)
+            with pytest.raises(
+                    SerifTypeError,
+                    match=r'categorical.*Cast to plain strings'):
+                Table({'priority': categorical}).to_parquet(path)
+
+        assert path.read_bytes() == original
+
+        Table({'priority': categorical.cast(str)}).to_parquet(path)
+        result = Table.from_parquet(path)
+        assert list(result.priority) == ['low', 'high', None]
 
     def test_empty_table_roundtrips(self):
         result = roundtrip(Table())
@@ -1151,7 +1204,8 @@ class TestWriterCharacterization:
         path.write_bytes(original)
 
         def failing_open(file, mode):
-            assert os.fspath(file) == str(path)
+            assert os.path.dirname(os.path.abspath(file)) == str(tmp_path)
+            assert os.path.abspath(file) != str(path)
             assert mode == 'wb'
             raise OSError('simulated open failure')
 
@@ -1162,11 +1216,13 @@ class TestWriterCharacterization:
             Table({'x': [1]}).to_parquet(str(path))
 
         assert path.read_bytes() == original
+        assert set(tmp_path.iterdir()) == {path}
 
-    def test_write_failure_after_open_does_not_preserve_destination(
+    def test_write_failure_preserves_existing_destination(
             self, tmp_path, monkeypatch):
         path = tmp_path / 'existing.parquet'
-        path.write_bytes(b'existing destination contents')
+        original = b'existing destination contents'
+        path.write_bytes(original)
         real_open = open
 
         class FailingWriter:
@@ -1190,7 +1246,30 @@ class TestWriterCharacterization:
         with pytest.raises(OSError, match='simulated write failure'):
             Table({'x': [1]}).to_parquet(str(path))
 
-        assert path.read_bytes() == parquet_mod._MAGIC
+        assert path.read_bytes() == original
+        assert set(tmp_path.iterdir()) == {path}
+
+    def test_replace_failure_preserves_existing_destination_and_cleans_temp(
+            self, tmp_path, monkeypatch):
+        path = tmp_path / 'existing.parquet'
+        original = b'existing destination contents'
+        path.write_bytes(original)
+
+        def failing_replace(source, destination):
+            assert os.path.dirname(source) == str(tmp_path)
+            assert source != str(path)
+            assert destination == str(path)
+            with open(source, 'rb') as temporary:
+                assert temporary.read(4) == parquet_mod._MAGIC
+            raise OSError('simulated replace failure')
+
+        monkeypatch.setattr(parquet_mod._os, 'replace', failing_replace)
+
+        with pytest.raises(OSError, match='simulated replace failure'):
+            Table({'x': [1]}).to_parquet(path)
+
+        assert path.read_bytes() == original
+        assert set(tmp_path.iterdir()) == {path}
 
 
 # ---------------------------------------------------------------------------
