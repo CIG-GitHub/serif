@@ -2,98 +2,56 @@
 
 ## 0.2.2 – Unreleased
 
+This release adds dedicated math and statistics APIs, strengthens schema
+preservation, and improves mutation and I/O safety.
+
 ### Breaking Changes
-- Breaking, pre-1.0: Vectors no longer treat arbitrary missing attributes as
-  element-wise Python scalar attributes or methods. Only explicitly supported
-  dtype capabilities are exposed; unsupported names now raise `AttributeError`.
+
+- Vectors no longer forward arbitrary missing attributes and methods to their
+  Python scalar values. Only APIs supported by the Vector's dtype are exposed;
+  unsupported attributes now raise `AttributeError`.
 
 ### Added
-- `Vector.constant(value, *, dtype=None, nullable=None)` creates a constant
-  reduction for `aggregate()` and `window()`. Tables inherit the same fluent
-  method; explicit result schemas preserve dtype and nullability even for empty
-  grouped results, and impossible value/schema combinations raise immediately.
-- Integer and floating-point Vectors expose a dtype-owned `v.math` namespace.
-  Its pure-Python pointwise functions follow Python 3.10 `math` semantics with
-  scalar or same-length Vector broadcasting and null propagation. Namespaced
-  `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist` reductions skip nulls and
-  work as bound `aggregate()` and `window()` operations.
-- Real numeric Vectors expose a dtype-owned `v.stats` namespace based on
-  Python 3.10's `statistics` module: arithmetic, floating, geometric, and
-  harmonic means; median variants and quantiles; modes; population and sample
-  variance/deviation; covariance, correlation, and linear regression.
-  `median_grouped()` is intentionally omitted. Statistics skip nulls, paired
-  statistics skip incomplete coordinate pairs after validating original
-  lengths, and insufficient samples return `None` (`multimode()` retains its
-  meaningful empty-list result). Bound methods work in `aggregate()` and
-  `window()`.
-- Numeric `mean()` is an alias for `v.stats.mean()`, and `std()` is an alias
-  for the sample standard deviation `v.stats.stdev()`. Population deviation is
-  explicit as `v.stats.pstdev()`; the existing parameterized `stdev()` remains
-  available for compatibility.
+
+- Numeric Vectors now expose a `v.math` namespace for pointwise Python `math`
+  operations and the `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist`
+  reductions.
+- Real numeric Vectors now expose a `v.stats` namespace for means, medians,
+  quantiles, modes, variance and standard deviation, covariance, correlation,
+  and linear regression. Statistical reductions skip nulls, while paired
+  operations skip incomplete pairs.
+- `Vector.constant()` and `Table.constant()` create constant outputs for
+  `aggregate()` and `window()`, with optional explicit dtype and nullability.
+- Numeric `mean()` and `std()` now use the statistics implementations;
+  population standard deviation is available as `v.stats.pstdev()`.
 
 ### Fixed
-- Zero-row Table operations now preserve their operation-defined schemas.
-  Row selection and projection retain source columns; grouped aggregation and
-  windows emit declared outputs with statically known reducer dtypes; joins
-  retain both sides under their normal key, naming, and nullability rules; and
-  append and rename preserve aligned column metadata. Unresolved custom
-  aggregation outputs remain present as schema-unknown columns. The contract
-  is identical across the pure Python, NumPy, and PyArrow execution paths.
-- Parquet writes now preflight dtype/storage compatibility, explicitly reject
-  categorical columns unless cast to plain strings, and replace destinations
-  atomically from a completed sibling temporary file. Validation and I/O
-  failures therefore leave existing destinations unchanged.
-- Header-only CSV files preserve duplicate columns instead of silently
-  deduplicating their names.
-- Categorical payload columns no longer degrade to strings during joins;
-  category domains and ordering are preserved, and null padding produces
-  nullable categoricals on optional join sides.
-- Vector concatenation now resolves a common result schema for Vector, scalar,
-  and iterable inputs: nullability widens, compatible numeric kinds promote,
-  and incompatible ordinary kinds become `object`. Matching categorical
-  domains remain categorical, while conflicting domains or categorical/plain
-  string columns become `str`.
-- Dtype promotion now changes the concrete typed Vector subclass together with
-  `Schema.kind`, preventing stale dtype-specific APIs after promotion.
-- Categorical comparisons now reject Vector operands with unequal lengths
-  instead of truncating results or failing with an indexing error.
-- Sorting zero-row Tables now preserves column schemas, nullability, canonical
-  storage backends, and categorical domains.
-- `Vector.filled()` now rejects boolean, non-integer, and negative lengths with
-  explicit Serif errors while retaining zero as a valid length.
-- Failed Vector assignments and non-batch multi-column Table assignments are
-  atomic across validation and dtype promotion. `batch()` retains its
-  documented partial-mutation behavior across separate column writes.
+
+- Zero-row Table operations now retain their declared columns, names, order,
+  dtypes, and nullability through selection, sorting, aggregation, windows,
+  joins, append, and rename. Custom aggregation outputs whose result types
+  cannot be inferred remain present with unresolved schemas.
+- Vector concatenation now resolves compatible schemas consistently, including
+  numeric promotion, nullability widening, and categorical/string combinations.
+  Dtype promotion also updates the concrete Vector type and its available APIs.
+- Joins now preserve categorical payload domains and ordering, including when
+  null padding makes a joined column nullable.
+- Failed Vector and multi-column Table assignments no longer leave partial
+  mutations.
+- Parquet writes now validate compatibility before writing and replace existing
+  destinations atomically. Unsupported categorical columns produce an explicit
+  error.
+- Header-only CSV files now preserve duplicate column names.
+- Categorical comparisons reject unequal Vector lengths, and `Vector.filled()`
+  rejects invalid lengths with explicit errors.
 
 ### Performance
-- PyArrow is imported only when Parquet column data needs decoding; importing
-  Serif and inspecting footer-backed names, schemas, and shapes remain lazy.
-- Interactive inspection preserves deferred columns: `dir()` and tab
-  completion use cached metadata, wide Table reprs load only displayed columns,
-  and column previews read only their displayed head and tail values.
-- Schema-known reductions build canonical packed result storage directly
-  without a second inference pass. Constant reductions also produce group
-  results without materializing group slices.
-- NumPy accelerates exact fixed-width `v.math` operations: `fabs`,
-  `isfinite`, `isinf`, `isnan`, `ceil`, `floor`, `trunc`, `sqrt`,
-  `copysign`, and `nextafter`. Unsupported storage and Python-specific
-  exception or bigint cases fall back to the pure-Python path.
-- NumPy accelerates fixed-width integer `v.math.gcd()`, plus `lcm()` and
-  `prod()` when a preflight proves signed-int64 intermediates cannot overflow.
-  Null skipping, empty identities, and zero-product cases remain exact;
-  unsupported or unproven inputs fall back to Python. `fsum()`, `hypot()`, and
-  `dist()` remain pure to preserve Python's numerical behavior.
-- NumPy accelerates fixed-width `v.stats` medians and quantiles, `fmean()`,
-  floating-point `mean()`, and floating-point population/sample variance and
-  standard deviation. Discrete results preserve Python values and scalar
-  types; floating results preserve the formula with normal rounding tolerance.
-  Exact-result integer and non-finite cases fall back to Python where needed.
 
-### Internal
-- Made table ownership the single source of editability, narrowed column
-  metadata invalidation to structural changes, centralized canonical storage
-  selection, isolated optional accelerator dispatch, and removed redundant
-  forwarding helpers.
+- PyArrow is loaded only when Parquet column data is needed, and interactive
+  inspection avoids materializing deferred columns unnecessarily.
+- Supported fixed-width math and statistics operations now use NumPy
+  acceleration. Operations requiring Python-specific or exact semantics
+  continue to fall back transparently.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 
