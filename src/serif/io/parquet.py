@@ -32,6 +32,7 @@ from __future__ import annotations
 import array as _pyarray
 import os as _os
 import struct as _struct
+import tempfile as _tempfile
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 
@@ -40,6 +41,7 @@ from ..errors import SerifIndexError, SerifTypeError, SerifValueError
 from ..vector import Vector
 from .._vector.nullable import BitMask
 from .._vector.nullable import _BitMaskBuilder
+from .._vector.categorical import _Category
 from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
     ArrayStorage,
@@ -941,6 +943,12 @@ def _col_parquet_type(col, col_name: str):
 
     Raises SerifTypeError for unsupported or ambiguous types.
     """
+    if isinstance(col, _Category):
+        raise SerifTypeError(
+            f"Column '{col_name}': categorical columns cannot be written to "
+            "Parquet. Cast to plain strings with column.cast(str) first."
+        )
+
     schema = col.schema()
     if schema is None:
         raise SerifTypeError(
@@ -950,35 +958,53 @@ def _col_parquet_type(col, col_name: str):
 
     kind = schema.kind
     rep  = _REP_OPTIONAL if schema.nullable else _REP_REQUIRED
+    st   = col._storage
 
     if kind is bool:
+        if not isinstance(st, BoolStorage):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, 'BoolStorage')
         return _T_BOOLEAN, None, rep, None, None
 
     if kind is int:
-        st = col._storage
         if not (isinstance(st, ArrayStorage) and st._data.typecode == 'q'):
-            raise SerifTypeError(
-                f"Column '{col_name}': int columns must be backed by ArrayStorage('q') "
-                "(64-bit) to write as Parquet INT64. "
-                "TupleStorage int values may exceed INT64 range. "
-                "Create the column via arithmetic or an explicit typed Vector."
+            _raise_incompatible_parquet_storage(
+                col_name,
+                kind,
+                st,
+                "ArrayStorage('q') (64-bit); TupleStorage int values may "
+                "exceed INT64 range",
             )
         return _T_INT64, None, rep, None, None
 
     if kind is float:
+        if not (isinstance(st, ArrayStorage) and st._data.typecode == 'd'):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, "ArrayStorage('d')")
         return _T_DOUBLE, None, rep, None, None
 
     if kind is str:
+        if not isinstance(st, StringStorage):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, 'StringStorage')
         return _T_BYTE_ARRAY, _CT_UTF8, rep, None, None
 
     if kind is _date:
+        if not isinstance(st, TupleStorage):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, 'TupleStorage')
         return _T_INT32, _CT_DATE, rep, None, None
 
     if kind is _datetime:
+        if not isinstance(st, TupleStorage):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, 'TupleStorage')
         return _T_INT64, _CT_TIMESTAMP_MICROS, rep, None, None
 
     if kind is _Decimal:
-        st = col._storage
+        if not isinstance(st, (DecimalStorage, TupleStorage)):
+            _raise_incompatible_parquet_storage(
+                col_name, kind, st, 'DecimalStorage or TupleStorage')
         if isinstance(st, DecimalStorage):
             scale     = st._scale
             precision = st._precision
@@ -1025,6 +1051,15 @@ def _col_parquet_type(col, col_name: str):
     )
 
 
+def _raise_incompatible_parquet_storage(
+        col_name: str, kind: type, storage, expected: str) -> None:
+    """Reject dtype/storage pairs that the physical encoder cannot consume."""
+    raise SerifTypeError(
+        f"Column '{col_name}': {kind.__name__} columns must be backed by "
+        f"{expected} to write to Parquet, not {type(storage).__name__}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # write_parquet
 # ---------------------------------------------------------------------------
@@ -1048,11 +1083,16 @@ def write_parquet(table, path: str) -> None:
     if not isinstance(table, _Table):
         raise SerifTypeError("write_parquet expects a Table")
 
+    path = _os.path.abspath(_os.fspath(path))
     nrows = len(table)
     ncols = len(table._storage)
 
     if ncols == 0:
-        _write_empty_parquet(path, nrows)
+        _write_through_temporary_sibling(
+            path,
+            lambda temporary_path: _write_empty_parquet(
+                temporary_path, nrows),
+        )
         return
 
     # ------------------------------------------------------------------
@@ -1110,13 +1150,37 @@ def write_parquet(table, path: str) -> None:
                 )
             )
 
-    # ------------------------------------------------------------------
-    # 3. Stream one column page at a time; retain footer metadata only
-    # ------------------------------------------------------------------
+    _write_through_temporary_sibling(
+        path,
+        lambda temporary_path: _write_parquet_file(
+            temporary_path, col_infos, schema_elems, nrows),
+    )
+
+
+def _write_through_temporary_sibling(path: str, write_file) -> None:
+    """Write beside ``path`` and atomically replace it only after success."""
+    directory = _os.path.dirname(path)
+    descriptor, temporary_path = _tempfile.mkstemp(
+        dir=directory,
+        prefix='.serif-',
+        suffix='.parquet.tmp',
+    )
+    _os.close(descriptor)
+
+    try:
+        write_file(temporary_path)
+        _os.replace(temporary_path, path)
+    except BaseException:
+        try:
+            _os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _write_parquet_file(path: str, col_infos, schema_elems, nrows: int) -> None:
+    """Stream validated columns to one complete Parquet file."""
     page_records = []
-    # Characterization locks direct-write failure behavior: after wb opens,
-    # an I/O error may leave a partial destination. Semantic failures that
-    # must preserve an existing file have already surfaced above.
     with open(path, 'wb') as f:
         f.write(_MAGIC)
         file_offset = len(_MAGIC)
