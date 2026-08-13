@@ -2,36 +2,35 @@
 
 ## 0.2.2 – Unreleased
 
+This release adds dedicated math and statistics APIs, strengthens schema
+preservation, and improves mutation and I/O safety.
+
 ### Breaking Changes
-- Breaking, pre-1.0: Vectors no longer treat arbitrary missing attributes as
-  element-wise Python scalar attributes or methods. Only explicitly supported
-  dtype capabilities are exposed; unsupported names now raise `AttributeError`.
+
+- Vectors no longer forward arbitrary missing attributes and methods to their
+  Python scalar values. Only APIs supported by the Vector's dtype are exposed;
+  unsupported attributes now raise `AttributeError`.
 
 ### Added
-- `Vector.constant(value, *, dtype=None, nullable=None)` creates a constant
-  reduction for `aggregate()` and `window()`. Tables inherit the same fluent
-  method; explicit result schemas preserve dtype and nullability even for empty
-  grouped results, and impossible value/schema combinations raise immediately.
-- Integer and floating-point Vectors expose a dtype-owned `v.math` namespace.
-  Its pure-Python pointwise functions follow Python 3.10 `math` semantics with
-  scalar or same-length Vector broadcasting and null propagation. Namespaced
-  `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist` reductions skip nulls and
-  work as bound `aggregate()` and `window()` operations.
-- Real numeric Vectors expose a dtype-owned `v.stats` namespace based on
-  Python 3.10's `statistics` module: arithmetic, floating, geometric, and
-  harmonic means; median variants and quantiles; modes; population and sample
-  variance/deviation; covariance, correlation, and linear regression.
-  `median_grouped()` is intentionally omitted. Statistics skip nulls, paired
-  statistics skip incomplete coordinate pairs after validating original
-  lengths, and insufficient samples return `None` (`multimode()` retains its
-  meaningful empty-list result). Bound methods work in `aggregate()` and
-  `window()`.
-- Numeric `mean()` is an alias for `v.stats.mean()`, and `std()` is an alias
-  for the sample standard deviation `v.stats.stdev()`. Population deviation is
-  explicit as `v.stats.pstdev()`; the existing parameterized `stdev()` remains
-  available for compatibility.
+
+- Numeric Vectors now expose a `v.math` namespace for pointwise Python `math`
+  operations and the `fsum`, `prod`, `gcd`, `lcm`, `hypot`, and `dist`
+  reductions.
+- Real numeric Vectors now expose a `v.stats` namespace for means, medians,
+  quantiles, modes, variance and standard deviation, covariance, correlation,
+  and linear regression. Statistical reductions skip nulls, while paired
+  operations skip incomplete pairs.
+- `Vector.constant()` and `Table.constant()` create constant outputs for
+  `aggregate()` and `window()`, with optional explicit dtype and nullability.
+- Numeric `mean()` and `std()` now use the statistics implementations;
+  population standard deviation is available as `v.stats.pstdev()`.
 
 ### Fixed
+
+- Zero-row Table operations now retain their declared columns, names, order,
+  dtypes, and nullability through selection, sorting, aggregation, windows,
+  joins, append, and rename. Custom aggregation outputs whose result types
+  cannot be inferred remain present with unresolved schemas.
 - Parquet writes now preflight dtype/storage compatibility, explicitly reject
   categorical columns unless cast to plain strings, and replace destinations
   atomically from a completed sibling temporary file. Validation and I/O
@@ -50,8 +49,6 @@
   `Schema.kind`, preventing stale dtype-specific APIs after promotion.
 - Categorical comparisons now reject Vector operands with unequal lengths
   instead of truncating results or failing with an indexing error.
-- Sorting zero-row Tables now preserves column schemas, nullability, canonical
-  storage backends, and categorical domains.
 - `Vector.filled()` now rejects boolean, non-integer, and negative lengths with
   explicit Serif errors while retaining zero as a valid length.
 - Failed Vector assignments and non-batch multi-column Table assignments are
@@ -82,11 +79,11 @@
   types; floating results preserve the formula with normal rounding tolerance.
   Exact-result integer and non-finite cases fall back to Python where needed.
 
-### Internal
-- Made table ownership the single source of editability, narrowed column
-  metadata invalidation to structural changes, centralized canonical storage
-  selection, isolated optional accelerator dispatch, and removed redundant
-  forwarding helpers.
+- PyArrow is loaded only when Parquet column data is needed, and interactive
+  inspection avoids materializing deferred columns unnecessarily.
+- Supported fixed-width math and statistics operations now use NumPy
+  acceleration. Operations requiring Python-specific or exact semantics
+  continue to fall back transparently.
 
 ## 0.2.1 – Recursive Semantics & Direct Storage
 

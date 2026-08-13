@@ -90,3 +90,14 @@ Data and metadata read out of a table are frozen. Element assignment,
 Write data through table indexing and rename through `Table.rename_columns()`.
 A `.copy()` is an independent mutable and renameable Vector.
 
+## 13. Row cardinality does not define table schemas
+Rows determine how many values a Table contains, not which columns exist.
+When an operation produces zero rows, every output column implied by that
+operation remains present with its name, order, and known dtype.
+
+This applies to row selection, column projection, aggregation, windows,
+joins, append, and rename. Join key de-duplication and outer-join nullability
+are computed from the join operation even when it emits no row pairs.
+An empty custom aggregation whose result dtype cannot be derived statically
+retains its declared column with an unresolved schema instead of dropping it.
+

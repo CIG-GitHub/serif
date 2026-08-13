@@ -689,6 +689,20 @@ class Vector():
 
         if isinstance(other, Vector):
             right_schema = other.schema()
+            # A schema-less empty vector contributes no values and therefore
+            # cannot contradict the known schema on the other side. Resolve
+            # the result from that known side instead of re-inferring from an
+            # empty iterator, which would erase the dtype. Keep the left-hand
+            # name because row concatenation is left-schema-aligned.
+            if other.ndims() == 1:
+                if (
+                    self._dtype is None
+                    and len(self) == 0
+                    and right_schema is not None
+                ):
+                    return other.copy(name=self._name)
+                if right_schema is None and len(other) == 0:
+                    return self.copy()
             if self._dtype is None or right_schema is None:
                 return Vector(
                     chain(self._storage, other._storage),

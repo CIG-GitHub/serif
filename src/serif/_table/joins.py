@@ -247,9 +247,6 @@ def _join(
         _raise_probe_diagnostic(probed)
     left_take, right_take = probed[1], probed[2]
 
-    if not len(left_take):
-        return Table(())
-
     left_nullable_pad = keep_unmatched_right
     right_nullable_pad = keep_unmatched_left
     result_columns = [

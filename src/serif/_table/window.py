@@ -42,6 +42,7 @@ def window(table, groupby, aggregations=None):
             nrows,
             allow_blocks=False,
             function_name="window",
+            infer_empty_schema=True,
         )
         for output_name, output_values, output_schema in outputs:
             group_map = dict(zip(keys_in_order, output_values))

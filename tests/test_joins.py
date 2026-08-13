@@ -161,7 +161,8 @@ def test_join_empty_result():
 		'val': ['X', 'Y']
 	})
 	
-	result = left.inner_join(right, left_on='id', right_on='id')
+	with pytest.warns(UserWarning, match="Duplicate column name 'val'"):
+		result = left.inner_join(right, left_on='id', right_on='id')
 	
 	assert len(result) == 0
 
