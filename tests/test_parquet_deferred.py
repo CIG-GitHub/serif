@@ -128,9 +128,35 @@ def test_read_is_footer_only_and_schema_view_is_free(tmp_path, monkeypatch):
     assert len(result) == 4
     assert result.shape == (4, 3)
     assert result.column_names() == ['a', 'b', 's']
+    assert {'a', 'b', 's'} <= set(dir(result))
     assert '.a' in repr(result._)
     assert result._mat is None
     assert result._gathered == {}
+
+
+def test_wide_repr_loads_only_displayed_parquet_columns(
+        tmp_path, monkeypatch):
+    path = tmp_path / 'wide.parquet'
+    Table({f'c{i}': [i, i + 100] for i in range(12)}).to_parquet(path)
+    calls = []
+    original = parquet._ParquetSource.load_column
+
+    def spy(self, idx, mask=None):
+        calls.append((idx, mask))
+        return original(self, idx, mask)
+
+    monkeypatch.setattr(parquet._ParquetSource, 'load_column', spy)
+    result = read_parquet(path)
+
+    rendered = repr(result)
+
+    displayed = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11]
+    assert calls == [(idx, None) for idx in displayed]
+    assert result._mat is None
+    assert set(result._gathered) == set(displayed)
+    assert 'c0' in rendered
+    assert 'c11' in rendered
+    assert '...' in rendered
 
 
 def test_lazy_parquet_cols_out_of_range_raises_exact_serif_index_error(tmp_path):

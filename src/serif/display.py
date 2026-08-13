@@ -80,12 +80,17 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
     if max_preview is None:
         max_preview = _REPR_ROWS_DEFAULT // 2
     
-    # Truncate with symmetric preview
-    vals = col._storage.to_tuple()
-    if len(vals) > max_preview * 2:
-        preview = list(vals[:max_preview]) + ['...'] + list(vals[-max_preview:])
+    # Read only the positions that will be displayed. Some storage backends
+    # make whole-column conversion expensive even when the repr is tiny.
+    storage = col._storage
+    length = len(storage)
+    if length > max_preview * 2:
+        preview = [storage[i] for i in range(max_preview)]
+        preview.append('...')
+        preview.extend(
+            storage[i] for i in range(length - max_preview, length))
     else:
-        preview = list(vals)
+        preview = [storage[i] for i in range(length)]
 
     # Type-sensitive formatting
     out = []
@@ -492,8 +497,8 @@ def _repr_table(tbl) -> str:
     if hasattr(tbl, '_repr_rows') and tbl._repr_rows is not None:
         max_preview = tbl._repr_rows // 2
     
-    cols = tbl.cols()
-    num_cols = len(cols)
+    metadata_cols = tbl._schema_columns()
+    num_cols = len(metadata_cols)
 
     if num_cols == 0:
         return "# 0×0 table"
@@ -506,10 +511,20 @@ def _repr_table(tbl) -> str:
         col_indices = list(range(num_cols))
 
     # Headers + dtypes
-    disp, san, dtypes_displayed = _compute_headers(cols, col_indices)
+    disp, san, dtypes_displayed = _compute_headers(
+        metadata_cols, col_indices)
 
-    # Format columns
-    formatted_cols = [_format_column(cols[i], max_preview=max_preview) for i in col_indices]
+    # Project only the visible columns from wide deferred tables. When every
+    # column is visible, retain the established full-access latch so the source
+    # snapshot is released after all of its values have been gathered.
+    if truncated:
+        displayed_cols = [tbl.cols(i) for i in col_indices]
+    else:
+        displayed_cols = list(tbl.cols())
+    formatted_cols = [
+        _format_column(col, max_preview=max_preview)
+        for col in displayed_cols
+    ]
 
     # Insert "..." column if truncated
     if truncated:
@@ -539,7 +554,7 @@ def _repr_table(tbl) -> str:
     lines.append("")
 
     # Footer: type-family summary, e.g. <str, int?, date>
-    lines.append(_footer(tbl, dtype_text=_family_summary(cols)))
+    lines.append(_footer(tbl, dtype_text=_family_summary(metadata_cols)))
 
     return "\n".join(lines)
 
