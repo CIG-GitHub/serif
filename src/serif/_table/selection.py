@@ -133,7 +133,7 @@ def getitem(table, key):
             raise SerifValueError(
                 f"Boolean mask length mismatch: {len(table)} != {len(key)}"
             )
-        if table._unlocked:
+        if table._batch_edit is not None:
             # batch() scope: column buffers are private and mutate in
             # place, so a storage capture is not a snapshot here —
             # gather eagerly, exactly as before.
@@ -147,7 +147,7 @@ def getitem(table, key):
             raise SerifValueError(
                 f"Boolean mask length mismatch: {len(table)} != {len(key)}"
             )
-        if table._unlocked:
+        if table._batch_edit is not None:
             Table = _table_class()
             return Table(tuple(column[key] for column in table._storage))
         MaskedTable = _masked_table_class()

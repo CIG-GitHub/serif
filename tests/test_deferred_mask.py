@@ -318,7 +318,7 @@ def test_gathered_columns_are_frozen_like_eager(tier):
 
 
 # ---------------------------------------------------------------------------
-# batch() scopes: deferral keys off t._unlocked
+# batch() scopes: deferral keys off the active edit token
 # ---------------------------------------------------------------------------
 
 def test_mask_inside_batch_scope_is_eager(tier):

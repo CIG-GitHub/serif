@@ -12,6 +12,9 @@ The mutation doctrine: READ THROUGH THE COLUMN, WRITE THROUGH THE TABLE.
   Same observable semantics, O(1) per write.
 """
 
+import gc
+from weakref import ref
+
 import pytest
 
 from serif import Table, Vector
@@ -56,6 +59,19 @@ def test_carried_away_alias_cannot_mutate_table():
     with pytest.raises(SerifTypeError):
         v[0] = 99
     assert t.a[0] == 1
+
+
+def test_carried_away_column_does_not_keep_table_alive():
+    t = make_table()
+    column = t.a
+    table_ref = ref(t)
+
+    del t
+    gc.collect()
+
+    assert table_ref() is None
+    with pytest.raises(SerifTypeError):
+        column[0] = 99
 
 
 def test_filtered_result_column_is_frozen():
@@ -241,6 +257,33 @@ def test_escaped_column_ref_refreezes_after_batch():
     assert t.a[1] == 55
     with pytest.raises(SerifTypeError):
         leak[0] = 1
+
+
+def test_replaced_column_ref_refreezes_after_batch():
+    t = make_table()
+    with t.batch() as m:
+        replaced = m.a
+        m.a = Vector([10, 20, 30])
+        replaced[0] = 99
+
+    assert list(t.a) == [10, 20, 30]
+    assert replaced[0] == 99
+    with pytest.raises(SerifTypeError):
+        replaced[1] = 1
+
+
+def test_stale_column_does_not_thaw_in_later_batch():
+    t = make_table()
+    stale = t.a
+    t.a = Vector([10, 20, 30])
+
+    with t.batch() as m:
+        m.a[0] = 99
+        with pytest.raises(SerifTypeError):
+            stale[0] = 0
+
+    assert list(stale) == [1, 2, 3]
+    assert list(t.a) == [99, 20, 30]
 
 
 def test_batch_nesting_raises():

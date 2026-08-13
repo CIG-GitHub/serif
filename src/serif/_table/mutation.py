@@ -7,6 +7,7 @@ from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from .._vector.mutation import _EditToken
 from .._vector.storage import TupleStorage
 from . import columns as _columns
 
@@ -59,26 +60,31 @@ class _BatchScope:
 
     def __enter__(self):
         table = self._table
-        if table._unlocked:
+        if table._batch_edit is not None:
             raise SerifValueError(
                 "Table is already inside a batch() scope; "
                 "nesting is not supported."
             )
-        table._unlocked = True
-        for column in table._storage:
-            private = getattr(column._storage, 'private_copy', None)
-            if private is not None:
-                column._storage = private()
-                column._inplace_ok = True
-            column._frozen = False
+        token = _EditToken()
+        table._batch_edit = token
+        try:
+            for column in table._storage:
+                private = getattr(column._storage, 'private_copy', None)
+                if private is not None:
+                    column._storage = private()
+                column._owner = token
+        except Exception:
+            token.active = False
+            table._batch_edit = None
+            _columns.adopt_columns(table)
+            raise
         return table
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         table = self._table
-        for column in table._storage:
-            column._frozen = True
-            column._inplace_ok = False
-        table._unlocked = False
+        table._batch_edit.active = False
+        table._batch_edit = None
+        _columns.adopt_columns(table)
         return False
 
 
@@ -90,11 +96,12 @@ def setattr(table, attr, value):
         '_column_map',
         '_dtype',
         '_name',
+        '_owner',
         '_wild',
         '_repr_rows',
         '_storage',
         '_warned_collisions',
-        '_unlocked',
+        '_batch_edit',
     ):
         object.__setattr__(table, attr, value)
         return
@@ -135,6 +142,7 @@ def setattr(table, attr, value):
             columns = list(table._storage)
             value._name = table._storage[col_idx_indexed]._name
             columns[col_idx_indexed] = value
+            _columns.adopt_columns(table, (value,))
             table._storage = TupleStorage.from_iterable(
                 tuple(columns),
                 nullable=False,
@@ -170,6 +178,7 @@ def setattr(table, attr, value):
             columns = list(table._storage)
             value._name = table._storage[col_idx]._name
             columns[col_idx] = value
+            _columns.adopt_columns(table, (value,))
             table._storage = TupleStorage.from_iterable(
                 tuple(columns),
                 nullable=False,
@@ -419,13 +428,13 @@ def write_column(table, col_idx, row_spec, value):
     same guarantee column replacement via __setattr__ already gives).
     """
     column = table._storage[col_idx]
-    if table._unlocked:
+    if table._batch_edit is not None:
         column._setitem_impl(row_spec, value)
         return
     new_column = column._clone(column._storage)  # O(1) storage share
     new_column._setitem_impl(row_spec, value)  # rebuild-on-write rebinds
     new_column._wild = False
-    new_column._frozen = True
+    _columns.adopt_columns(table, (new_column,))
     columns = list(table._storage)
     columns[col_idx] = new_column
     table._storage = TupleStorage.from_iterable(

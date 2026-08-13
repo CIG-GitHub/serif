@@ -51,6 +51,24 @@ def test_table_ownership_is_one_public_mutability_boundary():
     assert list(table.value) == [1, 2, 3]
 
 
+def test_ownership_replaces_independent_mutability_flags():
+    table = Table({'value': [1, 2, 3]})
+
+    assert not hasattr(Vector, '_frozen')
+    assert not hasattr(Vector, '_inplace_ok')
+    assert not hasattr(Table, '_unlocked')
+    assert table.value._owner() is table
+
+    with table.batch() as editable:
+        token = editable._batch_edit
+        assert token is not None
+        assert editable.value._owner is token
+
+    assert token.active is False
+    assert table._batch_edit is None
+    assert table.value._owner() is table
+
+
 def test_value_writes_leave_table_attribute_metadata_cached():
     table = Table({'value': [1, 2, 3], 'label': ['a', 'b', 'c']})
     column_map = table._column_map

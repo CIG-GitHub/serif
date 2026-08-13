@@ -158,6 +158,7 @@ def new(cls, initial=(), dtype=None, name=None, **kwargs):
     instance._dtype = dtype
     instance._name = name
     instance._wild = True
+    instance._owner = None
     nullable = dtype.nullable if dtype is not None else True
     if (
         dtype_hint is None
@@ -181,6 +182,7 @@ def initialize(vector, initial=(), dtype=None, name=None, **kwargs):
 
     vector._name = name
     vector._wild = True
+    vector._owner = None
     if dtype is not None:
         if not isinstance(dtype, Schema):
             dtype = Schema(dtype, False)
@@ -209,6 +211,7 @@ def clone(vector, new_storage, dtype=..., name=...):
     instance._dtype = vector._dtype if dtype is ... else dtype
     instance._name = vector._name if name is ... else name
     instance._wild = True
+    instance._owner = None
     instance._storage = new_storage
     return instance
 
@@ -219,6 +222,7 @@ def from_storage(cls, storage, dtype, name=None):
     instance._dtype = dtype
     instance._name = name
     instance._wild = False
+    instance._owner = None
     instance._storage = storage
     return instance
 
@@ -229,6 +233,7 @@ def from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
     instance._dtype = dtype
     instance._name = name
     instance._wild = True
+    instance._owner = None
     instance._storage = storage_from_known_iterable(iterable, dtype.kind)
     return instance
 

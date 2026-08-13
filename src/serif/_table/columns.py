@@ -2,6 +2,7 @@
 
 import warnings
 from collections.abc import Iterable
+from weakref import ref
 
 from ..errors import SerifIndexError
 from ..errors import SerifKeyError
@@ -25,6 +26,18 @@ def _table_class():
 def iter_columns(table):
     """Iterate a table's structural columns, never its public row iterator."""
     return iter(table._storage)
+
+
+def adopt_columns(table, columns=None):
+    """Bind current columns to the Table or its active batch edit."""
+    owner = table._batch_edit
+    if owner is None:
+        # A read-out column must not keep the rest of its former Table alive.
+        owner = ref(table)
+    if columns is None:
+        columns = iter_columns(table)
+    for column in columns:
+        column._owner = owner
 
 
 def missing_column_error(name, context="Table"):
@@ -104,7 +117,7 @@ def mapped_column_index(column_map, attr):
 
 
 def build_column_map(table):
-    """Build the sanitized attribute-name map and freeze owned columns."""
+    """Build the sanitized attribute-name map."""
     column_map = {}
     seen = {}
     for index, column in enumerate(iter_columns(table)):
@@ -167,8 +180,6 @@ def build_column_map(table):
             # compatibility spelling; ordinary dot access uses ``class_``.
             column_map.setdefault(collision, index)
         column._mark_tame()
-        if not table._unlocked:
-            column._frozen = True
     return column_map
 
 
@@ -460,6 +471,7 @@ def from_columns_nocopy(cls, columns):
     object.__setattr__(table, '_name', None)
     object.__setattr__(table, '_wild', False)
     object.__setattr__(table, '_repr_rows', None)
+    object.__setattr__(table, '_batch_edit', None)
     object.__setattr__(
         table,
         '_length',
@@ -472,5 +484,6 @@ def from_columns_nocopy(cls, columns):
         '_storage',
         TupleStorage.from_iterable(tuple(columns), nullable=False),
     )
+    adopt_columns(table)
     object.__setattr__(table, '_column_map', table._build_column_map())
     return table

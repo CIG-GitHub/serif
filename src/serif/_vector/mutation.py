@@ -10,6 +10,20 @@ from .dtype import infer_dtype
 from .dtype import validate_scalar
 
 
+class _EditToken:
+    """Short-lived authority for mutating columns in one batch scope."""
+
+    __slots__ = ('active',)
+
+    def __init__(self):
+        self.active = True
+
+
+def _is_editable(vector):
+    owner = vector._owner
+    return isinstance(owner, _EditToken) and owner.active
+
+
 def _vector_class():
     # Local import avoids a cycle while Vector delegates mutation here.
     from ..vector import Vector
@@ -18,7 +32,7 @@ def _vector_class():
 
 def require_mutable(vector):
     """Raise if vector is a frozen table-owned column."""
-    if vector._frozen:
+    if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
@@ -32,7 +46,7 @@ def require_mutable(vector):
 
 def require_mutable_metadata(vector):
     """Reject metadata mutation through a table-owned column."""
-    if vector._frozen:
+    if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
@@ -199,9 +213,9 @@ def setitem_impl(vector, key, value):
             if saw_none and not vector._dtype.nullable:
                 vector._dtype = Schema(vector._dtype.kind, True)
 
-    # In-place writes are legal only inside a batch scope whose buffers were
-    # privatized on entry. Every other write rebuilds storage.
-    if vector._inplace_ok and updates:
+    # The active batch token is granted only after buffers are privatized.
+    # Every other write rebuilds storage.
+    if _is_editable(vector) and updates:
         write = getattr(vector._storage, 'write_inplace', None)
         if write is not None and write(updates):
             return

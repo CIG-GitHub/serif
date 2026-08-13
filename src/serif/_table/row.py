@@ -33,7 +33,7 @@ class Row(Vector):
         # the existing tuple path so null-handling stays correct.
         def _backing(storage):
             if isinstance(storage, ArrayStorage) and storage._mask is None:
-                if table._unlocked:
+                if table._batch_edit is not None:
                     return storage._data[:]
                 return storage._data  # array.array — O(1) index, lazy boxing
             return storage.to_tuple()

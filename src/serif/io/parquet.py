@@ -2217,6 +2217,7 @@ class _ParquetSource:
 
 
 from ..table import Table as _Table
+from .._table.columns import adopt_columns as _adopt_table_columns
 from .._table.columns import resolve_column_key as _resolve_table_column
 
 
@@ -2246,13 +2247,15 @@ class _ParquetTable(_Table):
         object.__setattr__(self, '_column_map', metadata_table._column_map)
         object.__setattr__(self, '_warned_collisions',
                            set(metadata_table._warned_collisions))
+        object.__setattr__(self, '_batch_edit', None)
+        _adopt_table_columns(self, self._schema_cols)
 
     def _gather_column(self, idx):
         col = self._gathered.get(idx)
         if col is None:
             col = self._source.load_column(idx)
             col._wild = False
-            col._frozen = True
+            _adopt_table_columns(self, (col,))
             self._gathered[idx] = col
         return col
 

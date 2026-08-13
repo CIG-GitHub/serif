@@ -49,13 +49,11 @@ class Vector():
     _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
     # Mutation doctrine: read through the column, write through the table.
-    # A table-owned column is FROZEN (__setitem__ raises; write via
-    # t[key, 'col'] = value, which swaps in a fresh column). _inplace_ok is
-    # set only inside a batch() scope, after copy-on-enter privatized the
-    # buffers — it licenses raw in-place writes that would corrupt shared
-    # storage anywhere else. Standalone vectors: unfrozen, rebuild-on-write.
-    _frozen = False
-    _inplace_ok = False
+    # _owner is None for a standalone value, a weak reference to the owning
+    # Table for a frozen column, or an active edit token inside batch().
+    # Standalone vectors use rebuild-on-write; only the active token licenses
+    # raw in-place writes.
+    _owner = None
     
     def schema(self):
         """Get the Schema (kind, nullable) of this vector."""

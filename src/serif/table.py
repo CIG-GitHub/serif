@@ -23,7 +23,7 @@ class Table(Vector):
     _length = None
     _repr_rows = None  # Optional table-specific repr row count override
     _ndims = 2
-    _unlocked = False  # True only inside a batch() scope
+    _batch_edit = None
     
     def __new__(cls, initial=(), dtype=None, name=None):
         return super(Vector, cls).__new__(cls)
@@ -83,12 +83,16 @@ class Table(Vector):
         # Set _dtype to None explicitly since Table bypasses Vector.__new__
         self._dtype = None
         self._column_map = None
+        self._batch_edit = None
         # Names already warned about (reserved-method collisions) — warn once
         # per name per table, since _build_column_map reruns on rename.
         self._warned_collisions = set()
         
         # Call parent constructor
         super().__init__(initial, dtype=dtype, name=name)
+
+        # Columns become read-only values at the Table ownership boundary.
+        _columns.adopt_columns(self)
         
         # Build column map
         self._column_map = self._build_column_map()

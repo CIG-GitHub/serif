@@ -19,7 +19,7 @@ class MaskedTable(Table):
     frozen snapshot: `q = t[t.a > 10]` means "t as it was", forever, with
     no version counters. (The one exception — batch() scopes write into
     private buffers in place — never reaches here: __getitem__ keeps the
-    eager path while `t._unlocked`.)
+    eager path while `t._batch_edit` is active.)
 
     Row is the existence proof for the shape: a hollow subclass that
     bypasses __init__ and exposes `_storage` as a materialize-on-demand
@@ -93,6 +93,7 @@ class MaskedTable(Table):
         object.__setattr__(self, '_column_map', source._column_map)
         object.__setattr__(self, '_warned_collisions',
                            set(source._warned_collisions))
+        object.__setattr__(self, '_batch_edit', None)
 
     # ------------------------------------------------------------------
     # The deferred core: per-column gather + the materialize-and-latch
@@ -115,7 +116,7 @@ class MaskedTable(Table):
             else:
                 col = self._source_loader(idx, self._mask_vec)
             col._wild = False
-            col._frozen = True
+            _columns.adopt_columns(self, (col,))
             self._gathered[idx] = col
         return col
 
