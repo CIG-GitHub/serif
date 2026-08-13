@@ -80,12 +80,17 @@ def _format_column(col, max_preview: int | None = None) -> List[str]:
     if max_preview is None:
         max_preview = _REPR_ROWS_DEFAULT // 2
     
-    # Truncate with symmetric preview
-    vals = col._storage.to_tuple()
-    if len(vals) > max_preview * 2:
-        preview = list(vals[:max_preview]) + ['...'] + list(vals[-max_preview:])
+    # Read only the positions that will be displayed. Some storage backends
+    # make whole-column conversion expensive even when the repr is tiny.
+    storage = col._storage
+    length = len(storage)
+    if length > max_preview * 2:
+        preview = [storage[i] for i in range(max_preview)]
+        preview.append('...')
+        preview.extend(
+            storage[i] for i in range(length - max_preview, length))
     else:
-        preview = list(vals)
+        preview = [storage[i] for i in range(length)]
 
     # Type-sensitive formatting
     out = []
