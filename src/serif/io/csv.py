@@ -94,9 +94,7 @@ def _read_csv_from_file(file_obj: TextIO, *, delimiter: str, has_header: bool):
 
     if not has_data:
         # Header only, no data
-        # Preserve the existing dict-construction behavior for duplicate
-        # header names while avoiding the constructor's column-shell copies.
-        empty_columns = [Vector(name=col) for col in dict.fromkeys(header)]
+        empty_columns = [Vector(name=col) for col in header]
         return Table._from_columns_nocopy(empty_columns)
 
     columns = []

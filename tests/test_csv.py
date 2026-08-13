@@ -109,6 +109,17 @@ def test_header_only_returns_empty_columns():
     assert list(t.b) == []
 
 
+def test_header_only_preserves_duplicate_columns_with_warning():
+    with pytest.warns(UserWarning, match="Duplicate column name 'a'"):
+        t = _read("a,a,b\n")
+
+    assert t.column_names() == ['a', 'a', 'b']
+    assert t.shape == (0, 3)
+    assert list(t.cols(0)) == []
+    assert list(t.cols(1)) == []
+    assert list(t.cols(2)) == []
+
+
 def test_short_rows_pad_with_none():
     t = _read("a,b,c\n1,2,3\n4,5\n6\n")
     assert list(t.a) == [1, 4, 6]
