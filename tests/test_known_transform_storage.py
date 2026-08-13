@@ -57,7 +57,6 @@ def test_empty_fixed_transform_keeps_its_known_result_kind():
 
     assert isinstance(result._storage, StringStorage)
     assert result.schema() == Schema(str, False)
-    assert result._wild is True
 
 
 def test_fixed_date_elements_emit_known_storage():
@@ -108,7 +107,6 @@ def test_typed_cast_builds_final_storage_and_preserves_metadata():
     assert isinstance(result._storage, ArrayStorage)
     assert result.schema() == Schema(int, True)
     assert result.vector_name == 'source'
-    assert result._wild is True
     assert list(result) == [1, None, 3]
 
 
@@ -232,4 +230,3 @@ def test_empty_untyped_fillna_reuses_storage(monkeypatch):
     assert result._storage is original_storage
     assert result.schema() is None
     assert result.vector_name == 'empty'
-    assert result._wild is True

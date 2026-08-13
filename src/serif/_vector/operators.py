@@ -125,9 +125,7 @@ def _pre_compute_op_schema(lhs_schema, rhs, op_func=None):
 def _wrap_storage(storage, schema):
     """Wrap backend storage with the same metadata as the pure constructor."""
     Vector = _vector_class()
-    result = Vector._from_storage(storage, schema)
-    result._wild = True
-    return result
+    return Vector._from_storage(storage, schema)
 
 
 def _dispatch_compare(storage, rhs, op_func):

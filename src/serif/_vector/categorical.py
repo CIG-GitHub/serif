@@ -48,7 +48,6 @@ class _Category(Vector):
         self._categories = categories
         self._dtype = Schema(str, nullable)
         self._name = name
-        self._wild = True
         self._owner = None
         # _storage must satisfy the base class protocol (iterable of decoded values)
         self._storage = _CategoryStorage(codes, categories)

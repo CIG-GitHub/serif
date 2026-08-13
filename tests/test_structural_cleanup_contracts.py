@@ -1,6 +1,7 @@
 """Public behavior that the structural cleanup must preserve."""
 
 from datetime import date
+import warnings
 
 import pytest
 
@@ -82,6 +83,85 @@ def test_value_writes_leave_table_attribute_metadata_cached():
     assert table._column_map is column_map
     assert table.value[0] == 9
     assert table.label[0] == 'a'
+
+
+def test_column_replacement_leaves_name_metadata_cached():
+    table = Table({'value': [1, 2, 3]})
+    column_map = table._column_map
+
+    table.value = Vector([4, 5, 6])
+
+    assert table._column_map is column_map
+    assert table.column_names() == ['value']
+    assert list(table.value) == [4, 5, 6]
+
+
+def test_batch_rename_refreshes_metadata_at_the_write_point():
+    table = Table({'value': [1, 2, 3]})
+    previous_map = table._column_map
+
+    with table.batch() as editable:
+        editable.value.alias('renamed')
+
+        assert editable._column_map is not previous_map
+        assert list(editable.renamed) == [1, 2, 3]
+        with pytest.raises(AttributeError):
+            _ = editable.value
+
+    assert table.column_names() == ['renamed']
+    assert list(table.renamed) == [1, 2, 3]
+
+
+def test_batch_rename_warns_only_for_duplicates_it_creates():
+    with pytest.warns(UserWarning, match='Duplicate column name'):
+        table = Table([
+            Vector([1], name='x'),
+            Vector([2], name='x'),
+            Vector([3], name='other'),
+        ])
+
+    with pytest.warns(UserWarning, match='Duplicate column name') as captured:
+        with table.batch() as editable:
+            editable.other.alias('x')
+
+    assert len(captured) == 1
+
+
+def test_batch_rename_does_not_rewarn_unrelated_duplicates():
+    with pytest.warns(UserWarning, match='Duplicate column name'):
+        table = Table([
+            Vector([1], name='x'),
+            Vector([2], name='x'),
+            Vector([3], name='other'),
+        ])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        with table.batch() as editable:
+            editable.other.alias('renamed')
+
+    assert list(table.renamed) == [3]
+
+
+def test_metadata_reads_do_not_rebuild_the_cached_map(monkeypatch):
+    table = Table({'value': [1, 2, 3]})
+
+    def unexpected_rebuild(_table):
+        raise AssertionError('metadata read rebuilt column map')
+
+    monkeypatch.setattr(
+        'serif._table.columns.build_column_map',
+        unexpected_rebuild,
+    )
+
+    assert list(table.value) == [1, 2, 3]
+    assert 'value' in dir(table)
+    assert table.column_names() == ['value']
+
+
+def test_wild_metadata_state_is_removed():
+    assert not hasattr(Vector, '_wild')
+    assert not hasattr(Table, '_wild')
 
 
 @pytest.mark.parametrize(

@@ -65,7 +65,7 @@ class _BatchScope:
                 "Table is already inside a batch() scope; "
                 "nesting is not supported."
             )
-        token = _EditToken()
+        token = _EditToken(table, _columns.refresh_column_map)
         table._batch_edit = token
         try:
             for column in table._storage:
@@ -97,7 +97,6 @@ def setattr(table, attr, value):
         '_dtype',
         '_name',
         '_owner',
-        '_wild',
         '_repr_rows',
         '_storage',
         '_warned_collisions',
@@ -111,7 +110,6 @@ def setattr(table, attr, value):
     # 'name' must resolve to the column, not shadow a property).
     if attr == 'table_name':
         object.__setattr__(table, '_name', value)
-        object.__setattr__(table, '_wild', True)
         return
     if attr == 'vector_name':
         raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
@@ -147,11 +145,6 @@ def setattr(table, attr, value):
                 tuple(columns),
                 nullable=False,
             )
-            object.__setattr__(
-                table,
-                '_column_map',
-                table._build_column_map(),
-            )
             return
 
         # Regular column lookup by name. Explicit None checks — a column
@@ -184,12 +177,6 @@ def setattr(table, attr, value):
                 nullable=False,
             )
 
-            # Rebuild column map to reflect any structural changes
-            object.__setattr__(
-                table,
-                '_column_map',
-                table._build_column_map(),
-            )
             return
 
     # Reject arbitrary attribute setting - only allow column updates
@@ -433,7 +420,6 @@ def write_column(table, col_idx, row_spec, value):
         return
     new_column = column._clone(column._storage)  # O(1) storage share
     new_column._setitem_impl(row_spec, value)  # rebuild-on-write rebinds
-    new_column._wild = False
     _columns.adopt_columns(table, (new_column,))
     columns = list(table._storage)
     columns[col_idx] = new_column

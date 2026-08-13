@@ -157,7 +157,6 @@ def new(cls, initial=(), dtype=None, name=None, **kwargs):
     instance = object.__new__(target_class)
     instance._dtype = dtype
     instance._name = name
-    instance._wild = True
     instance._owner = None
     nullable = dtype.nullable if dtype is not None else True
     if (
@@ -181,7 +180,6 @@ def initialize(vector, initial=(), dtype=None, name=None, **kwargs):
         return
 
     vector._name = name
-    vector._wild = True
     vector._owner = None
     if dtype is not None:
         if not isinstance(dtype, Schema):
@@ -210,7 +208,6 @@ def clone(vector, new_storage, dtype=..., name=...):
     instance = object.__new__(type(vector))
     instance._dtype = vector._dtype if dtype is ... else dtype
     instance._name = vector._name if name is ... else name
-    instance._wild = True
     instance._owner = None
     instance._storage = new_storage
     return instance
@@ -221,7 +218,6 @@ def from_storage(cls, storage, dtype, name=None):
     instance = object.__new__(target_class)
     instance._dtype = dtype
     instance._name = name
-    instance._wild = False
     instance._owner = None
     instance._storage = storage
     return instance
@@ -232,7 +228,6 @@ def from_iterable_known_dtype(cls, iterable, dtype, *, name=None):
     instance = object.__new__(target_class)
     instance._dtype = dtype
     instance._name = name
-    instance._wild = True
     instance._owner = None
     instance._storage = storage_from_known_iterable(iterable, dtype.kind)
     return instance
@@ -243,7 +238,6 @@ def from_iterable_known_kind(cls, iterable, kind, *, name=None):
     storage = storage_from_known_iterable(iterable, kind)
     dtype = Schema(kind, _storage_has_nulls(storage))
     instance = from_storage(cls, storage, dtype, name=name)
-    instance._wild = True
     return instance
 
 

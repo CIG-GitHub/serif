@@ -84,8 +84,7 @@ class Table(Vector):
         self._dtype = None
         self._column_map = None
         self._batch_edit = None
-        # Names already warned about (reserved-method collisions) — warn once
-        # per name per table, since _build_column_map reruns on rename.
+        # Reserved-method collisions warn once per name per table.
         self._warned_collisions = set()
         
         # Call parent constructor
@@ -95,7 +94,7 @@ class Table(Vector):
         _columns.adopt_columns(self)
         
         # Build column map
-        self._column_map = self._build_column_map()
+        _columns.refresh_column_map(self)
 
     def __len__(self):
         # Nested tables are forbidden (docs/invariants.md #2), so length is
@@ -127,14 +126,6 @@ class Table(Vector):
             "Table has no 'vector_name' — use '.table_name'."
         )
 
-    def _build_column_map(self):
-        """Build mapping from sanitized column names to column indices.
-        
-        This is computed once during table initialization and used by
-        Row for O(1) attribute lookups during iteration.
-        """
-        return _columns.build_column_map(self)
-    
     def __dir__(self):
         """Return list of available attributes including sanitized column names."""
         return _columns.attribute_names(self)
@@ -735,7 +726,12 @@ class Table(Vector):
         return read_parquet(path)
 
     @classmethod
-    def _from_columns_nocopy(cls, columns: list) -> 'Table':
+    def _from_columns_nocopy(
+        cls,
+        columns: list,
+        *,
+        warn_duplicates: bool = True,
+    ) -> 'Table':
         """
         Assemble a Table from pre-built, freshly-owned Vector columns without
         deep-copying them.  The caller guarantees that no external reference to
@@ -744,7 +740,11 @@ class Table(Vector):
         Used by read_parquet to skip the O(n*cols) copy that Table.__init__
         normally performs for aliasing safety.
         """
-        return _columns.from_columns_nocopy(cls, columns)
+        return _columns.from_columns_nocopy(
+            cls,
+            columns,
+            warn_duplicates=warn_duplicates,
+        )
 
     @property
     def _(self):

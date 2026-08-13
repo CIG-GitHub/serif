@@ -36,7 +36,6 @@ def map_columns(table, function):
                 "Table column operation must produce one Vector per column"
             )
         derived._name = source._name
-        derived._wild = False
         result.append(derived)
     return Table(result, name=table._name)
 
@@ -103,7 +102,6 @@ def compare(table, other, op):
         strict=True,
     ):
         result._name = source._name
-        result._wild = False
     return Table(result_columns)
 
 
@@ -131,7 +129,6 @@ def binary_operation(table, other, op_func, op_name, op_symbol):
             strict=True,
         ):
             result._name = source._name
-            result._wild = source._wild
         return Table(result_columns)
 
     right_columns = tuple(iter_columns(other))
@@ -153,7 +150,6 @@ def binary_operation(table, other, op_func, op_name, op_symbol):
             right_column._name,
         )
         result_column._name = result_name
-        result_column._wild = False
         if warning_case is not None:
             warnings_to_emit.append((
                 index,
@@ -309,7 +305,6 @@ def bitwise(table, other, op_dunder):
         strict=True,
     ):
         result._name = source._name
-        result._wild = False
     return Table(result_columns)
 
 

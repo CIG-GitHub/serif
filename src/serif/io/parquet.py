@@ -1997,7 +1997,6 @@ def _empty_column(meta):
         col = Vector._from_storage(storage, dtype, name=meta['name'])
     else:
         col = Vector._from_iterable_known_dtype([], dtype, name=meta['name'])
-    col._wild = False
     return col
 
 
@@ -2234,14 +2233,16 @@ class _ParquetTable(_Table):
 
     def __init__(self, source):
         schema_cols = source.schema_columns()
-        metadata_table = _Table._from_columns_nocopy(list(schema_cols))
+        metadata_table = _Table._from_columns_nocopy(
+            list(schema_cols),
+            warn_duplicates=False,
+        )
         object.__setattr__(self, '_source', source)
         object.__setattr__(self, '_schema_cols', tuple(metadata_table.cols()))
         object.__setattr__(self, '_gathered', {})
         object.__setattr__(self, '_mat', None)
         object.__setattr__(self, '_dtype', None)
         object.__setattr__(self, '_name', None)
-        object.__setattr__(self, '_wild', False)
         object.__setattr__(self, '_repr_rows', None)
         object.__setattr__(self, '_length', source.num_rows)
         object.__setattr__(self, '_column_map', metadata_table._column_map)
@@ -2254,7 +2255,6 @@ class _ParquetTable(_Table):
         col = self._gathered.get(idx)
         if col is None:
             col = self._source.load_column(idx)
-            col._wild = False
             _adopt_table_columns(self, (col,))
             self._gathered[idx] = col
         return col
@@ -2281,17 +2281,9 @@ class _ParquetTable(_Table):
         object.__setattr__(self, '_schema_cols', None)
         object.__setattr__(self, '_gathered', None)
 
-    def _snapshot_names_current(self):
-        return not self._gathered or not any(
-            col._wild for col in self._gathered.values())
-
     def _mask_capture(self):
         if self._mat is not None:
             return tuple(col.copy() for col in self._storage), None
-        if not self._snapshot_names_current():
-            storage = self._storage
-            self._column_map = self._build_column_map()
-            return tuple(col.copy() for col in storage), None
         captured = tuple(col.copy() for col in self._schema_cols)
         cached = {idx: col.copy() for idx, col in self._gathered.items()}
         source = self._source
@@ -2305,7 +2297,7 @@ class _ParquetTable(_Table):
         return captured, load
 
     def __getattr__(self, attr):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             idx = self._column_map.get(attr)
             if idx is None:
                 idx = self._column_map.get(attr.lower())
@@ -2314,7 +2306,7 @@ class _ParquetTable(_Table):
         return _Table.__getattr__(self, attr)
 
     def __getitem__(self, key):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             if isinstance(key, str):
                 return self._gather_column(
                     _resolve_table_column(self._schema_cols, key))
@@ -2345,12 +2337,12 @@ class _ParquetTable(_Table):
         return _Table.shape.fget(self)
 
     def column_names(self):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             return [col._name for col in self._schema_cols]
         return _Table.column_names(self)
 
     def _schema_columns(self):
-        if self._mat is None and self._snapshot_names_current():
+        if self._mat is None:
             return self._schema_cols
         return _Table._schema_columns(self)
 

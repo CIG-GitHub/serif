@@ -46,7 +46,6 @@ class Vector():
     _dtype = None  # Schema instance (private)
     _storage = None
     _name = None
-    _wild = False  # Flag for name changes (used by Table column tracking)
     _ndims = 1     # Class-level constant; Table overrides with 2
     # Mutation doctrine: read through the column, write through the table.
     # _owner is None for a standalone value, a weak reference to the owning
@@ -149,8 +148,10 @@ class Vector():
     def vector_name(self, new_name):
         """Set the name of this vector."""
         self._require_mutable_metadata()
+        if new_name == self._name:
+            return
         self._name = new_name
-        self._wild = True  # Mark as wild when renamed
+        _mutation.metadata_changed(self)
 
     @classmethod
     def filled(cls, value, length, typesafe=False):
@@ -197,13 +198,11 @@ class Vector():
         already named (it just sets the name).
         """
         self._require_mutable_metadata()
+        if new_name == self._name:
+            return self
         self._name = new_name
-        self._wild = True  # Mark as wild when (re)named
+        _mutation.metadata_changed(self)
         return self
-    
-    def _mark_tame(self):
-        """Mark this vector as tame (not wild)"""
-        self._wild = False
 
     def __repr__(self):
         return(_printr(self))

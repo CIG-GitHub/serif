@@ -116,7 +116,7 @@ def mapped_column_index(column_map, attr):
     return column_index
 
 
-def build_column_map(table):
+def build_column_map(table, changed_column=None, *, warn_duplicates=True):
     """Build the sanitized attribute-name map."""
     column_map = {}
     seen = {}
@@ -157,7 +157,11 @@ def build_column_map(table):
                 sanitized = f"col{index}_"
             elif base in seen:
                 other = seen[base]
-                if column._wild or other._wild:
+                if warn_duplicates and (
+                    changed_column is None
+                    or column is changed_column
+                    or other is changed_column
+                ):
                     warnings.warn(
                         f"Duplicate column name '{base}' "
                         f"(from '{other._name}' and '{column._name}') "
@@ -179,20 +183,35 @@ def build_column_map(table):
             # were introduced. Keep that programmatic access as a hidden
             # compatibility spelling; ordinary dot access uses ``class_``.
             column_map.setdefault(collision, index)
-        column._mark_tame()
     return column_map
+
+
+def refresh_column_map(
+    table,
+    *,
+    changed_column=None,
+    warn_duplicates=True,
+):
+    """Refresh cached attribute metadata after a name/layout change."""
+    object.__setattr__(
+        table,
+        '_column_map',
+        build_column_map(
+            table,
+            changed_column=changed_column,
+            warn_duplicates=warn_duplicates,
+        ),
+    )
 
 
 def attribute_names(table):
     """Return ordinary attributes plus the current sanitized column names."""
-    return set(table._build_column_map().keys()) | set(object.__dir__(table))
+    return set(table._column_map) | set(object.__dir__(table))
 
 
 def get_attribute(table, attr, fallback):
     """Resolve Table column dot access, including indexed accessors."""
     columns = table._storage
-    if any(column._wild for column in columns or []):
-        table._column_map = table._build_column_map()
 
     column_index = resolve_indexed_attribute(columns, attr)
     if column_index is not None:
@@ -464,12 +483,11 @@ def compose(table, other):
     )
 
 
-def from_columns_nocopy(cls, columns):
+def from_columns_nocopy(cls, columns, *, warn_duplicates=True):
     """Assemble a Table from freshly owned, pre-built Vector columns."""
     table = object.__new__(cls)
     object.__setattr__(table, '_dtype', None)
     object.__setattr__(table, '_name', None)
-    object.__setattr__(table, '_wild', False)
     object.__setattr__(table, '_repr_rows', None)
     object.__setattr__(table, '_batch_edit', None)
     object.__setattr__(
@@ -485,5 +503,5 @@ def from_columns_nocopy(cls, columns):
         TupleStorage.from_iterable(tuple(columns), nullable=False),
     )
     adopt_columns(table)
-    object.__setattr__(table, '_column_map', table._build_column_map())
+    refresh_column_map(table, warn_duplicates=warn_duplicates)
     return table

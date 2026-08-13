@@ -84,20 +84,16 @@ def _wrap_group_key_column(values, source_column, name):
 
 def _wrap_group_key_storage(storage, schema, name):
     """Wrap grouped key storage without reconstructing its values."""
-    result = Vector._from_storage(storage, schema, name=name)
-    result._wild = True
-    return result
+    return Vector._from_storage(storage, schema, name=name)
 
 
 def _wrap_group_sum(storage, source_schema, name):
     """Wrap grouped sum storage with its known non-null result schema."""
-    result = Vector._from_storage(
+    return Vector._from_storage(
         storage,
         Schema(source_schema.kind, False),
         name=name,
     )
-    result._wild = True
-    return result
 
 
 def aggregate(table, groupby=None, aggregations=None):

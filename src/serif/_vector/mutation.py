@@ -1,6 +1,7 @@
 """Vector assignment, ownership, and copy-on-write semantics."""
 
 from collections.abc import Iterable
+from weakref import ref
 
 from ..errors import SerifIndexError
 from ..errors import SerifTypeError
@@ -13,15 +14,29 @@ from .dtype import validate_scalar
 class _EditToken:
     """Short-lived authority for mutating columns in one batch scope."""
 
-    __slots__ = ('active',)
+    __slots__ = ('active', '_table', '_refresh_metadata')
 
-    def __init__(self):
+    def __init__(self, table, refresh_metadata):
         self.active = True
+        self._table = ref(table)
+        self._refresh_metadata = refresh_metadata
+
+    def metadata_changed(self, vector):
+        table = self._table()
+        if self.active and table is not None:
+            self._refresh_metadata(table, changed_column=vector)
 
 
 def _is_editable(vector):
     owner = vector._owner
     return isinstance(owner, _EditToken) and owner.active
+
+
+def metadata_changed(vector):
+    """Refresh owner metadata after an editable column is renamed."""
+    owner = vector._owner
+    if isinstance(owner, _EditToken):
+        owner.metadata_changed(vector)
 
 
 def _vector_class():

@@ -92,10 +92,11 @@ def test_reserved_collision_warns_once_per_table():
     with pytest.warns(UserWarning, match="reserved") as rec:
         t = Table({'sum': [1, 2, 3]})
     assert sum('reserved' in str(w.message) for w in rec) == 1
-    # Rebuilding the column map must NOT re-warn (deduped per table).
+    # An explicit metadata refresh must NOT re-warn (deduped per table).
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        t._build_column_map()
+        from serif._table.columns import refresh_column_map
+        refresh_column_map(t)
 
 
 def test_non_colliding_name_does_not_warn():
