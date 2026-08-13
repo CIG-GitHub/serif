@@ -126,7 +126,7 @@ class MaskedTable(Table):
 
     @_storage.setter
     def _storage(self, value):
-        # Post-latch rebinds (_write_column, column replacement) land
+        # Post-latch rebinds (cell writes and column replacement) land
         # here via Table.__setattr__'s object.__setattr__, which honors
         # data descriptors. A rebind IS a latch: whatever storage the
         # caller installed is now the whole truth.

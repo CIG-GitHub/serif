@@ -165,6 +165,30 @@ def test_wild_metadata_state_is_removed():
     assert not hasattr(Table, '_wild')
 
 
+def test_redundant_forwarding_hooks_are_removed():
+    for name in (
+        '_build_storage',
+        '_require_mutable',
+        '_require_mutable_metadata',
+        '_logical_elementwise',
+        '_bitwise_kind_error',
+        '_elementwise_operation',
+        '_unary_operation',
+    ):
+        assert not hasattr(Vector, name)
+
+    for name in (
+        '_map_columns',
+        '_validate_assignment_rows',
+        '_table_elementwise_operation',
+        '_table_reverse_scalar_operation',
+        '_tablewise_bitwise',
+        '_resolve_column',
+        '_write_column',
+    ):
+        assert not hasattr(Table, name)
+
+
 @pytest.mark.parametrize(
     'values,storage_type',
     [

@@ -80,10 +80,6 @@ class Vector():
         )
 
 
-    def _build_storage(self, data, nullable):
-        return _construction.build_storage(self, data, nullable)
-
-
     def _clone(self, new_storage, dtype=..., name=...):
         """Clone with known storage, preserving subtype and schema by default."""
         return _construction.clone(
@@ -147,7 +143,7 @@ class Vector():
     @vector_name.setter
     def vector_name(self, new_name):
         """Set the name of this vector."""
-        self._require_mutable_metadata()
+        _mutation.require_mutable_metadata(self)
         if new_name == self._name:
             return
         self._name = new_name
@@ -197,7 +193,7 @@ class Vector():
         `Table([v.alias('x'), ...])`. Works whether or not the vector is
         already named (it just sets the name).
         """
-        self._require_mutable_metadata()
+        _mutation.require_mutable_metadata(self)
         if new_name == self._name:
             return self
         self._name = new_name
@@ -318,16 +314,6 @@ class Vector():
 
 
 
-    def _require_mutable(self):
-        """Raise if this vector is a frozen table-owned column."""
-        return _mutation.require_mutable(self)
-
-
-    def _require_mutable_metadata(self):
-        """Reject metadata mutation through a table-owned column."""
-        return _mutation.require_mutable_metadata(self)
-
-
     def __setitem__(self, key, value):
         """Assign through a mutable Vector using copy-on-write semantics."""
         return _mutation.setitem(self, key, value)
@@ -362,13 +348,6 @@ class Vector():
     def __ne__(self, other):
         return _operators.ne(self, other)
 
-    def _logical_elementwise(self, other, kleene_func):
-        """Kleene three-valued logical op (docs/null-semantics.md)."""
-        return _operators.logical_elementwise(self, other, kleene_func)
-
-    def _bitwise_kind_error(self, op_symbol):
-        return _operators.bitwise_kind_error(self, op_symbol)
-
     def __and__(self, other):
         return _operators.bit_and(self, other)
 
@@ -386,20 +365,6 @@ class Vector():
 
     def __rxor__(self, other):
         return self.__xor__(other)
-
-    def _elementwise_operation(self, other, op_func, op_name: str, op_symbol: str):
-        """Handle an element-wise operation with scalar broadcasting."""
-        return _operators.elementwise_operation(
-            self,
-            other,
-            op_func,
-            op_name,
-            op_symbol,
-        )
-
-    def _unary_operation(self, op_func, op_name: str):
-        """Apply a unary operation to each element."""
-        return _operators.unary_operation(self, op_func, op_name)
 
     def __add__(self, other):
         return _operators.add(self, other)
@@ -712,7 +677,8 @@ class Vector():
         nullable = self._dtype.nullable if self._dtype is not None else True
 
         def concatenate(values, declared_nullable=nullable):
-            storage = self._build_storage(values, declared_nullable)
+            kind = self._dtype.kind if self._dtype is not None else None
+            storage = storage_from_known_iterable(values, kind)
             if self._dtype is None:
                 return self._clone(storage)
             result_dtype = Schema(

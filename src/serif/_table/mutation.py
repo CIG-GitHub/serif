@@ -215,7 +215,7 @@ def setitem(table, key, value):
         col_spec = slice(None)
 
     # --- 2. Validate the complete selector before any write lands ---
-    table._validate_assignment_rows(row_spec)
+    validate_assignment_rows(table, row_spec)
     target_indices = []
     n_cols = len(table._storage)
 
@@ -269,7 +269,7 @@ def setitem(table, key, value):
         (str, bytes, bytearray),
     ):
         for col_idx in target_indices:
-            table._write_column(col_idx, row_spec, value)
+            write_column(table, col_idx, row_spec, value)
         return
 
     # CASE B: Single Row Assignment
@@ -285,7 +285,7 @@ def setitem(table, key, value):
             )
 
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, val_seq[index])
+            write_column(table, col_idx, row_spec, val_seq[index])
         return
 
     # CASE C: Rectangular/Table Assignment
@@ -300,7 +300,7 @@ def setitem(table, key, value):
 
         # We delegate row-length validation to the vector.__setitem__ calls below
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, value.cols()[index])
+            write_column(table, col_idx, row_spec, value.cols()[index])
         return
 
     # CASE D: Vector Assignment To One Column
@@ -308,7 +308,7 @@ def setitem(table, key, value):
     # t[mask, 'x'] = values[mask]. Multiple target columns remain ambiguous
     # and continue to the unsupported-value error below.
     if isinstance(value, Vector) and len(target_indices) == 1:
-        table._write_column(target_indices[0], row_spec, value)
+        write_column(table, target_indices[0], row_spec, value)
         return
 
     # CASE E: Raw 2D Iterable Assignment (List of Columns? List of Rows?)
@@ -324,7 +324,7 @@ def setitem(table, key, value):
             # Check if it's a flat list (not nested)
             if not value or not isinstance(value[0], (list, tuple, Vector)):
                 # Flat list -> assign to the single column
-                table._write_column(target_indices[0], row_spec, value)
+                write_column(table, target_indices[0], row_spec, value)
                 return
 
         if len(value) != len(target_indices):
@@ -335,7 +335,7 @@ def setitem(table, key, value):
 
         # Assume value[i] corresponds to target_indices[i]
         for index, col_idx in enumerate(target_indices):
-            table._write_column(col_idx, row_spec, value[index])
+            write_column(table, col_idx, row_spec, value[index])
         return
 
     raise SerifTypeError(f"Unsupported assignment value type: {type(value)}")

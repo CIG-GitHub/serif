@@ -4,6 +4,7 @@ from .._execution import DECLINED
 from .._vector import Schema
 from ..errors import SerifValueError
 from ..vector import Vector
+from . import columns as _columns
 from . import dispatch as _dispatch
 from . import grouping as _grouping
 
@@ -27,7 +28,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
     if specifications is None or len(specifications) != 1:
         return DECLINED
 
-    group_column = table._resolve_column(specifications[0])
+    group_column = _columns.resolve_column(table, specifications[0])
     if len(group_column) != nrows:
         raise SerifValueError(
             f"groupby key at index 0 has length {len(group_column)}, "

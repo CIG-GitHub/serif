@@ -256,11 +256,6 @@ def column_names(table):
     return [column._name for column in iter_columns(table)]
 
 
-def schema_columns(table):
-    """Return the metadata-only column sequence used by the schema view."""
-    return columns(table)
-
-
 def to_dict(table):
     """Serialize a table to a column-oriented dict of Python lists."""
     result = {}

@@ -316,46 +316,46 @@ def bitwise_kind_error(vector, op_symbol):
 def bit_and(vector, other):
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
-        return vector._elementwise_operation(
+        return elementwise_operation(
+            vector,
             other,
             operator.and_,
-            '__and__',
             '&',
         )
     if kind is bool:
-        return vector._logical_elementwise(other, _kleene_and)
-    raise vector._bitwise_kind_error('&')
+        return logical_elementwise(vector, other, _kleene_and)
+    raise bitwise_kind_error(vector, '&')
 
 
 def bit_or(vector, other):
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
-        return vector._elementwise_operation(
+        return elementwise_operation(
+            vector,
             other,
             operator.or_,
-            '__or__',
             '|',
         )
     if kind is bool:
-        return vector._logical_elementwise(other, _kleene_or)
-    raise vector._bitwise_kind_error('|')
+        return logical_elementwise(vector, other, _kleene_or)
+    raise bitwise_kind_error(vector, '|')
 
 
 def bit_xor(vector, other):
     kind = vector._dtype.kind if vector._dtype is not None else None
     if kind is int:
-        return vector._elementwise_operation(
+        return elementwise_operation(
+            vector,
             other,
             operator.xor,
-            '__xor__',
             '^',
         )
     if kind is bool:
-        return vector._logical_elementwise(other, _kleene_xor)
-    raise vector._bitwise_kind_error('^')
+        return logical_elementwise(vector, other, _kleene_xor)
+    raise bitwise_kind_error(vector, '^')
 
 
-def elementwise_operation(vector, other, op_func, op_name, op_symbol):
+def elementwise_operation(vector, other, op_func, op_symbol):
     """Apply a binary operation with Serif's scalar broadcast rules."""
     other = vector._check_duplicate(other)
     Vector = _vector_class()
@@ -364,7 +364,6 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
         return other._lift_operation_from(
             vector,
             op_func,
-            op_name,
             op_symbol,
         )
 
@@ -478,7 +477,7 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
         )
 
 
-def unary_operation(vector, op_func, op_name):
+def unary_operation(vector, op_func):
     """Apply a unary operation to every non-null element."""
     return vector._clone(
         _python_ops.unary_storage(vector._storage, op_func)
@@ -486,27 +485,27 @@ def unary_operation(vector, op_func, op_name):
 
 
 def add(vector, other):
-    return vector._elementwise_operation(other, operator.add, '__add__', '+')
+    return elementwise_operation(vector, other, operator.add, '+')
 
 
 def mul(vector, other):
-    return vector._elementwise_operation(other, operator.mul, '__mul__', '*')
+    return elementwise_operation(vector, other, operator.mul, '*')
 
 
 def sub(vector, other):
-    return vector._elementwise_operation(other, operator.sub, '__sub__', '-')
+    return elementwise_operation(vector, other, operator.sub, '-')
 
 
 def neg(vector):
-    return vector._unary_operation(operator.neg, '__neg__')
+    return unary_operation(vector, operator.neg)
 
 
 def pos(vector):
-    return vector._unary_operation(operator.pos, '__pos__')
+    return unary_operation(vector, operator.pos)
 
 
 def abs(vector):
-    return vector._unary_operation(operator.abs, '__abs__')
+    return unary_operation(vector, operator.abs)
 
 
 def invert(vector):
@@ -522,37 +521,37 @@ def invert(vector):
             _python_ops.invert_bool(vector),
             Schema(bool, vector._dtype.nullable),
         )
-    return vector._unary_operation(operator.invert, '__invert__')
+    return unary_operation(vector, operator.invert)
 
 
 def truediv(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         operator.truediv,
-        '__truediv__',
         '/',
     )
 
 
 def floordiv(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         operator.floordiv,
-        '__floordiv__',
         '//',
     )
 
 
 def mod(vector, other):
-    return vector._elementwise_operation(other, operator.mod, '__mod__', '%')
+    return elementwise_operation(vector, other, operator.mod, '%')
 
 
 def pow(vector, other):
-    return vector._elementwise_operation(other, operator.pow, '__pow__', '**')
+    return elementwise_operation(vector, other, operator.pow, '**')
 
 
 def radd(vector, other):
-    return vector._elementwise_operation(other, _reverse_add, '__radd__', '+')
+    return elementwise_operation(vector, other, _reverse_add, '+')
 
 
 def rmul(vector, other):
@@ -560,48 +559,48 @@ def rmul(vector, other):
 
 
 def rsub(vector, other):
-    return vector._elementwise_operation(other, _reverse_sub, '__rsub__', '-')
+    return elementwise_operation(vector, other, _reverse_sub, '-')
 
 
 def rtruediv(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         _reverse_truediv,
-        '__rtruediv__',
         '/',
     )
 
 
 def rfloordiv(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         _reverse_floordiv,
-        '__rfloordiv__',
         '//',
     )
 
 
 def rmod(vector, other):
-    return vector._elementwise_operation(other, _reverse_mod, '__rmod__', '%')
+    return elementwise_operation(vector, other, _reverse_mod, '%')
 
 
 def rpow(vector, other):
-    return vector._elementwise_operation(other, _reverse_pow, '__rpow__', '**')
+    return elementwise_operation(vector, other, _reverse_pow, '**')
 
 
 def bit_lshift(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         operator.lshift,
-        'bit_lshift',
         '<<',
     )
 
 
 def bit_rshift(vector, other):
-    return vector._elementwise_operation(
+    return elementwise_operation(
+        vector,
         other,
         operator.rshift,
-        'bit_rshift',
         '>>',
     )

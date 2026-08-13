@@ -267,10 +267,6 @@ class _Category(Vector):
             nullable=self._dtype.nullable or result._dtype.nullable,
         )
 
-    def __setitem__(self, key, value):
-        self._require_mutable()
-        self._setitem_impl(key, value)
-
     def _setitem_impl(self, key, value):
         """
         In-place assignment with category enforcement.

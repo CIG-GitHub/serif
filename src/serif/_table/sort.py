@@ -9,6 +9,7 @@ from .._vector.storage import StringStorage
 from .._vector.storage import TupleStorage
 from ..vector import Vector
 from .._vector.transforms import _null_sort_flag
+from . import columns as _columns
 from .columns import iter_columns
 
 
@@ -98,7 +99,7 @@ def sort_by(table, by, reverse=False, na_last=True):
     nrows = len(table)
 
     for spec in keys:
-        column = table._resolve_column(spec)
+        column = _columns.resolve_column(table, spec)
         if len(column) != nrows:
             raise SerifValueError(
                 f"Sort key has length {len(column)}, but table has "

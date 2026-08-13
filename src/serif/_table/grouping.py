@@ -8,6 +8,7 @@ from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from . import columns as _columns
 from . import dispatch as _dispatch
 from ._python import grouping as _python_grouping
 from .columns import iter_columns
@@ -61,7 +62,7 @@ def build_partition_index(
     nrows = len(table)
     if isinstance(groupby, (str, Vector)):
         groupby = [groupby]
-    groupby = [table._resolve_column(column) for column in groupby]
+    groupby = [_columns.resolve_column(table, column) for column in groupby]
 
     for index, column in enumerate(groupby):
         if len(column) != nrows:

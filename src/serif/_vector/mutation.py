@@ -74,7 +74,7 @@ def require_mutable_metadata(vector):
 
 
 def setitem(vector, key, value):
-    vector._require_mutable()
+    require_mutable(vector)
     vector._setitem_impl(key, value)
 
 
