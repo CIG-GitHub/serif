@@ -333,6 +333,10 @@ class _Category(Vector):
 
         # vs another categorical
         if isinstance(other, _Category):
+            if len(self) != len(other):
+                raise SerifValueError(
+                    f"Length mismatch: {len(self)} != {len(other)}"
+                )
             if self._categories != other._categories:
                 if is_ordering:
                     raise SerifValueError(
@@ -359,6 +363,10 @@ class _Category(Vector):
 
         # vs plain string vector
         if isinstance(other, Vector) and other.schema() is not None and other.schema().kind == str:
+            if len(self) != len(other):
+                raise SerifValueError(
+                    f"Length mismatch: {len(self)} != {len(other)}"
+                )
             if is_ordering:
                 # Build lookup once; raise if any rhs value isn't in categories
                 cat_index = {c: i for i, c in enumerate(self._categories)}
