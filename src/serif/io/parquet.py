@@ -62,12 +62,25 @@ from .._vector.storage import (
 # encodings), never SEMANTICS (types serif rejects still reject — the
 # accelerator declines and this module's errors surface).
 # _USE_ARROW is a private switch for tests/benchmarks, not API.
-try:
-    from . import _arrow as _arrow_accel
-except ImportError:            # pyarrow not installed
-    _arrow_accel = None
+_USE_ARROW = True
+_arrow_accel = None
+_arrow_accel_checked = False
 
-_USE_ARROW = _arrow_accel is not None
+
+def _load_arrow_accel():
+    """Import and cache the optional backend only when data needs decoding."""
+    global _arrow_accel, _arrow_accel_checked
+
+    if not _USE_ARROW:
+        return None
+    if not _arrow_accel_checked:
+        try:
+            from . import _arrow as accelerator
+        except ImportError:            # pyarrow not installed
+            accelerator = None
+        _arrow_accel = accelerator
+        _arrow_accel_checked = True
+    return _arrow_accel
 
 # ---------------------------------------------------------------------------
 # File-level constants
@@ -2208,13 +2221,14 @@ class _ParquetSource:
         if not groups:
             return _empty_column(meta)
 
-        if self.use_arrow and _arrow_accel is not None:
+        arrow_accel = _load_arrow_accel() if self.use_arrow else None
+        if arrow_accel is not None:
             # Arrow opens the path itself, so validate the captured file
             # identity immediately before handing it over.
             with self._open_checked():
                 pass
             masked = segments[0] is not None
-            arrow_groups = _arrow_accel.try_read_column(
+            arrow_groups = arrow_accel.try_read_column(
                 self.path, idx, groups, batched=masked)
             if arrow_groups is not DECLINED:
                 if arrow_groups is None:
@@ -2433,8 +2447,9 @@ def _read_parquet_eager(path: str):
     """
     from ..table import Table
 
-    if _USE_ARROW and _arrow_accel is not None:
-        result = _arrow_accel.try_read(path)
+    arrow_accel = _load_arrow_accel()
+    if arrow_accel is not None:
+        result = arrow_accel.try_read(path)
         if result is not DECLINED:
             if not isinstance(result, Table):
                 raise RuntimeError(
@@ -2624,6 +2639,6 @@ def read_parquet(path: str):
         signature,
         file_meta,
         columns,
-        use_arrow=_USE_ARROW and _arrow_accel is not None,
+        use_arrow=_USE_ARROW,
     )
     return _ParquetTable(source)

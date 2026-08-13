@@ -1,6 +1,9 @@
 """Footer-backed Parquet materialization and mask pushdown."""
 
+import subprocess
 import struct
+import sys
+import textwrap
 from array import array
 
 import pytest
@@ -35,6 +38,46 @@ def _write_table(path):
         'b': [10, 20, 30, 40],
         's': ['w', 'x', 'y', 'z'],
     }).to_parquet(str(path))
+
+
+def test_pyarrow_import_waits_for_column_data(tmp_path):
+    path = tmp_path / 'table.parquet'
+    _write_table(path)
+    program = textwrap.dedent(
+        """
+        import builtins
+        import sys
+
+        real_import = builtins.__import__
+        state = {'allow': False, 'attempted': False}
+
+        def guarded_import(name, *args, **kwargs):
+            if name == 'pyarrow' or name.startswith('pyarrow.'):
+                state['attempted'] = True
+                if not state['allow']:
+                    raise AssertionError('PyArrow imported during metadata access')
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = guarded_import
+
+        import serif
+
+        assert not state['attempted']
+        table = serif.read_parquet(sys.argv[1])
+        assert table.column_names() == ['a', 'b', 's']
+        assert table.shape == (4, 3)
+        assert not state['attempted']
+
+        state['allow'] = True
+        assert list(table.a) == [1, 2, 3, 4]
+        assert state['attempted']
+        """
+    )
+
+    subprocess.run(
+        [sys.executable, '-c', program, str(path)],
+        check=True,
+    )
 
 
 def _write_two_row_groups(path):

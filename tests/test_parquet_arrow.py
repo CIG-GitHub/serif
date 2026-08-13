@@ -388,7 +388,7 @@ def test_projected_dispatch_rejects_none_backend_result(monkeypatch):
     try:
         monkeypatch.setattr(parquet_mod, '_USE_ARROW', True)
         monkeypatch.setattr(
-            parquet_mod._arrow_accel, 'try_read_column',
+            _arrow, 'try_read_column',
             lambda *args, **kwargs: None,
         )
         source = parquet_mod.read_parquet(path)
