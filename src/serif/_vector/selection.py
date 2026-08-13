@@ -7,18 +7,13 @@ from ..errors import SerifIndexError
 from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from . import dispatch as _dispatch
 from ._python import selection as _python_selection
-
-
-def _numpy_selection():
-    from ._numpy import selection
-
-    return selection
 
 
 def filter_storage(storage, mask):
     """Filter validated storage through NumPy, then canonical Python."""
-    result = _numpy_selection().filter_storage(storage, mask)
+    result = _dispatch.filter_storage(storage, mask)
     if result is not DECLINED:
         return result
     return _python_selection.filter_storage(storage, mask)
@@ -26,7 +21,7 @@ def filter_storage(storage, mask):
 
 def take_storage(storage, indices):
     """Gather validated positions through NumPy, then storage.take()."""
-    result = _numpy_selection().take_storage(storage, indices)
+    result = _dispatch.take_storage(storage, indices)
     if result is not DECLINED:
         return result
     return _python_selection.take_storage(storage, indices)
@@ -34,7 +29,7 @@ def take_storage(storage, indices):
 
 def take_pad_storage(storage, indices):
     """Gather with null padding through NumPy, then canonical storage."""
-    result = _numpy_selection().take_pad_storage(storage, indices)
+    result = _dispatch.take_pad_storage(storage, indices)
     if result is not DECLINED:
         return result
     return _python_selection.take_pad_storage(storage, indices)
@@ -47,7 +42,7 @@ def take_pad_values(storage, indices):
 
 def popcount(mask_storage):
     """Count selected mask lanes through NumPy, then canonical Python."""
-    result = _numpy_selection().popcount_storage(mask_storage)
+    result = _dispatch.popcount(mask_storage)
     if result is not DECLINED:
         return result
     return _python_selection.popcount(mask_storage)

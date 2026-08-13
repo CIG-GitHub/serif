@@ -9,8 +9,8 @@ from serif import Table
 from serif import Vector
 from serif.errors import SerifValueError
 import serif._execution as execution
+from serif._table import dispatch as table_dispatch
 from serif._table import grouping as table_grouping
-from serif._table import joins as table_joins
 from serif._table._arrow import aggregation as arrow_aggregation
 from serif._table._arrow import grouping as arrow_grouping
 from serif._table._arrow import joins as arrow_joins
@@ -18,6 +18,7 @@ from serif._table._numpy import grouping as numpy_grouping
 from serif._table._numpy import joins as numpy_joins
 from serif._table._python import grouping as python_grouping
 from serif._table._python import joins as python_joins
+from serif._vector import dispatch as vector_dispatch
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
 from serif._vector import selection as vector_selection
@@ -40,9 +41,10 @@ def test_declined_has_one_identity_and_is_not_none():
     assert execution.DECLINED is numpy_ops.DECLINED
 
 
-def test_execution_contract_does_not_import_public_classes():
-    assert 'Vector' not in vars(execution)
-    assert 'Table' not in vars(execution)
+def test_dispatch_contracts_do_not_import_public_classes():
+    for module in (execution, vector_dispatch, table_dispatch):
+        assert 'Vector' not in vars(module)
+        assert 'Table' not in vars(module)
 
 
 def test_missing_numpy_is_an_unavailable_backend(monkeypatch):
@@ -97,7 +99,7 @@ def test_comparison_dispatch_is_numpy_then_arrow(monkeypatch):
     monkeypatch.setattr(numpy_ops, 'compare_storage', decline_numpy)
     monkeypatch.setattr(arrow_ops, 'compare_strings', accept_arrow)
 
-    actual = vector_ops._dispatch_compare(object(), object(), operator.eq)
+    actual = vector_dispatch.compare(object(), object(), operator.eq)
     assert actual is result
     assert calls == ['numpy', 'arrow']
 
@@ -117,7 +119,7 @@ def test_true_division_dispatch_is_arrow_then_numpy(monkeypatch):
     monkeypatch.setattr(arrow_ops, 'div_floats', accept_arrow)
     monkeypatch.setattr(numpy_ops, 'binop_storage', unexpected_numpy)
 
-    actual = vector_ops._dispatch_binary(
+    actual = vector_dispatch.binary(
         object(),
         object(),
         operator.truediv,
@@ -142,7 +144,7 @@ def test_true_division_decline_advances_to_numpy(monkeypatch):
     monkeypatch.setattr(arrow_ops, 'div_floats', decline_arrow)
     monkeypatch.setattr(numpy_ops, 'binop_storage', accept_numpy)
 
-    actual = vector_ops._dispatch_binary(
+    actual = vector_dispatch.binary(
         object(),
         object(),
         operator.truediv,
@@ -167,7 +169,7 @@ def test_arithmetic_dispatch_is_numpy_then_checked_arrow(monkeypatch):
     monkeypatch.setattr(numpy_ops, 'binop_storage', decline_numpy)
     monkeypatch.setattr(arrow_ops, 'binop_ints', accept_arrow)
 
-    actual = vector_ops._dispatch_binary(
+    actual = vector_dispatch.binary(
         object(),
         object(),
         operator.add,
@@ -191,7 +193,7 @@ def test_only_declined_advances_dispatch(monkeypatch):
     monkeypatch.setattr(numpy_ops, 'compare_storage', return_none)
     monkeypatch.setattr(arrow_ops, 'compare_strings', unexpected_arrow)
 
-    actual = vector_ops._dispatch_compare(object(), object(), operator.eq)
+    actual = vector_dispatch.compare(object(), object(), operator.eq)
     assert actual is None
     assert calls == ['numpy']
 
@@ -311,8 +313,8 @@ def test_python_only_reductions_skip_optional_dispatch(monkeypatch):
         raise AssertionError('count reached optional dispatch')
 
     monkeypatch.setattr(
-        vector_reductions,
-        '_numpy_reductions',
+        vector_dispatch,
+        'reduction',
         unexpected_numpy,
     )
     vector = Vector([True, None, False])
@@ -509,7 +511,7 @@ def test_grouping_dispatch_is_numpy_then_arrow(monkeypatch):
     monkeypatch.setattr(numpy_grouping, 'group_indices', decline_numpy)
     monkeypatch.setattr(arrow_grouping, 'group_strings', accept_arrow)
 
-    assert table_grouping._dispatch_single_key(object()) is result
+    assert table_dispatch.group_single_key(object()) is result
     assert calls == ['numpy', 'arrow']
 
 
@@ -527,7 +529,7 @@ def test_grouping_none_is_a_completed_backend_result(monkeypatch):
     monkeypatch.setattr(numpy_grouping, 'group_indices', numpy_none)
     monkeypatch.setattr(arrow_grouping, 'group_strings', unexpected_arrow)
 
-    assert table_grouping._dispatch_single_key(object()) is None
+    assert table_dispatch.group_single_key(object()) is None
     assert calls == ['numpy']
 
 
@@ -765,7 +767,7 @@ def test_join_dispatch_uses_effective_cascade(monkeypatch):
     )
     monkeypatch.setattr(arrow_joins, 'probe_strings', accept_strings)
 
-    actual = table_joins._dispatch_single_key_join(
+    actual = table_dispatch.join_single_key(
         object(), object(), False, True, True, False
     )
     assert actual is result
@@ -798,7 +800,7 @@ def test_join_diagnostic_is_a_completed_backend_outcome(monkeypatch):
     monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
     monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
 
-    actual = table_joins._dispatch_single_key_join(
+    actual = table_dispatch.join_single_key(
         object(), object(), False, True, False, False
     )
     assert actual is diagnostic
@@ -821,7 +823,7 @@ def test_join_none_is_not_decline(monkeypatch):
     monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
     monkeypatch.setattr(arrow_joins, 'probe_strings', unexpected)
 
-    actual = table_joins._dispatch_single_key_join(
+    actual = table_dispatch.join_single_key(
         object(), object(), False, True, False, False
     )
     assert actual is None
@@ -957,7 +959,7 @@ def test_invalid_join_keys_raise_before_dispatch(monkeypatch):
     def unexpected(*args):
         raise AssertionError('invalid join keys reached dispatch')
 
-    monkeypatch.setattr(table_joins, '_dispatch_single_key_join', unexpected)
+    monkeypatch.setattr(table_dispatch, 'join_single_key', unexpected)
 
     left = Table({'key': [1, 2, 3]})
     right = Table({'key': [1, 2]})
@@ -969,7 +971,7 @@ def test_multi_key_join_skips_optional_dispatch(monkeypatch):
     def unexpected(*args):
         raise AssertionError('multi-key join reached optional dispatch')
 
-    monkeypatch.setattr(table_joins, '_dispatch_single_key_join', unexpected)
+    monkeypatch.setattr(table_dispatch, 'join_single_key', unexpected)
 
     left = Table({'a': [1, 1], 'b': ['x', 'y']})
     right = Table({'a': [1], 'b': ['y']})

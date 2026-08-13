@@ -1,4 +1,4 @@
-"""Vector pointwise operator semantics and deterministic dispatch."""
+"""Vector pointwise operator semantics."""
 
 import operator
 import warnings
@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from . import dispatch as _dispatch
 from ._python import operators as _python_ops
 from .dtype import Schema
 from .dtype import infer_dtype
@@ -128,61 +129,6 @@ def _wrap_storage(storage, schema):
     return Vector._from_storage(storage, schema)
 
 
-def _dispatch_compare(storage, rhs, op_func):
-    """Try fixed-width comparison, then string comparison."""
-    from ._numpy import operators as numpy_ops
-
-    result = numpy_ops.compare_storage(storage, rhs, op_func)
-    if result is not DECLINED:
-        return result
-
-    from ._arrow import operators as arrow_ops
-
-    return arrow_ops.compare_strings(storage, rhs, op_func)
-
-
-def _dispatch_logical(storage, rhs, op_name):
-    from ._numpy import operators as numpy_ops
-
-    return numpy_ops.logical_storage(storage, rhs, op_name)
-
-
-def _dispatch_invert(storage):
-    from ._numpy import operators as numpy_ops
-
-    return numpy_ops.invert_storage(storage)
-
-
-def _dispatch_binary(storage, rhs, op_func, result_kind):
-    """Run operator backends in their explicit, stable priority order."""
-    if op_func is operator.truediv:
-        from ._arrow import operators as arrow_ops
-
-        result = arrow_ops.div_floats(
-            storage,
-            rhs,
-            op_func,
-            result_kind,
-        )
-        if result is not DECLINED:
-            return result
-
-    from ._numpy import operators as numpy_ops
-
-    result = numpy_ops.binop_storage(
-        storage,
-        rhs,
-        op_func,
-        result_kind,
-    )
-    if result is not DECLINED:
-        return result
-
-    from ._arrow import operators as arrow_ops
-
-    return arrow_ops.binop_ints(storage, rhs, op_func, result_kind)
-
-
 def _validate_forward_division(left, right, op_func):
     """Raise Python's division error before an optional backend runs."""
     if op_func not in _FORWARD_DIVISION_OPS:
@@ -245,7 +191,7 @@ def elementwise_compare(vector, other, op):
             (vector._dtype.nullable if vector._dtype is not None else True)
             or (other_schema.nullable if other_schema is not None else True)
         )
-        fast = _dispatch_compare(vector._storage, other._storage, op)
+        fast = _dispatch.compare(vector._storage, other._storage, op)
         if fast is not DECLINED:
             return _wrap_storage(fast, Schema(bool, nullable))
         return _wrap_storage(
@@ -274,7 +220,7 @@ def elementwise_compare(vector, other, op):
         (vector._dtype.nullable if vector._dtype is not None else True)
         or other is None
     )
-    fast = _dispatch_compare(vector._storage, other, op)
+    fast = _dispatch.compare(vector._storage, other, op)
     if fast is not DECLINED:
         return _wrap_storage(fast, Schema(bool, nullable))
     return _wrap_storage(
@@ -325,7 +271,7 @@ def logical_elementwise(vector, other, kleene_func):
                 f"Length mismatch: {len(vector)} != {len(other)}"
             )
         if op_name is not None and isinstance(other, Vector):
-            fast = _dispatch_logical(
+            fast = _dispatch.logical(
                 vector._storage,
                 other._storage,
                 op_name,
@@ -338,7 +284,7 @@ def logical_elementwise(vector, other, kleene_func):
         storage = _python_ops.logical_vector(vector, other, kleene_func)
     else:
         if op_name is not None and (other is None or type(other) is bool):
-            fast = _dispatch_logical(vector._storage, other, op_name)
+            fast = _dispatch.logical(vector._storage, other, op_name)
             if fast is not DECLINED:
                 return _wrap_storage(
                     fast,
@@ -430,7 +376,7 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
         result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
         if result_dtype is not None:
             _validate_forward_division(vector, other, op_func)
-            fast = _dispatch_binary(
+            fast = _dispatch.binary(
                 vector._storage,
                 other._storage,
                 op_func,
@@ -501,7 +447,7 @@ def elementwise_operation(vector, other, op_func, op_name, op_symbol):
     result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
     if result_dtype is not None:
         _validate_forward_division(vector, other, op_func)
-        fast = _dispatch_binary(
+        fast = _dispatch.binary(
             vector._storage,
             other,
             op_func,
@@ -566,7 +512,7 @@ def abs(vector):
 def invert(vector):
     # Boolean inversion is Kleene logical NOT: NOT unknown is unknown.
     if vector._dtype and vector._dtype.kind is bool:
-        fast = _dispatch_invert(vector._storage)
+        fast = _dispatch.invert(vector._storage)
         if fast is not DECLINED:
             return _wrap_storage(
                 fast,

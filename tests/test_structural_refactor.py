@@ -36,6 +36,17 @@ _HYBRID_PHYSICAL_IMPORTS = {
     ('serif._table._arrow.joins', 'serif._table._numpy'),
 }
 
+_SEMANTIC_OPERATION_MODULES = (
+    'serif._vector.math',
+    'serif._vector.operators',
+    'serif._vector.reductions',
+    'serif._vector.selection',
+    'serif._vector.statistics',
+    'serif._table.aggregation',
+    'serif._table.grouping',
+    'serif._table.joins',
+)
+
 
 def _module_name(path):
     parts = list(path.relative_to(_SOURCE_ROOT).with_suffix('').parts)
@@ -179,6 +190,16 @@ def test_foundation_modules_do_not_import_upward():
         path = _SOURCE_ROOT.joinpath(*module.split('.')[1:]).with_suffix('.py')
         for target, line in _import_targets(path):
             if _foundation_import_is_upward(target):
+                violations.append(f'{module}:{line} imports {target}')
+    assert violations == []
+
+
+def test_semantic_modules_delegate_optional_accelerator_imports():
+    violations = []
+    for module in _SEMANTIC_OPERATION_MODULES:
+        path = _SOURCE_ROOT.joinpath(*module.split('.')[1:]).with_suffix('.py')
+        for target, line in _import_targets(path):
+            if _mechanism(target) in ('_numpy', '_arrow'):
                 violations.append(f'{module}:{line} imports {target}')
     assert violations == []
 

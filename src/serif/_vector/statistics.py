@@ -6,17 +6,12 @@ from collections.abc import Iterable
 from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from . import dispatch as _dispatch
 
 
 def _known_values(vector):
     """Materialize the non-null observations for one statistic."""
     return [value for value in vector._storage if value is not None]
-
-
-def _numpy_statistics():
-    from ._numpy import statistics
-
-    return statistics
 
 
 def _univariate(
@@ -31,7 +26,8 @@ def _univariate(
     """Apply a canonical statistics function after Serif null stripping."""
     kwargs = kwargs or {}
     if accelerated:
-        fast = getattr(_numpy_statistics(), function_name)(
+        fast = _dispatch.statistic(
+            function_name,
             vector._storage,
             *args,
             **kwargs,

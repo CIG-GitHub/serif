@@ -1,13 +1,21 @@
 """Low-level contracts shared by optional physical backends.
 
-This module owns only the unique decline identity and optional-library import
-boundaries. Semantic operation modules remain responsible for validation,
-deterministic backend selection, and result wrapping.
+This module owns the unique decline identity, optional-library import
+boundaries, and the rule for advancing through optional backend attempts.
 """
 
 
 # Distinct from every legitimate Serif result, including None.
 DECLINED = object()
+
+
+def first_supported(*attempts):
+    """Return the first backend result that does not explicitly decline."""
+    for attempt in attempts:
+        result = attempt()
+        if result is not DECLINED:
+            return result
+    return DECLINED
 
 
 def _load_numpy():

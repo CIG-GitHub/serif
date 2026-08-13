@@ -9,6 +9,7 @@ from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
 from . import columns as _columns
+from . import dispatch as _dispatch
 from ._python import joins as _python_joins
 from .columns import iter_columns
 
@@ -124,47 +125,6 @@ def _validate_join_keys(table, other, left_on, right_on):
     return normalized
 
 
-def _numpy_joins():
-    from ._numpy import joins
-
-    return joins
-
-
-def _arrow_joins():
-    from ._arrow import joins
-
-    return joins
-
-
-def _dispatch_single_key_join(
-    left_storage,
-    right_storage,
-    expect_left_unique,
-    expect_right_unique,
-    keep_unmatched_left,
-    keep_unmatched_right,
-):
-    """Try useful single-key join implementations in deterministic order."""
-    arguments = (
-        left_storage,
-        right_storage,
-        expect_left_unique,
-        expect_right_unique,
-        keep_unmatched_left,
-        keep_unmatched_right,
-    )
-    result = _numpy_joins().probe_int64_dense(*arguments)
-    if result is not DECLINED:
-        return result
-    result = _arrow_joins().probe_strings_hash(*arguments)
-    if result is not DECLINED:
-        return result
-    result = _numpy_joins().probe_int64(*arguments)
-    if result is not DECLINED:
-        return result
-    return _arrow_joins().probe_strings(*arguments)
-
-
 def _probe_python(
     table,
     left_keys,
@@ -259,7 +219,7 @@ def _join(
     }
 
     probed = (
-        _dispatch_single_key_join(
+        _dispatch.join_single_key(
             left_keys[0]._storage,
             right_keys[0]._storage,
             expect_left_unique,

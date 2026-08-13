@@ -4,6 +4,7 @@ from .._execution import DECLINED
 from .._vector import Schema
 from ..errors import SerifValueError
 from ..vector import Vector
+from . import dispatch as _dispatch
 from . import grouping as _grouping
 
 
@@ -11,12 +12,6 @@ def _table_class():
     # Local import avoids a cycle while Table delegates aggregation here.
     from ..table import Table
     return Table
-
-
-def _arrow_aggregation():
-    from ._arrow import aggregation
-
-    return aggregation
 
 
 def _bound_grouped_sums(table, groupby, aggregations, nrows):
@@ -60,7 +55,7 @@ def _bound_grouped_sums(table, groupby, aggregations, nrows):
         names.append(aggregation_name)
         sources.append(source)
 
-    result = _arrow_aggregation().grouped_sums(
+    result = _dispatch.grouped_sums(
         (group_column.schema(), group_column._storage),
         [(source.schema(), source._storage) for source in sources],
     )
