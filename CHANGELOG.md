@@ -32,6 +32,12 @@
   available for compatibility.
 
 ### Fixed
+- Parquet writes now preflight dtype/storage compatibility, explicitly reject
+  categorical columns unless cast to plain strings, and replace destinations
+  atomically from a completed sibling temporary file. Validation and I/O
+  failures therefore leave existing destinations unchanged.
+- Header-only CSV files preserve duplicate columns instead of silently
+  deduplicating their names.
 - Categorical payload columns no longer degrade to strings during joins;
   category domains and ordering are preserved, and null padding produces
   nullable categoricals on optional join sides.
@@ -53,6 +59,8 @@
   documented partial-mutation behavior across separate column writes.
 
 ### Performance
+- PyArrow is imported only when Parquet column data needs decoding; importing
+  Serif and inspecting footer-backed names, schemas, and shapes remain lazy.
 - Schema-known reductions build canonical packed result storage directly
   without a second inference pass. Constant reductions also produce group
   results without materializing group slices.
