@@ -31,21 +31,53 @@ preservation, and improves mutation and I/O safety.
   dtypes, and nullability through selection, sorting, aggregation, windows,
   joins, append, and rename. Custom aggregation outputs whose result types
   cannot be inferred remain present with unresolved schemas.
-- Vector concatenation now resolves compatible schemas consistently, including
-  numeric promotion, nullability widening, and categorical/string combinations.
-  Dtype promotion also updates the concrete Vector type and its available APIs.
-- Joins now preserve categorical payload domains and ordering, including when
-  null padding makes a joined column nullable.
-- Failed Vector and multi-column Table assignments no longer leave partial
-  mutations.
-- Parquet writes now validate compatibility before writing and replace existing
-  destinations atomically. Unsupported categorical columns produce an explicit
-  error.
-- Header-only CSV files now preserve duplicate column names.
-- Categorical comparisons reject unequal Vector lengths, and `Vector.filled()`
-  rejects invalid lengths with explicit errors.
+- Parquet writes now preflight dtype/storage compatibility, explicitly reject
+  categorical columns unless cast to plain strings, and replace destinations
+  atomically from a completed sibling temporary file. Validation and I/O
+  failures therefore leave existing destinations unchanged.
+- Header-only CSV files preserve duplicate columns instead of silently
+  deduplicating their names.
+- Categorical payload columns no longer degrade to strings during joins;
+  category domains and ordering are preserved, and null padding produces
+  nullable categoricals on optional join sides.
+- Vector concatenation now resolves a common result schema for Vector, scalar,
+  and iterable inputs: nullability widens, compatible numeric kinds promote,
+  and incompatible ordinary kinds become `object`. Matching categorical
+  domains remain categorical, while conflicting domains or categorical/plain
+  string columns become `str`.
+- Dtype promotion now changes the concrete typed Vector subclass together with
+  `Schema.kind`, preventing stale dtype-specific APIs after promotion.
+- Categorical comparisons now reject Vector operands with unequal lengths
+  instead of truncating results or failing with an indexing error.
+- `Vector.filled()` now rejects boolean, non-integer, and negative lengths with
+  explicit Serif errors while retaining zero as a valid length.
+- Failed Vector assignments and non-batch multi-column Table assignments are
+  atomic across validation and dtype promotion. `batch()` retains its
+  documented partial-mutation behavior across separate column writes.
 
 ### Performance
+- PyArrow is imported only when Parquet column data needs decoding; importing
+  Serif and inspecting footer-backed names, schemas, and shapes remain lazy.
+- Interactive inspection preserves deferred columns: `dir()` and tab
+  completion use cached metadata, wide Table reprs load only displayed columns,
+  and column previews read only their displayed head and tail values.
+- Schema-known reductions build canonical packed result storage directly
+  without a second inference pass. Constant reductions also produce group
+  results without materializing group slices.
+- NumPy accelerates exact fixed-width `v.math` operations: `fabs`,
+  `isfinite`, `isinf`, `isnan`, `ceil`, `floor`, `trunc`, `sqrt`,
+  `copysign`, and `nextafter`. Unsupported storage and Python-specific
+  exception or bigint cases fall back to the pure-Python path.
+- NumPy accelerates fixed-width integer `v.math.gcd()`, plus `lcm()` and
+  `prod()` when a preflight proves signed-int64 intermediates cannot overflow.
+  Null skipping, empty identities, and zero-product cases remain exact;
+  unsupported or unproven inputs fall back to Python. `fsum()`, `hypot()`, and
+  `dist()` remain pure to preserve Python's numerical behavior.
+- NumPy accelerates fixed-width `v.stats` medians and quantiles, `fmean()`,
+  floating-point `mean()`, and floating-point population/sample variance and
+  standard deviation. Discrete results preserve Python values and scalar
+  types; floating results preserve the formula with normal rounding tolerance.
+  Exact-result integer and non-finite cases fall back to Python where needed.
 
 - PyArrow is loaded only when Parquet column data is needed, and interactive
   inspection avoids materializing deferred columns unnecessarily.
