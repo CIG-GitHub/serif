@@ -1,4 +1,4 @@
-"""_Int specific tests - int method proxying"""
+"""_Int-specific construction, capabilities, and operations."""
 import pytest
 from serif import Vector, _Int
 
@@ -18,7 +18,7 @@ class TestIntCreation:
 
 
 class TestIntMethods:
-    """Test int method proxying"""
+    """Test explicit int capabilities."""
     
     def test_bit_length(self):
         v = Vector([1, 2, 4, 8, 16])

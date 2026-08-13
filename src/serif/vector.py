@@ -796,5 +796,13 @@ class Vector():
 
 
     def __getattr__(self, name):
-        """Proxy attribute access to the underlying scalar dtype."""
-        return _element_api.resolve(self, name)
+        """Resolve only explicitly registered capabilities for this dtype."""
+        return _element_api.resolve_capability(self, name)
+
+
+    def __dir__(self):
+        """Include the curated capabilities for this Vector's dtype."""
+        return sorted(
+            set(object.__dir__(self))
+            | _element_api.capability_names(self)
+        )

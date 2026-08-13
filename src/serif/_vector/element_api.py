@@ -1,35 +1,17 @@
-"""Explicit and dynamic per-dtype element APIs."""
+"""Curated per-dtype element capabilities."""
+
+
+_CAPABILITIES = {}
 
 
 def _vector_class():
-    # Local import avoids a cycle while Vector still imports this module to
-    # delegate __getattr__.
+    # Local import avoids a cycle while typed Vector subclasses are imported.
     from ..vector import Vector
     return Vector
 
 
-class MethodProxy:
-    """Proxy that defers a method call to each element in a Vector."""
-
-    def __init__(self, vector, method_name):
-        self._vector = vector
-        self._method_name = method_name
-
-    def __call__(self, *args, **kwargs):
-        method = self._method_name
-        # Dynamic scalar methods carry no result-kind metadata. Keep the
-        # materialized results required for whole-result dtype inference.
-        results = []
-        for element in self._vector._storage:
-            if element is None:
-                results.append(None)
-            else:
-                results.append(getattr(element, method)(*args, **kwargs))
-        return _vector_class()(results)
-
-
-def _elementwise_proxy(method_name, result_kind):
-    """Build an explicit per-element method for a typed Vector subclass."""
+def _elementwise_method(scalar_kind, method_name, result_kind):
+    """Build and register one explicit per-element method."""
     def proxy(self, *args, **kwargs):
         Vector = _vector_class()
         values = (
@@ -46,11 +28,12 @@ def _elementwise_proxy(method_name, result_kind):
     proxy.__doc__ = (
         f"Element-wise {method_name}() on each value (None passes through)."
     )
+    _CAPABILITIES[(scalar_kind, method_name)] = proxy
     return proxy
 
 
-def _elementwise_attribute(attribute_name, result_kind):
-    """Build an explicit fixed-result property for a typed Vector subclass."""
+def _elementwise_property(scalar_kind, attribute_name, result_kind):
+    """Build and register one explicit fixed-result property."""
     def attribute(self):
         Vector = _vector_class()
         return Vector._from_iterable_known_kind(
@@ -67,31 +50,33 @@ def _elementwise_attribute(attribute_name, result_kind):
     attribute.__doc__ = (
         f"Element-wise {attribute_name} on each value (None passes through)."
     )
-    return property(attribute)
+    descriptor = property(attribute)
+    _CAPABILITIES[(scalar_kind, attribute_name)] = descriptor
+    return descriptor
 
 
-def resolve(vector, name):
-    """Resolve an attribute against the Vector's scalar dtype."""
+def resolve_capability(vector, name):
+    """Bind one registered capability for a Vector's semantic dtype."""
+    schema = object.__getattribute__(vector, 'schema')()
+    descriptor = (
+        _CAPABILITIES.get((schema.kind, name))
+        if schema is not None
+        else None
+    )
+    if descriptor is None:
+        raise AttributeError(
+            f"{type(vector).__name__!s} object has no attribute '{name}'"
+        )
+    return descriptor.__get__(vector, type(vector))
+
+
+def capability_names(vector):
+    """Return the registered capability names for a Vector's semantic dtype."""
     schema = object.__getattribute__(vector, 'schema')()
     if schema is None:
-        raise AttributeError(f"Empty Vector has no attribute '{name}'")
-    dtype_kind = schema.kind
-    if dtype_kind is object:
-        raise AttributeError(f"Vector[object] has no attribute '{name}'")
-
-    class_attribute = getattr(dtype_kind, name, None)
-    if class_attribute is None:
-        raise AttributeError(
-            f"'{dtype_kind.__name__}' object has no attribute '{name}'"
-        )
-
-    if callable(class_attribute):
-        return MethodProxy(vector, name)
-
-    # Dynamic scalar attributes also lack result-kind metadata, so inference
-    # requires one replayable materialization of the complete result.
-    Vector = _vector_class()
-    return Vector(tuple(
-        getattr(element, name) if element is not None else None
-        for element in vector._storage
-    ))
+        return set()
+    return {
+        name
+        for kind, name in _CAPABILITIES
+        if kind is schema.kind
+    }

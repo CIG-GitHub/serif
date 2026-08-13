@@ -1,4 +1,4 @@
-"""_Date specific tests - date method proxying and operations"""
+"""_Date-specific construction, capabilities, and operations."""
 import pytest
 from datetime import date, datetime
 from serif import Vector, _Date
@@ -14,7 +14,7 @@ class TestDateCreation:
 
 
 class TestDateMethods:
-    """Test date method proxying"""
+    """Test explicit date capabilities."""
     
     def test_year(self):
         v = Vector([date(2025, 1, 15), date(2024, 12, 31)])
