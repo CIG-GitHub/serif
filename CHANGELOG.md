@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.2.2 – Unreleased
+## 0.3.0 – Unreleased
+
+## 0.2.2 – Math, Statistics & Schema Stability
 
 This release adds dedicated math and statistics APIs, strengthens schema
 preservation, and improves mutation and I/O safety.
