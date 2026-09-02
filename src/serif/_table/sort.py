@@ -2,6 +2,7 @@
 
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from .._vector.categorical import _CategoryStorage
 from .._vector.selection import take_storage
 from .._vector.storage import ArrayStorage
 from .._vector.storage import BoolStorage
@@ -21,6 +22,9 @@ def _table_class():
 
 def _sort_value_getter(storage):
     """Return a direct scalar accessor without snapshotting the column."""
+    if isinstance(storage, _CategoryStorage):
+        return _sort_value_getter(storage._codes)
+
     if isinstance(storage, ArrayStorage):
         data = storage._data
         mask = storage._mask
