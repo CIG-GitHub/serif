@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3 – 2026-09-02
+
+### Fixed
+
+- `Table.sort_by()` now respects categorical ordering for categorical columns
+  and categorical Vector sort keys, including descending sorts and configurable
+  null placement.
+
 ## 0.2.2 – 2026-08-13
 
 This release adds dedicated math and statistics APIs, strengthens schema
