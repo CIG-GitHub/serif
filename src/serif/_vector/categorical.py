@@ -295,14 +295,13 @@ class _Category(Vector):
         return None
 
     def _elementwise_compare(self, other, op):
-        # Unknown in, unknown out (docs/null-semantics.md): null positions
-        # compare to None, and the result vector is nullable when any None
-        # was produced.
+        # Null positions produce unknown comparison results; scalar None
+        # equality is rejected before comparing any positions.
         is_ordering = op in _ORDERING_OPS
 
         if other is None and not is_ordering:
             from .operators import null_literal_compare
-            return null_literal_compare(self, op)
+            return null_literal_compare(op)
 
         def _wrap(result):
             return Vector._from_iterable_known_dtype(

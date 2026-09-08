@@ -2,21 +2,23 @@
 The null doctrine (docs/null-semantics.md):
 
   Element-wise: unknown in, unknown out. Kleene logic for & and |.
-  Aggregate: skip nulls; empty remainder yields the identity element
-  (sum 0, count 0, all True, any False) or None (max, min, mean, stdev);
-  the verdict reductions all()/any() warn SerifEmptyReductionWarning
-  unless on_empty= is passed.
+  Numeric aggregates skip nulls; empty remainder yields an identity or None.
+  all()/any() fold with Kleene logic; only actually empty input returns the
+  identity with SerifEmptyReductionWarning unless on_empty= is passed.
 
 Plus the dtype dispatch for &/|/^: Kleene logical on bool vectors,
 Python bitwise on int vectors.
 """
 
+import operator
 import warnings
 from datetime import date
 
 import pytest
 
 from serif import Vector
+from serif import Table
+from serif import Schema
 from serif import SerifEmptyReductionWarning
 from serif import SerifTypeError
 
@@ -44,6 +46,7 @@ def test_equality_between_nullable_vectors():
     a = Vector([1, None, 3])
     b = Vector([1, 2, None])
     assert list(a == b) == [True, None, None]
+    assert list(a != b) == [False, None, None]
 
 
 def test_null_equals_null_is_null():
@@ -51,51 +54,88 @@ def test_null_equals_null_is_null():
     a = Vector([None, 1])
     b = Vector([None, 1])
     assert list(a == b) == [None, True]
+    assert list(a != b) == [None, False]
 
 
 def test_not_equal_propagates_null():
     assert list(Vector([1, None]) != 1) == [False, None]
 
 
-def test_compare_to_none_scalar_is_missingness_test_and_warns():
-    # Doctrine rule three: the scalar None names absence itself, so
-    # `v == None` is `v.is_na()` — Python's answer (None == None is True).
+@pytest.mark.parametrize("comparison, alternative", [
+    (operator.eq, 'v.is_na()'),
+    (operator.ne, '~v.is_na()'),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data, dtype", [
+    ([1, None, 3], Schema(int, True)),
+    ([1, 3], int),
+    ([None, None], Schema(int, True)),
+    ([], int),
+    ([], None),
+    ([None], None),
+    (['a', None], Schema(str, True)),
+    ([True, None], Schema(bool, True)),
+    ([date(2024, 1, 2), None], Schema(date, True)),
+    ([1, 'a', None], Schema(object, True)),
+])
+def test_compare_to_none_scalar_raises(
+    comparison, alternative, reverse, data, dtype,
+):
+    v = Vector(data, dtype=dtype)
+    with pytest.raises(SerifTypeError, match='scalar None') as error:
+        comparison(None, v) if reverse else comparison(v, None)
+    assert alternative in str(error.value)
+
+
+def test_is_na_mask_is_total():
     v = Vector([1, None, 3])
-    with pytest.warns(UserWarning, match='is_na'):
-        result = v == None  # noqa: E711 — the point of the test
+    result = v.is_na()
     assert list(result) == [False, True, False]
-    with pytest.warns(UserWarning, match='is_na'):
-        inverted = v != None  # noqa: E711
-    assert list(inverted) == [True, False, True]
-
-
-def test_none_comparison_mask_is_total():
-    # Explicit absence collapses the unknowns: the result is plain bool,
-    # never bool? — you addressed the missing values, so none survive.
-    v = Vector([1, None, 3])
-    with pytest.warns(UserWarning):
-        result = v == None  # noqa: E711
+    assert list(~result) == [True, False, True]
     schema = result.schema()
     assert schema.kind is bool
     assert schema.nullable is False
 
 
-def test_plucked_null_scalar_crosses_the_line():
-    # The named sharp edge (docs/null-semantics.md): v == w propagates
-    # null (two data unknowns), but plucking that null out makes it the
-    # absence symbol — v == w[1] is a missingness test.
+@pytest.mark.parametrize("comparison, expected", [
+    (operator.eq, [True, None, False]),
+    (operator.ne, [False, None, True]),
+])
+def test_plucked_null_scalar_raises(comparison, expected):
+    # Extracting a null must not turn value equality into missingness.
     v = Vector([1, None, 3])
     w = Vector([1, None, 4])
-    assert list(v == w) == [True, None, False]
+    assert list(comparison(v, w)) == expected
     assert w[1] is None
-    with pytest.warns(UserWarning, match='is_na'):
-        assert list(v == w[1]) == [False, True, False]
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(v, w[1])
 
 
-def test_categorical_compare_to_none_is_missingness_test():
+@pytest.mark.parametrize("comparison", [operator.eq, operator.ne])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data", [['b', None], ['b'], [None], []])
+def test_categorical_compare_to_none_raises(comparison, reverse, data):
+    c = Vector(data, dtype=Schema(str, True)).categorize(['a', 'b'])
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(None, c) if reverse else comparison(c, None)
+
+
+def test_categorical_missingness_and_vector_comparison():
     c = Vector(['b', None]).categorize(['a', 'b'])
-    with pytest.warns(UserWarning, match='is_na'):
-        assert list(c == None) == [False, True]  # noqa: E711
+    other = Vector(['a', None]).categorize(['a', 'b'])
+    assert list(c.is_na()) == [False, True]
+    assert list(~c.is_na()) == [True, False]
+    assert list(c == other) == [False, None]
+    assert list(c != other) == [True, None]
+
+
+@pytest.mark.parametrize("comparison", [operator.eq, operator.ne])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data", [{'x': [1, None]}, {'x': []}, {}])
+def test_table_compare_to_none_raises(comparison, reverse, data):
+    t = Table(data)
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(None, t) if reverse else comparison(t, None)
 
 
 def test_comparison_count_counts_known():
@@ -263,50 +303,100 @@ def test_float_sum_identity_preserves_dtype():
     assert type(all_null.sum()) is float
 
 
-def test_all_skips_nulls():
-    assert Vector([True, None]).all() is True
+@pytest.mark.parametrize("data, all_result, any_result", [
+    ([True, True], True, True),
+    ([True, False], False, True),
+    ([True, None], None, True),
+    ([False, True], False, True),
+    ([False, False], False, False),
+    ([False, None], False, None),
+    ([None, True], None, True),
+    ([None, False], False, None),
+    ([None, None], None, None),
+    ([None], None, None),
+    ([None, True, False], False, True),
+])
+def test_verdicts_fold_kleene_logic(data, all_result, any_result):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        v = Vector(data)
+        assert v.all() is all_result
+        assert v.any() is any_result
 
 
-def test_any_skips_nulls():
-    assert Vector([False, None]).any() is False
+@pytest.mark.parametrize("data, all_result, any_result", [
+    ([1, 2], True, True),
+    ([0, 0], False, False),
+    ([1, None], None, True),
+    ([None, 0], False, None),
+    (['', None], False, None),
+    ([None, 'yes'], None, True),
+])
+def test_verdicts_preserve_known_value_truthiness(data, all_result, any_result):
+    v = Vector(data)
+    assert v.all() is all_result
+    assert v.any() is any_result
+
+
+def test_dropna_explicitly_reduces_only_known_values():
+    assert Vector([True, None]).dropna().all() is True
+    assert Vector([False, None]).dropna().any() is False
+
+
+@pytest.mark.parametrize("data, verdict, enters", [
+    ([6, 7], True, True),
+    ([6, 4], False, False),
+    ([6, None], None, False),
+    ([None, None], None, False),
+])
+def test_comparison_all_requires_positive_truth_in_if(data, verdict, enters):
+    result = (Vector(data) > 5).all()
+    assert result is verdict
+    entered = False
+    if result:
+        entered = True
+    assert entered is enters
 
 
 # ---------------------------------------------------------------------------
-# Verdict reductions: all()/any() return the identity and warn
+# Empty verdict reductions return the identity and warn
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("method, identity", [('all', True), ('any', False)])
-@pytest.mark.parametrize("data", [[], [None], [None, None]])
-def test_verdict_over_zero_valid_values_warns_identity(method, data, identity):
+def test_verdict_over_empty_input_warns_identity(method, identity):
     # Python semantics: all([]) is True, any([]) is False — plus a warning,
     # because a verdict from no evidence might not be what you meant.
     with pytest.warns(SerifEmptyReductionWarning):
-        assert getattr(Vector(data), method)() is identity
+        assert getattr(Vector([]), method)() is identity
 
 
 @pytest.mark.parametrize("method", ['all', 'any'])
-@pytest.mark.parametrize("data", [[], [None, None]])
 @pytest.mark.parametrize("verdict", [True, False])
-def test_on_empty_value_is_the_verdict_and_silences(method, data, verdict):
+def test_on_empty_value_is_the_verdict_and_silences(method, verdict):
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
-        assert getattr(Vector(data), method)(on_empty=verdict) is verdict
+        assert getattr(Vector([]), method)(on_empty=verdict) is verdict
 
 
 def test_explicit_on_empty_none_still_warns():
-    # None is "no verdict chosen", stated or omitted — there is no
-    # null-verdict option (in an `if`, None is indistinguishable from False).
+    # Explicit None retains the default empty-input policy.
     with pytest.warns(SerifEmptyReductionWarning):
-        assert Vector([None]).all(on_empty=None) is True
+        assert Vector([]).all(on_empty=None) is True
 
 
-def test_on_empty_ignored_when_evidence_exists():
-    assert Vector([True, None]).all(on_empty=False) is True
-    assert Vector([False, None]).any(on_empty=True) is False
+@pytest.mark.parametrize("on_empty", [None, True, False])
+def test_on_empty_does_not_override_nonempty_results(on_empty):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        assert Vector([True, None]).all(on_empty=on_empty) is None
+        assert Vector([False, None]).any(on_empty=on_empty) is None
+        assert Vector([None]).all(on_empty=on_empty) is None
+        assert Vector([None]).any(on_empty=on_empty) is None
+        assert Vector([False, None]).all(on_empty=on_empty) is False
+        assert Vector([True, None]).any(on_empty=on_empty) is True
 
 
-def test_verdict_with_any_valid_value_never_warns():
-    # A single valid value settles it — no warning even among nulls.
+def test_decisive_value_settles_among_nulls():
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
         assert Vector([None, False, None]).all() is False
@@ -324,7 +414,7 @@ def test_on_empty_rejects_non_bool(bad):
 
 def test_no_verdict_warning_teaches():
     with pytest.warns(SerifEmptyReductionWarning, match='on_empty'):
-        Vector([None, None]).all()
+        Vector([]).all()
     with pytest.warns(SerifEmptyReductionWarning, match='empty vector'):
         Vector([]).any()
 
@@ -334,4 +424,4 @@ def test_warning_escalates_to_error_via_filter():
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
         with pytest.raises(SerifEmptyReductionWarning):
-            Vector([None, None]).any()
+            Vector([]).any()

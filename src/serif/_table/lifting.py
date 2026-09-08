@@ -72,6 +72,8 @@ def is_in(table, members):
 
 def compare(table, other, op):
     """Lift a comparison over columns, preserving left column names."""
+    if other is None and op in (operator.eq, operator.ne):
+        return _vector_operators.null_literal_compare(op)
     Table = _table_class()
     other = table._check_duplicate(other)
     left_columns = tuple(iter_columns(table))

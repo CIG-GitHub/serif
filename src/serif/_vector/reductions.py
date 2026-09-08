@@ -67,8 +67,8 @@ def _check_on_empty(method_name, on_empty):
         return
     raise SerifTypeError(
         f"{method_name}(): on_empty must be True or False (or None, the "
-        f"default, which returns the identity and warns on zero valid "
-        f"values); got {on_empty!r}"
+        f"default, which returns the identity and warns on empty input); "
+        f"got {on_empty!r}"
     )
 
 
@@ -182,13 +182,11 @@ def dist(vector, other):
     return _python_reductions.dist(vector._storage, right_values)
 
 
-def _no_verdict(vector, method_name, on_empty, identity):
+def _empty_verdict(method_name, on_empty, identity):
     if on_empty is not None:
         return on_empty
-    n = len(vector._storage)
-    detail = "empty vector" if n == 0 else f"length {n}, all null"
     warnings.warn(
-        f"{method_name}() over zero valid values ({detail}): returning "
+        f"{method_name}() over an empty vector: returning "
         f"{identity}, the identity, as Python's {method_name}([]) does. "
         f"Pass on_empty=True or on_empty=False to state the empty-case "
         f"verdict yourself and silence this warning.",
@@ -201,27 +199,27 @@ def _no_verdict(vector, method_name, on_empty, identity):
 def all(vector, on_empty=None):
     _check_on_empty('all', on_empty)
     if vector.ndims() == 2:
-        return vector.copy(
+        return _vector_class()._from_iterable_known_kind(
             (c.all(on_empty=on_empty) for c in vector.cols()),
+            bool,
             name=None,
         )
-    verdict = _python_reductions.all_(vector._storage)
-    if verdict is None:
-        return _no_verdict(vector, 'all', on_empty, True)
-    return verdict
+    if len(vector._storage) == 0:
+        return _empty_verdict('all', on_empty, True)
+    return _python_reductions.all_(vector._storage)
 
 
 def any(vector, on_empty=None):
     _check_on_empty('any', on_empty)
     if vector.ndims() == 2:
-        return vector.copy(
+        return _vector_class()._from_iterable_known_kind(
             (c.any(on_empty=on_empty) for c in vector.cols()),
+            bool,
             name=None,
         )
-    verdict = _python_reductions.any_(vector._storage)
-    if verdict is None:
-        return _no_verdict(vector, 'any', on_empty, False)
-    return verdict
+    if len(vector._storage) == 0:
+        return _empty_verdict('any', on_empty, False)
+    return _python_reductions.any_(vector._storage)
 
 
 def mean(vector):

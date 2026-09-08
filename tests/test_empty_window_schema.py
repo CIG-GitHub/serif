@@ -1,5 +1,7 @@
 """Operation-derived schemas for windows over empty inputs."""
 
+import pytest
+
 from serif import Schema
 from serif import Table
 from serif import Vector
@@ -49,7 +51,7 @@ def test_empty_window_derives_known_reducer_schemas():
         Schema(str, True),
         Schema(float, False),
         Schema(int, False),
-        Schema(bool, False),
+        Schema(bool, True),
         Schema(float, False),
         Schema(float, False),
         Schema(int, False),
@@ -85,3 +87,15 @@ def test_empty_window_preserves_group_schema_and_unresolved_output():
     assert renamed.shape == (0, 2)
     assert renamed.unknown_result.schema() is None
     assert renamed.object_key.schema() == Schema(object, False)
+
+
+@pytest.mark.parametrize('method', ['all', 'any'])
+def test_empty_verdict_schema_tracks_source_nullability(method):
+    source = _empty_source()
+    result = source.window('Group Key', {
+        'nullable_flag': getattr(source.value, method),
+        'dense_flag': getattr(source.score, method),
+    })
+    assert result.nullable_flag.schema() == Schema(bool, True)
+    assert result.dense_flag.schema() == Schema(bool, False)
+    assert len(result) == 0

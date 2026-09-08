@@ -2,6 +2,7 @@ import pytest
 import warnings
 from serif import Table
 from serif import Vector
+from serif import Schema
 from serif import SerifEmptyReductionWarning
 
 
@@ -388,85 +389,105 @@ class TestAggregateWindowEdgeCases:
 
 
 class TestVerdictReductionsInAggregations:
-	"""all()/any() over a group with zero valid values returns the identity
-	and warns once per aggregation, naming the empty groups
-	(docs/null-semantics.md)."""
+	"""Grouped verdicts preserve unknowns and warn only for empty inputs."""
 
-	def test_aggregate_all_null_group_warns_with_group_key(self):
+	@pytest.mark.parametrize('operation', ['aggregate', 'window'])
+	@pytest.mark.parametrize('method, expected', [
+		('all', [None, False, None, False]),
+		('any', [True, None, None, True]),
+	])
+	@pytest.mark.parametrize('use_callable', [False, True])
+	def test_grouped_kleene_verdicts(self, operation, method, expected, use_callable):
 		table = Table({
-			'region': ['E', 'E', 'W', 'W'],
-			'ok':     [True, True, None, None],
+			'region': ['A', 'A', 'B', 'B', 'C', 'C', 'D', 'D'],
+			'ok': [True, None, False, None, None, None, True, False],
 		})
-		with pytest.warns(SerifEmptyReductionWarning, match=r"'flags'.*'W'"):
-			result = table.aggregate(
+		reducer = getattr(table.ok, method)
+		if use_callable:
+			reducer = lambda g: getattr(g.ok, method)(on_empty=False)
+		with warnings.catch_warnings():
+			warnings.simplefilter('error', SerifEmptyReductionWarning)
+			result = getattr(table, operation)(
 				groupby=table.region,
-				aggregations={'flags': table.ok.all}
+				aggregations={'flags': reducer},
 			)
-		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
-		assert flags['E'] is True
-		assert flags['W'] is True  # the all() identity
+		if operation == 'window':
+			expected = [value for value in expected for _ in range(2)]
+		assert list(result.flags) == expected
+		assert result.flags.schema() == Schema(bool, True)
 
-	def test_aggregate_qualified_via_lambda_is_silent(self):
+	@pytest.mark.parametrize('method, expected_a, expected_b', [
+		('all', [True, False], [None, None]),
+		('any', [True, False], [True, None]),
+	])
+	def test_aggregate_block_preserves_unknowns(self, method, expected_a, expected_b):
 		table = Table({
 			'region': ['E', 'E', 'W', 'W'],
-			'ok':     [True, True, None, None],
+			'a': [True, True, False, False],
+			'b': [True, None, None, None],
 		})
 		with warnings.catch_warnings():
-			warnings.simplefilter("error", SerifEmptyReductionWarning)
+			warnings.simplefilter('error', SerifEmptyReductionWarning)
 			result = table.aggregate(
 				groupby=table.region,
-				aggregations={'flags': lambda g: g.ok.all(on_empty=False)}
+				aggregations={'ok_': getattr(table['a', 'b'], method)},
 			)
-		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
-		assert flags['E'] is True
-		assert flags['W'] is False
+		assert list(result.ok_a) == expected_a
+		assert list(result.ok_b) == expected_b
+		assert result.ok_a.schema() == Schema(bool, False)
+		assert result.ok_b.schema() == Schema(bool, True)
 
-	def test_aggregate_callable_warns_from_the_reduction(self):
-		# A callable's inner any() warns at the vector level — no group
-		# coordinates, but the identity lands in the result.
-		table = Table({
-			'region': ['E', 'W'],
-			'ok':     [True, None],
-		})
-		with pytest.warns(SerifEmptyReductionWarning):
-			result = table.aggregate(
-				groupby=table.region,
-				aggregations={'flags': lambda g: g.ok.any()}
-			)
-		flags = {result.region[i]: result.flags[i] for i in range(len(result))}
-		assert flags['E'] is True
-		assert flags['W'] is False  # the any() identity
-
-	def test_aggregate_block_names_the_column(self):
-		table = Table({
-			'region': ['E', 'W'],
-			'a':      [True, True],
-			'b':      [True, None],
-		})
-		with pytest.warns(SerifEmptyReductionWarning, match=r"column 'b'.*'W'"):
-			result = table.aggregate(
-				groupby=table.region,
-				aggregations={'ok_': table['a', 'b'].all}
-			)
-		assert list(result.ok_a) == [True, True]
-		assert list(result.ok_b) == [True, True]  # identity at 'W'
-
-	def test_aggregate_whole_table_says_so(self):
+	@pytest.mark.parametrize('method', ['all', 'any'])
+	def test_aggregate_whole_table_unknown_is_nullable_bool(self, method):
 		table = Table({'ok': [None, None]})
-		with pytest.warns(SerifEmptyReductionWarning, match='whole table'):
-			result = table.aggregate(aggregations={'flags': table.ok.all})
-		assert result.flags[0] is True
+		with warnings.catch_warnings():
+			warnings.simplefilter('error', SerifEmptyReductionWarning)
+			result = table.aggregate(aggregations={'flags': getattr(table.ok, method)})
+		assert result.flags[0] is None
+		assert result.flags.schema() == Schema(bool, True)
+		assert list(result.flags | True) == [True]
 
-	def test_window_all_null_group_warns_with_group_key(self):
-		table = Table({
-			'region': ['E', 'W'],
-			'ok':     [True, None],
-		})
-		with pytest.warns(SerifEmptyReductionWarning, match=r"window\(\).*'W'"):
-			table.window(
+	@pytest.mark.parametrize('operation', ['aggregate', 'window'])
+	@pytest.mark.parametrize('method', ['all', 'any'])
+	def test_every_group_unknown_keeps_boolean_schema(self, operation, method):
+		table = Table({'region': ['E', 'W'], 'ok': [None, None]})
+		with warnings.catch_warnings():
+			warnings.simplefilter('error', SerifEmptyReductionWarning)
+			result = getattr(table, operation)(
 				groupby=table.region,
-				aggregations={'flags': table.ok.all}
+				aggregations={'flags': getattr(table.ok, method)},
 			)
+		assert list(result.flags) == [None, None]
+		assert result.flags.schema() == Schema(bool, True)
+
+	@pytest.mark.parametrize('method, identity', [('all', True), ('any', False)])
+	def test_empty_whole_table_warns_and_can_be_qualified(self, method, identity):
+		table = Table({'ok': []})
+		with pytest.warns(SerifEmptyReductionWarning, match='whole table'):
+			result = table.aggregate(aggregations={'flags': getattr(table.ok, method)})
+		assert result.flags[0] is identity
+		with pytest.warns(SerifEmptyReductionWarning, match='empty vector'):
+			result = table.aggregate(aggregations={
+				'flags': lambda g: getattr(g.ok, method)(),
+			})
+		assert result.flags[0] is identity
+		with warnings.catch_warnings():
+			warnings.simplefilter('error', SerifEmptyReductionWarning)
+			result = table.aggregate(aggregations={
+				'flags': lambda g: getattr(g.ok, method)(on_empty=not identity),
+			})
+		assert result.flags[0] is (not identity)
+
+	@pytest.mark.parametrize('method, identity', [('all', True), ('any', False)])
+	def test_empty_block_warns_once_per_output_column(self, method, identity):
+		table = Table({'a': [], 'b': []})
+		with pytest.warns(SerifEmptyReductionWarning) as caught:
+			result = table.aggregate(aggregations={'ok_': getattr(table, method)})
+		assert len(caught) == 2
+		assert "column 'a'" in str(caught[0].message)
+		assert "column 'b'" in str(caught[1].message)
+		assert result.ok_a[0] is identity
+		assert result.ok_b[0] is identity
 
 	def test_aggregate_dense_verdicts_unaffected(self):
 		table = Table({

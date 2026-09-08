@@ -1,5 +1,7 @@
 """Operation-derived schemas for aggregates with no groups."""
 
+import pytest
+
 from serif import Schema
 from serif import Table
 from serif import Vector
@@ -53,7 +55,7 @@ def test_empty_aggregate_derives_known_scalar_and_block_schemas():
         Schema(str, True),
         Schema(float, False),
         Schema(int, False),
-        Schema(bool, False),
+        Schema(bool, True),
         Schema(float, False),
         Schema(float, False),
         Schema(int, False),
@@ -85,6 +87,17 @@ def test_empty_aggregate_preserves_explicit_object_group_key_schema():
     assert result.shape == (0, 2)
     assert result.object_key.schema() == Schema(object, False)
     assert result.row_count.schema() == Schema(int, False)
+
+
+@pytest.mark.parametrize('method', ['all', 'any'])
+def test_empty_verdict_schema_tracks_source_nullability_for_blocks(method):
+    source = _empty_source()
+    result = source.aggregate('Group Key', {
+        'flags_': getattr(source['Value', 'Score'], method),
+    })
+    assert result.flags_value.schema() == Schema(bool, True)
+    assert result.flags_score.schema() == Schema(bool, False)
+    assert len(result) == 0
 
 
 def test_unresolved_empty_custom_aggregate_remains_a_usable_column():
