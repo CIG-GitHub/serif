@@ -135,7 +135,10 @@ def _known_reduction_schema(source, method_name, accessor_name):
         if method_name == 'count':
             return Schema(int, False)
         if method_name in ('all', 'any'):
-            return Schema(bool, False)
+            return Schema(
+                bool,
+                source_schema.nullable if source_schema is not None else True,
+            )
         if source_schema is None:
             return None
         if method_name in ('first', 'last', 'min', 'max'):
@@ -216,14 +219,14 @@ def _warn_empty_verdict_groups(
     """One warning per aggregation output naming the empty-verdict groups."""
     identity = _VERDICT_IDENTITY[method_name]
     if empty_keys == [()]:
-        where = "the whole table has zero valid values"
+        where = "the whole table has zero rows"
     else:
         shown = ", ".join(repr(key) for key in empty_keys[:8])
         if len(empty_keys) > 8:
             shown += ", ..."
         where = (
-            f"{len(empty_keys)} of {total_groups} groups have zero valid "
-            f"values (keys: {shown})"
+            f"{len(empty_keys)} of {total_groups} groups have zero rows "
+            f"(keys: {shown})"
         )
     warnings.warn(
         f"{function_name}() aggregation '{aggregation_name}' "
@@ -297,7 +300,7 @@ def apply_aggregations(
                         )
                         if (
                             identity is not None
-                            and column_slice.count() == 0
+                            and len(column_slice) == 0
                         ):
                             empty_by_column[index].append(key)
                             value = identity
@@ -339,6 +342,14 @@ def apply_aggregations(
                         else f"col{index}_"
                     )
                     output_schema = result_schema
+                    if (
+                        output_schema is None
+                        and identity is not None
+                        and fanned[index]
+                    ):
+                        output_schema = Schema(
+                            bool, any(value is None for value in fanned[index]),
+                        )
                     if output_schema is None and infer_result_schema:
                         output_schema = _known_reduction_schema(
                             source_columns[index],
@@ -359,7 +370,7 @@ def apply_aggregations(
                 for key, row_indices in group_items:
                     total_groups += 1
                     group_vector = slicer(row_indices, None)
-                    if identity is not None and group_vector.count() == 0:
+                    if identity is not None and len(group_vector) == 0:
                         empty_keys.append(key)
                         value = identity
                     else:
@@ -385,6 +396,10 @@ def apply_aggregations(
                         function_name,
                     )
                 output_schema = result_schema
+                if output_schema is None and identity is not None and output:
+                    output_schema = Schema(
+                        bool, any(value is None for value in output),
+                    )
                 if output_schema is None and infer_result_schema:
                     output_schema = _known_reduction_schema(
                         source,

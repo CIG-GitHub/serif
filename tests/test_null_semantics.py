@@ -2,10 +2,9 @@
 The null doctrine (docs/null-semantics.md):
 
   Element-wise: unknown in, unknown out. Kleene logic for & and |.
-  Aggregate: skip nulls; empty remainder yields the identity element
-  (sum 0, count 0, all True, any False) or None (max, min, mean, stdev);
-  the verdict reductions all()/any() warn SerifEmptyReductionWarning
-  unless on_empty= is passed.
+  Numeric aggregates skip nulls; empty remainder yields an identity or None.
+  all()/any() fold with Kleene logic; only actually empty input returns the
+  identity with SerifEmptyReductionWarning unless on_empty= is passed.
 
 Plus the dtype dispatch for &/|/^: Kleene logical on bool vectors,
 Python bitwise on int vectors.
@@ -304,50 +303,100 @@ def test_float_sum_identity_preserves_dtype():
     assert type(all_null.sum()) is float
 
 
-def test_all_skips_nulls():
-    assert Vector([True, None]).all() is True
+@pytest.mark.parametrize("data, all_result, any_result", [
+    ([True, True], True, True),
+    ([True, False], False, True),
+    ([True, None], None, True),
+    ([False, True], False, True),
+    ([False, False], False, False),
+    ([False, None], False, None),
+    ([None, True], None, True),
+    ([None, False], False, None),
+    ([None, None], None, None),
+    ([None], None, None),
+    ([None, True, False], False, True),
+])
+def test_verdicts_fold_kleene_logic(data, all_result, any_result):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        v = Vector(data)
+        assert v.all() is all_result
+        assert v.any() is any_result
 
 
-def test_any_skips_nulls():
-    assert Vector([False, None]).any() is False
+@pytest.mark.parametrize("data, all_result, any_result", [
+    ([1, 2], True, True),
+    ([0, 0], False, False),
+    ([1, None], None, True),
+    ([None, 0], False, None),
+    (['', None], False, None),
+    ([None, 'yes'], None, True),
+])
+def test_verdicts_preserve_known_value_truthiness(data, all_result, any_result):
+    v = Vector(data)
+    assert v.all() is all_result
+    assert v.any() is any_result
+
+
+def test_dropna_explicitly_reduces_only_known_values():
+    assert Vector([True, None]).dropna().all() is True
+    assert Vector([False, None]).dropna().any() is False
+
+
+@pytest.mark.parametrize("data, verdict, enters", [
+    ([6, 7], True, True),
+    ([6, 4], False, False),
+    ([6, None], None, False),
+    ([None, None], None, False),
+])
+def test_comparison_all_requires_positive_truth_in_if(data, verdict, enters):
+    result = (Vector(data) > 5).all()
+    assert result is verdict
+    entered = False
+    if result:
+        entered = True
+    assert entered is enters
 
 
 # ---------------------------------------------------------------------------
-# Verdict reductions: all()/any() return the identity and warn
+# Empty verdict reductions return the identity and warn
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("method, identity", [('all', True), ('any', False)])
-@pytest.mark.parametrize("data", [[], [None], [None, None]])
-def test_verdict_over_zero_valid_values_warns_identity(method, data, identity):
+def test_verdict_over_empty_input_warns_identity(method, identity):
     # Python semantics: all([]) is True, any([]) is False — plus a warning,
     # because a verdict from no evidence might not be what you meant.
     with pytest.warns(SerifEmptyReductionWarning):
-        assert getattr(Vector(data), method)() is identity
+        assert getattr(Vector([]), method)() is identity
 
 
 @pytest.mark.parametrize("method", ['all', 'any'])
-@pytest.mark.parametrize("data", [[], [None, None]])
 @pytest.mark.parametrize("verdict", [True, False])
-def test_on_empty_value_is_the_verdict_and_silences(method, data, verdict):
+def test_on_empty_value_is_the_verdict_and_silences(method, verdict):
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
-        assert getattr(Vector(data), method)(on_empty=verdict) is verdict
+        assert getattr(Vector([]), method)(on_empty=verdict) is verdict
 
 
 def test_explicit_on_empty_none_still_warns():
-    # None is "no verdict chosen", stated or omitted — there is no
-    # null-verdict option (in an `if`, None is indistinguishable from False).
+    # Explicit None retains the default empty-input policy.
     with pytest.warns(SerifEmptyReductionWarning):
-        assert Vector([None]).all(on_empty=None) is True
+        assert Vector([]).all(on_empty=None) is True
 
 
-def test_on_empty_ignored_when_evidence_exists():
-    assert Vector([True, None]).all(on_empty=False) is True
-    assert Vector([False, None]).any(on_empty=True) is False
+@pytest.mark.parametrize("on_empty", [None, True, False])
+def test_on_empty_does_not_override_nonempty_results(on_empty):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        assert Vector([True, None]).all(on_empty=on_empty) is None
+        assert Vector([False, None]).any(on_empty=on_empty) is None
+        assert Vector([None]).all(on_empty=on_empty) is None
+        assert Vector([None]).any(on_empty=on_empty) is None
+        assert Vector([False, None]).all(on_empty=on_empty) is False
+        assert Vector([True, None]).any(on_empty=on_empty) is True
 
 
-def test_verdict_with_any_valid_value_never_warns():
-    # A single valid value settles it — no warning even among nulls.
+def test_decisive_value_settles_among_nulls():
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
         assert Vector([None, False, None]).all() is False
@@ -365,7 +414,7 @@ def test_on_empty_rejects_non_bool(bad):
 
 def test_no_verdict_warning_teaches():
     with pytest.warns(SerifEmptyReductionWarning, match='on_empty'):
-        Vector([None, None]).all()
+        Vector([]).all()
     with pytest.warns(SerifEmptyReductionWarning, match='empty vector'):
         Vector([]).any()
 
@@ -375,4 +424,4 @@ def test_warning_escalates_to_error_via_filter():
     with warnings.catch_warnings():
         warnings.simplefilter("error", SerifEmptyReductionWarning)
         with pytest.raises(SerifEmptyReductionWarning):
-            Vector([None, None]).any()
+            Vector([]).any()

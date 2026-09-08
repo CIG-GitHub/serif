@@ -24,11 +24,11 @@ class SerifIndexError(SerifError, IndexError):
 
 
 class SerifEmptyReductionWarning(UserWarning):
-    """Warned when all()/any() reduces zero valid values to the identity.
+    """Warned when all()/any() reduces empty input to the identity.
 
-    A boolean reduction over an empty or all-null vector has no evidence to
-    summarize; serif returns the Python identity (all() -> True, any() ->
-    False) and warns. Pass on_empty=True/False to state the empty-case
-    verdict yourself and silence the warning (docs/null-semantics.md).
+    With zero elements, serif returns the Python identity (all() -> True,
+    any() -> False) and warns. Pass on_empty=True/False to choose the empty
+    result and silence the warning. Nonempty all-null inputs return None
+    without this warning.
     """
     pass

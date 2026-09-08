@@ -520,25 +520,29 @@ class Vector():
 
     def all(self, on_empty=None):
         """
-        True if every valid (non-null) element is truthy.
+        Fold truth values using Kleene AND.
 
-        Over zero valid values (empty vector, or all null after skipping)
-        all() returns True — the identity, as Python's all([]) does — and
-        warns SerifEmptyReductionWarning. Pass on_empty (True or False) to
-        state the empty-case verdict yourself and silence the warning; the
-        value you pass is the value returned. See docs/null-semantics.md.
+        A known falsy element settles False. Otherwise, any null makes the
+        result None; all known truthy elements yield True. Python treats a
+        None result as false in an if condition.
+
+        Empty input returns True and warns SerifEmptyReductionWarning.
+        Pass on_empty=True or False to choose the empty result and silence
+        the warning. This does not override nonempty unknown results.
         """
         return _reductions.all(self, on_empty=on_empty)
 
     def any(self, on_empty=None):
         """
-        True if any valid (non-null) element is truthy.
+        Fold truth values using Kleene OR.
 
-        Over zero valid values (empty vector, or all null after skipping)
-        any() returns False — the identity, as Python's any([]) does — and
-        warns SerifEmptyReductionWarning. Pass on_empty (True or False) to
-        state the empty-case verdict yourself and silence the warning; the
-        value you pass is the value returned. See docs/null-semantics.md.
+        A known truthy element settles True. Otherwise, any null makes the
+        result None; all known falsy elements yield False. Python treats a
+        None result as false in an if condition.
+
+        Empty input returns False and warns SerifEmptyReductionWarning.
+        Pass on_empty=True or False to choose the empty result and silence
+        the warning. This does not override nonempty unknown results.
         """
         return _reductions.any(self, on_empty=on_empty)
 

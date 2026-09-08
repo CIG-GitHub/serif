@@ -92,25 +92,25 @@ def dist(left_storage, right_storage):
 
 
 def all_(storage):
-    seen_valid = False
+    seen_null = False
     for value in storage:
         if value is None:
+            seen_null = True
             continue
         if not value:
             return False
-        seen_valid = True
-    return True if seen_valid else None
+    return None if seen_null else True
 
 
 def any_(storage):
-    seen_valid = False
+    seen_null = False
     for value in storage:
         if value is None:
+            seen_null = True
             continue
         if value:
             return True
-        seen_valid = True
-    return False if seen_valid else None
+    return None if seen_null else False
 
 
 def mean(storage):

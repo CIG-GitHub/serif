@@ -1,8 +1,10 @@
 """Conformance for Vector methods intentionally exposed on Table."""
 
+import warnings
+
 import pytest
 
-from serif import SerifTypeError, Table, Vector
+from serif import Schema, SerifEmptyReductionWarning, SerifTypeError, Table, Vector
 
 
 def test_fillna_maps_over_cells_and_preserves_names():
@@ -100,3 +102,55 @@ def test_invert_and_bit_shift_preserve_names():
 def test_table_filled_rejects_ambiguous_construction():
     with pytest.raises(SerifTypeError, match="named filled columns"):
         Table.filled(0, 3)
+
+
+@pytest.mark.parametrize('method, expected', [
+    ('all', [None, False, None]),
+    ('any', [True, None, None]),
+])
+def test_table_verdicts_fold_each_column(method, expected):
+    table = Table({
+        'a': [True, None],
+        'b': [False, None],
+        'c': [None, None],
+    })
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        result = getattr(table, method)()
+    assert result.ndims() == 1
+    assert list(result) == expected
+    assert result.schema() == Schema(bool, True)
+
+
+@pytest.mark.parametrize('method', ['all', 'any'])
+def test_table_unknown_verdicts_remain_logically_composable(method):
+    table = Table({'a': [None], 'b': [None]})
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        result = getattr(table, method)(on_empty=True)
+    assert list(result) == [None, None]
+    assert result.schema() == Schema(bool, True)
+    assert list(result & False) == [False, False]
+    assert list(result | True) == [True, True]
+
+
+@pytest.mark.parametrize('method, identity', [('all', True), ('any', False)])
+def test_table_empty_columns_use_empty_verdict_policy(method, identity):
+    table = Table({'a': [], 'b': []})
+    with pytest.warns(SerifEmptyReductionWarning):
+        result = getattr(table, method)()
+    assert list(result) == [identity, identity]
+    assert result.schema() == Schema(bool, False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        result = getattr(table, method)(on_empty=not identity)
+    assert list(result) == [not identity, not identity]
+
+
+@pytest.mark.parametrize('method', ['all', 'any'])
+def test_table_without_columns_reduces_to_empty_bool_vector(method):
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SerifEmptyReductionWarning)
+        result = getattr(Table({}), method)()
+    assert list(result) == []
+    assert result.schema() == Schema(bool, False)
