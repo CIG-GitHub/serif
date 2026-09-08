@@ -11,12 +11,15 @@ Plus the dtype dispatch for &/|/^: Kleene logical on bool vectors,
 Python bitwise on int vectors.
 """
 
+import operator
 import warnings
 from datetime import date
 
 import pytest
 
 from serif import Vector
+from serif import Table
+from serif import Schema
 from serif import SerifEmptyReductionWarning
 from serif import SerifTypeError
 
@@ -44,6 +47,7 @@ def test_equality_between_nullable_vectors():
     a = Vector([1, None, 3])
     b = Vector([1, 2, None])
     assert list(a == b) == [True, None, None]
+    assert list(a != b) == [False, None, None]
 
 
 def test_null_equals_null_is_null():
@@ -51,51 +55,88 @@ def test_null_equals_null_is_null():
     a = Vector([None, 1])
     b = Vector([None, 1])
     assert list(a == b) == [None, True]
+    assert list(a != b) == [None, False]
 
 
 def test_not_equal_propagates_null():
     assert list(Vector([1, None]) != 1) == [False, None]
 
 
-def test_compare_to_none_scalar_is_missingness_test_and_warns():
-    # Doctrine rule three: the scalar None names absence itself, so
-    # `v == None` is `v.is_na()` — Python's answer (None == None is True).
+@pytest.mark.parametrize("comparison, alternative", [
+    (operator.eq, 'v.is_na()'),
+    (operator.ne, '~v.is_na()'),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data, dtype", [
+    ([1, None, 3], Schema(int, True)),
+    ([1, 3], int),
+    ([None, None], Schema(int, True)),
+    ([], int),
+    ([], None),
+    ([None], None),
+    (['a', None], Schema(str, True)),
+    ([True, None], Schema(bool, True)),
+    ([date(2024, 1, 2), None], Schema(date, True)),
+    ([1, 'a', None], Schema(object, True)),
+])
+def test_compare_to_none_scalar_raises(
+    comparison, alternative, reverse, data, dtype,
+):
+    v = Vector(data, dtype=dtype)
+    with pytest.raises(SerifTypeError, match='scalar None') as error:
+        comparison(None, v) if reverse else comparison(v, None)
+    assert alternative in str(error.value)
+
+
+def test_is_na_mask_is_total():
     v = Vector([1, None, 3])
-    with pytest.warns(UserWarning, match='is_na'):
-        result = v == None  # noqa: E711 — the point of the test
+    result = v.is_na()
     assert list(result) == [False, True, False]
-    with pytest.warns(UserWarning, match='is_na'):
-        inverted = v != None  # noqa: E711
-    assert list(inverted) == [True, False, True]
-
-
-def test_none_comparison_mask_is_total():
-    # Explicit absence collapses the unknowns: the result is plain bool,
-    # never bool? — you addressed the missing values, so none survive.
-    v = Vector([1, None, 3])
-    with pytest.warns(UserWarning):
-        result = v == None  # noqa: E711
+    assert list(~result) == [True, False, True]
     schema = result.schema()
     assert schema.kind is bool
     assert schema.nullable is False
 
 
-def test_plucked_null_scalar_crosses_the_line():
-    # The named sharp edge (docs/null-semantics.md): v == w propagates
-    # null (two data unknowns), but plucking that null out makes it the
-    # absence symbol — v == w[1] is a missingness test.
+@pytest.mark.parametrize("comparison, expected", [
+    (operator.eq, [True, None, False]),
+    (operator.ne, [False, None, True]),
+])
+def test_plucked_null_scalar_raises(comparison, expected):
+    # Extracting a null must not turn value equality into missingness.
     v = Vector([1, None, 3])
     w = Vector([1, None, 4])
-    assert list(v == w) == [True, None, False]
+    assert list(comparison(v, w)) == expected
     assert w[1] is None
-    with pytest.warns(UserWarning, match='is_na'):
-        assert list(v == w[1]) == [False, True, False]
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(v, w[1])
 
 
-def test_categorical_compare_to_none_is_missingness_test():
+@pytest.mark.parametrize("comparison", [operator.eq, operator.ne])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data", [['b', None], ['b'], [None], []])
+def test_categorical_compare_to_none_raises(comparison, reverse, data):
+    c = Vector(data, dtype=Schema(str, True)).categorize(['a', 'b'])
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(None, c) if reverse else comparison(c, None)
+
+
+def test_categorical_missingness_and_vector_comparison():
     c = Vector(['b', None]).categorize(['a', 'b'])
-    with pytest.warns(UserWarning, match='is_na'):
-        assert list(c == None) == [False, True]  # noqa: E711
+    other = Vector(['a', None]).categorize(['a', 'b'])
+    assert list(c.is_na()) == [False, True]
+    assert list(~c.is_na()) == [True, False]
+    assert list(c == other) == [False, None]
+    assert list(c != other) == [True, None]
+
+
+@pytest.mark.parametrize("comparison", [operator.eq, operator.ne])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data", [{'x': [1, None]}, {'x': []}, {}])
+def test_table_compare_to_none_raises(comparison, reverse, data):
+    t = Table(data)
+    with pytest.raises(SerifTypeError, match='is_na'):
+        comparison(None, t) if reverse else comparison(t, None)
 
 
 def test_comparison_count_counts_known():

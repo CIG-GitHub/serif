@@ -29,6 +29,8 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 
 from serif import Vector
+from serif import Schema
+from serif import SerifTypeError
 from serif._execution import DECLINED
 from serif._vector._arrow import operators as bridge
 from serif._vector.storage import BoolStorage, StringStorage
@@ -154,14 +156,21 @@ def test_non_string_scalar():
         _pure(lambda: v < 5)
 
 
-def test_none_scalar_warns_and_tests_missingness():
-    v = Vector(['apple', 'banana'])
-    with pytest.warns(UserWarning, match='is_na'):
-        fast = v == None                       # noqa: E711 — the point
-    with pytest.warns(UserWarning, match='is_na'):
-        pure = _pure(lambda: v == None)        # noqa: E711
-    _assert_identical(pure, fast)
-    assert list(fast) == [False, False]
+@pytest.mark.parametrize("comparison", [operator.eq, operator.ne])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("data", [
+    ['apple', 'banana'], ['apple', None], [None], [],
+])
+def test_none_scalar_raises_with_or_without_arrow(comparison, reverse, data):
+    v = Vector(data, dtype=Schema(str, True))
+
+    def compare():
+        return comparison(None, v) if reverse else comparison(v, None)
+
+    with pytest.raises(SerifTypeError, match='is_na'):
+        compare()
+    with pytest.raises(SerifTypeError, match='is_na'):
+        _pure(compare)
 
 
 def test_non_string_storage_untouched():
