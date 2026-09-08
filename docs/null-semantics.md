@@ -1,40 +1,31 @@
 # Null Semantics
 
-serif is "Python semantics first" — but that doctrine governs **values**,
-and a null is not a value. In a typed column a null is literally a mask bit
-(`ArrayStorage`/`StringStorage` never store a `None` object at all); it is a
-*position with no value* — "we don't know what this is." Python semantics
-apply to the values you have. Absence follows the rules below. The layering:
-**Python governs values and answers; SQL governs row-matching.** Joins and
-filter masks borrow SQL's three-valued logic deliberately, because matching
-rows on unknowns manufactures results out of ignorance (see: pandas). Those
-two loans are the exceptions, and they are fenced off below; everywhere
-else, when Python has an answer, serif gives Python's answer.
+serif is "Python semantics first": known values use Python operations and
+truthiness. A null is a *position with no value* — "we don't know what this
+is." Comparisons propagate that uncertainty, and logical operations use
+Kleene three-valued logic. Joins and filter masks require a positively true
+match, following SQL row-matching semantics.
 
 ## The doctrine (three rules)
 
-> **Element-wise: unknown in, unknown out.**
-> Comparisons, arithmetic, and `~` propagate null. `&` and `|` use Kleene
-> logic — the known operand may settle the result. (One carve-out, from
-> the third rule: comparing against the literal `None` is not a
-> comparison with an unknown — it names absence itself.)
+> **Unknowns remain unknown unless known values settle the answer.**
+> Element-wise comparisons, arithmetic, and boolean inversion propagate
+> null. Boolean `&` and `|`, and the reductions `all()` and `any()`, use
+> Kleene logic: a known false settles AND; a known true settles OR.
 >
-> **Aggregate: summarize what you know.**
-> Skip nulls. If nothing remains: true math folds return their identity
-> (`sum` → `0`, `count` → `0`); statistics with no
-> identity return `None` (`max`, `min`, `mean`, `stdev`); and the verdict
-> reductions `all()`/`any()` return their identity too (`True`/`False`,
-> as Python's `all([])`/`any([])` do) — but warn, unless `on_empty=`
-> states the verdict deliberately.
+> **Summaries use known values; logical reductions fold truth values.**
+> Summaries such as `sum`, `count`, `min`, `max`, and statistics skip
+> nulls. With no known values, they return an identity where one exists
+> (`sum` → `0`, `count` → `0`) or `None` otherwise.
+> `all()` / `any()` retain uncertainty. Only actually empty input yields
+> their identities (`True` / `False`) with a warning unless `on_empty=`
+> explicitly chooses the empty result.
 >
-> **Explicit absence collapses the unknowns.**
-> The moment you name absence yourself — `is_na()`, `fillna()`,
-> `v == None`, `None` among `is_in()` members, `on_empty=` — the
-> question has a total answer and the unknowns leave the result.
-> `v == None` asks "is this position missing" and returns a plain
-> `bool` mask, exactly as mapping `== None` over a Python list would.
-
-Everything else in this document is a consequence of those three rules.
+> **Handle absence explicitly.**
+> Use `is_na()` to test missingness, `fillna(x)` to replace nulls, and
+> `dropna()` to remove them. `None` among `is_in()` members includes
+> absence as a category. Scalar `== None` and `!= None` raise;
+> `on_empty=` controls empty input only, not unknown values.
 
 ## Element-wise operations
 
@@ -45,35 +36,29 @@ v > 2        →  [False, None, True]      # bool? vector
 v + 1        →  [2, None, 4]             # arithmetic already propagated
 v == v2      →  None wherever either side is null
 ~(v > 2)     →  [True, None, False]      # NOT unknown is unknown
-v == None    →  [False, True, False]     # missingness test — total, no nulls
+v == None    →  SerifTypeError          # use v.is_na()
+v != None    →  SerifTypeError          # use ~v.is_na()
+v.is_na()    →  [False, True, False]     # total bool mask
 ```
 
-`v == None` is a missingness test. The scalar `None` is not an unknown
-value — columns never store a `None` object — it is the *symbol for
-absence*, so comparing to it asks "is this position missing." The result
-is a total, non-nullable `bool` mask, the same answer Python gives when
-mapping `== None` over a plain list (`None == None` is `True`). It also
-warns: `is_na()` is the deliberate spelling, and the warning exists to
-catch the `None` you didn't know you had — a leaked `None` variable
-silently turning a comparison into a missingness test should be loud.
-`v != None` is `~v.is_na()`, same warning.
+Equality and inequality against scalar `None` raise `SerifTypeError`
+with guidance to use `is_na()` or `~is_na()`. The rule includes reversed
+operands (`None == v`, `None != v`), categoricals, tables, and empty
+inputs. A scalar comparison must not accidentally become a missingness
+test when a variable contains `None`.
 
-Between two *columns*, unknowns stay unknowns: `v == w` is null wherever
-either side is null, because there you hold two data unknowns that might
-or might not be equal. This is where SQL's "null == null is null" is
-right, and it is why `v[v == w]` and `v[~(v == w)]` do not reunite to
-the whole table.
+Between two columns, `v == w` and `v != w` remain null wherever either
+side is null: two unknown values might or might not be equal. Consequently,
+`v[v == w]` and `v[~(v == w)]` do not reunite to the whole vector.
 
-The sharp edge between those two rules: a null *plucked out* of a column
-crosses the line. `w[2]` reads out as Python `None`, so `v == w[2]` is a
-missingness test — `True` at v's nulls — while `v == w` at position 2 is
-null. The scalar is the symbol; the column cell is data. The warning
-fires on every scalar-`None` comparison precisely so that crossing is
-never silent.
+Extracting a null from a column produces Python `None`. If `w[2] is None`,
+`v == w[2]` raises, while comparing the full columns still propagates null
+at position 2. Use `v.is_na()` when missingness is the intended question.
 
 ### `is_in()`: membership, and absence as a category
 
-`is_in()` follows both halves of the doctrine. Membership is Python `==`
+`is_in()` preserves unknown membership unless absence is explicitly included.
+Membership is Python `==`
 (`Vector([1, 2]).is_in([2.0])` matches — the numeric tower is Python's),
 and null positions yield null: whether an unknown value is in the group
 is unknown. But `None` *among the members* names absence itself:
@@ -111,28 +96,27 @@ only absence obeys the doctrine.) Every other dtype raises `SerifTypeError`:
 
 ## Aggregations
 
-Aggregates skip nulls — they summarize the values you have. When nothing
-remains (all-null or empty input), there are three tiers:
+Summaries such as `sum`, `count`, `min`, `max`, and statistics skip
+nulls. Logical reductions `all()` / `any()` fold them using Kleene logic.
+Empty and all-null inputs therefore have different logical results:
 
-| aggregate | all-null / empty result | why                        |
-|-----------|-------------------------|----------------------------|
-| `sum`     | `0`                     | additive identity          |
-| `count`   | `0`                     | counting identity          |
-| `max`     | `None`                  | no identity exists         |
-| `min`     | `None`                  | no identity exists         |
-| `mean`    | `None`                  | no identity exists         |
-| `std`     | `None`                  | insufficient sample        |
-| `stdev`   | `None`                  | no identity exists         |
-| `all`     | `True`, warns unless `on_empty=`  | AND identity; a verdict from no evidence warns |
-| `any`     | `False`, warns unless `on_empty=` | OR identity; a verdict from no evidence warns  |
+| aggregate | nonempty all-null result | empty result |
+|-----------|--------------------------|--------------|
+| `sum`   | `0`                    | `0`        |
+| `count` | `0`                    | `0`        |
+| `max`   | `None`                 | `None`     |
+| `min`   | `None`                 | `None`     |
+| `mean`  | `None`                 | `None`     |
+| `std`   | `None`                 | `None`     |
+| `stdev` | `None`                 | `None`     |
+| `all`   | `None`                 | `True`, warns unless `on_empty=` chooses a verdict |
+| `any`   | `None`                 | `False`, warns unless `on_empty=` chooses a verdict |
 
-Every fold with an identity returns it — the empty case has a true answer,
-and it is Python's answer (`sum([])`, `all([])`, `any([])`). The
-identity-less statistics return `None`, which propagates honestly through
-any arithmetic downstream. `all([None, True]) is True` is not "None is
-truthy" — the null was skipped, and no known value violated the condition.
-The element-wise layer already reported the unknown before you aggregated;
-aggregation is where you decide to summarize what's known.
+`sum` and `count` have identities; the statistics listed above have no
+answer without known observations. Logical folds also have identities,
+but a nonempty collection of unknowns is not empty. For example,
+`Vector([None, True]).all()` is `None`: the known true does not establish
+that every element is true.
 
 ### `v.stats`: strip unknown observations before calculating
 
@@ -158,55 +142,96 @@ population. NumPy may accelerate fixed-width statistics; discrete results
 retain exact Python semantics, while floating reductions can differ in their
 last bits because reduction order is not numerically associative.
 
-### `all()` / `any()`: identity, but say so out loud
+### `all()` / `any()`: Kleene folds
 
-A boolean reduction is a verdict, and its result lands in `if`/`assert`,
-where Python coerces anything into a decision silently. That makes the
-identity elements risky in exactly this one place:
-`t[t.type == 'wire'].amount_ok.all()` with a typo'd filter returns
-`True` — a validation that passes on zero evidence. The mirror image:
-"any fraud flags?" over a never-populated column returns `False` — an
-alarm that doesn't fire.
+`all()` folds AND: any known falsy value settles `False`; otherwise,
+a null yields `None`, and all known truthy values yield `True`.
+`any()` folds OR: any known truthy value settles `True`; otherwise,
+a null yields `None`, and all known falsy values yield `False`.
+Known nonboolean values retain Python truthiness.
 
-So when zero valid values survive the null-skip (an empty vector, or one
-whose values are all null — one condition, not two), `all()` and `any()`
-return the identity **and warn** `SerifEmptyReductionWarning`. The warning
-is silenced by finishing the question — `on_empty=` states the empty-case
-verdict, and the value you pass is the value you get back:
+| vector contents | `all()` | `any()` |
+|-----------------|-----------|-----------|
+| `[True, None]`  | `None`  | `True`  |
+| `[False, None]` | `False` | `None`  |
+| `[None, None]`  | `None`  | `None`  |
+| `[True, False, None]` | `False` | `True` |
 
+Use `v.dropna().all()` or `v.dropna().any()` to deliberately reduce only
+known values. If dropping nulls leaves an empty vector, the empty-input
+policy below applies.
+
+#### Empty inputs
+
+With zero elements, `all()` returns `True` and `any()` returns `False`,
+as Python does. Both warn `SerifEmptyReductionWarning`: a filter that
+accidentally selects no rows can otherwise pass a validation or suppress
+an alarm. Set `on_empty=True` or `on_empty=False` to choose the empty
+result and silence the warning:
+
+```python
+flags = Vector([])
+flags.all()                # True, with a warning
+flags.all(on_empty=True)   # True, silent
+flags.any(on_empty=False)  # False, silent
+
+Vector([None]).all(on_empty=True)   # None, silent
+Vector([None]).any(on_empty=False)  # None, silent
 ```
-flags.all()                # zero valid values → True, with a warning
-flags.all(on_empty=True)   # vacuous truth, opted into deliberately — silent
-flags.any(on_empty=False)  # the OR identity, opted into deliberately — silent
-```
 
-Anyone who wants the old hard failure back is one filter away:
+`on_empty=None` retains the default identity-and-warning behavior; it
+does not request a null result for empty input. Other values besides
+`True`, `False`, and `None` raise `SerifTypeError`.
+To make empty reductions raise, use
 `warnings.simplefilter('error', SerifEmptyReductionWarning)`.
 
-There is deliberately no `on_empty=None` "return a null verdict" option:
-in an `if`, `None` is indistinguishable from `False`, so `on_empty=False`
-already covers it. The one thing this closes off — a 2-D → 1-D reduction
-that wants to keep truthiness, falseness, and emptiness as three distinct
-output values — must be written by hand (like vectorized
-shift-via-operator: the surface is spoken for, but you have the tools).
+#### Python conditions
 
-In `aggregate()`/`window()`, empty-verdict groups get the identity and
-one warning per output column naming the affected group keys, so you can
-tell a data problem ("this group isn't supposed to be empty") from a
-legitimate sparse group. For the latter, qualify with a lambda:
-`lambda g: g.flag.all(on_empty=False)` — stated verdicts are silent.
+The reduction returns `bool | None`. Python treats `None` as false in
+an `if` or `assert`:
 
-This is `Vector.__bool__`'s refusal, one notch softer: `if vec:` raises
-because you haven't said which reduction you mean; `all()` over no
-evidence answers like Python but warns because you haven't said what the
-verdict should be.
+```python
+v = Vector([6, None])
+verdict = (v > 5).all()     # None
+if verdict:
+    proceed()              # not entered
+```
+
+Entering the branch requires a positively true verdict. The other branch
+means "not established that every value exceeds 5"; it can represent
+unknown evidence as well as a known failure. Likewise,
+`if not (v > 5).any():` enters for an unknown result, which does not
+establish that no value exceeds 5. Use `verdict is None`,
+`verdict is False`, and `verdict is True` when those cases need separate
+handling. The reduction preserves uncertainty; Python conditions collapse
+it through truthiness.
+
+#### Tables, aggregates, and windows
+
+Table reductions apply the same fold to each column and return a boolean
+vector, nullable when an output is unknown. Even when every output is
+`None`, the vector keeps its boolean type and supports `&`, `|`, and `~`.
+
+Bound reductions in `aggregate()` and `window()` use the same semantics.
+This also applies to per-column blocks in `aggregate()`. All-null groups
+return `None` without an empty warning. Bound logical outputs retain their
+boolean type even when all groups are unknown. Arbitrary lambdas use
+ordinary result type inference.
+
+An ungrouped aggregation over a table with zero rows still evaluates one
+empty group: bound logical reductions return their identities and warn
+once per output column, identifying the whole table. A callable's empty
+reduction emits the vector-level warning. Qualify it explicitly when
+needed: `lambda g: g.flag.all(on_empty=False)`.
+Grouped aggregations and windows with no groups produce empty result
+columns; no reduction is evaluated and no empty warning is emitted.
+Their bound logical output schemas derive nullability from the source.
 
 ## Filtering and assignment
 
 Boolean masks may be nullable (comparisons on nullable columns produce
-them). A null mask entry **excludes** the row — SQL WHERE semantics, the
-second deliberate SQL loan: a row must positively qualify to pass a
-filter.
+them). A null mask entry **excludes** the row — SQL WHERE semantics:
+a row must positively qualify to pass a filter.
 
 ```
 v[v > 6]      # rows known to be  > 6
@@ -223,39 +248,35 @@ Masked assignment follows the same rule: a null mask entry assigns nothing.
 
 ## Named deviations
 
-**From Python:** `None > 6` raises in Python; in a vector it yields null.
-`all([])` is `True` and `any([])` is `False` in Python, and serif agrees —
-the identity, plus a warning. The one remaining verdict deviation:
-`all([None])` is `False` in Python (None is a falsy *object*), but `True`
-here (the null is *skipped*, leaving the empty case). In table land,
-`None` is absence, not a falsy sentinel object.
+**From Python:** scalar equality and inequality against `None` raise in
+serif; use an explicit missingness test. Element-wise comparisons involving
+null positions propagate null. Python's `all([None])` and `any([None])`
+are `False`, treating `None` as a falsy object; serif returns `None`,
+treating the position as unknown. Empty logical reductions retain Python's
+identities, with an additional warning unless `on_empty=` chooses a verdict.
 
-**From SQL:** `x = NULL` never matches in SQL; serif's `v == None` is a
-missingness test that matches the null positions — Python's answer
-(`None == None` is `True`), delivered with a warning. `SUM` of all-null
-is NULL in SQL, `0` here (the identity rule; Excel and Python agree).
-`EVERY`/`bool_and` of all-null is NULL in SQL; serif returns the
-identity and warns — SQL's NULL at least refuses to render a verdict,
-but it then coerces silently in a `WHERE`; the warning makes the empty
-case loud without breaking Python's answer.
+**From SQL:** `x = NULL` does not match rows; serif rejects `v == None`
+and provides `is_na()` for missingness. Serif's `sum` over all-null input
+returns `0`, its additive identity. Logical reductions use the Kleene folds
+above, including the distinction between empty and nonempty all-null input.
 
 ## Explicit null tools
 
-`is_na()` — which positions are null. `fillna(x)` — replace nulls with a
-value. `dropna()` — remove null positions. `v == None` / `v != None` —
-the comparison spellings of `is_na()` / `~is_na()` (they warn; the named
-methods are the deliberate form). `is_in([..., None])` — membership with
-absence as one of the categories (no warning; an enumerated group is
-deliberate). These are the only operations that *look at* nullness;
-everything else either propagates it (element-wise) or skips it
-(aggregate).
+`is_na()` tests which positions are null; `~is_na()` tests which are
+present. `fillna(x)` replaces nulls with a chosen value. `dropna()` removes
+null positions. `is_in([..., None])` includes absence as a membership
+category. Scalar `v == None` and `v != None` raise and direct callers to
+`is_na()` or its complement.
+
+`on_empty=` chooses a logical reduction's result for zero elements. It
+does not replace null values or override a nonempty unknown verdict.
 
 ## Null keys in joins and grouping
 
 Joins and grouping ask different questions, so null keys follow different
 rules.
 
-**Joins:** the first deliberate SQL loan. A key containing a null never
+**Joins:** a key containing a null never
 matches another key — a join predicate must be positively true, and equality
 involving an unknown *data* value is unknown, not true; matching rows on
 unknowns manufactures results out of ignorance (see: pandas). In an inner
