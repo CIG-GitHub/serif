@@ -14,8 +14,8 @@ together when working on their conformance suites:
 
 ```bash
 pip install -e ".[dev,numpy]"
-pip install -e ".[dev,arrow]"
-pip install -e ".[dev,numpy,arrow]"
+pip install -e ".[dev,pyarrow]"
+pip install -e ".[dev,numpy,pyarrow]"
 ```
 
 ## Running Tests
@@ -46,20 +46,24 @@ appearing in the summary means something to investigate.
 ```
 src/serif/
 ├── __init__.py        # public API exports
-├── table.py           # Table: construction, indexing, joins, aggregate/window
+├── vector.py          # public Vector API and semantic dispatch
+├── table.py           # public Table API and semantic dispatch
 ├── display.py         # repr logic, footer dtype grouping, _SchemaView (t._)
 ├── naming.py          # column-name sanitization and disambiguation
 ├── errors.py          # Serif* exception hierarchy
-├── _accel/            # optional NumPy/PyArrow compute accelerators
+├── _execution.py      # shared execution-backend selection
 ├── _vector/
-│   ├── base.py        # core Vector: operators, masks, aggregations
-│   ├── dtype.py       # dtype inference and validation
-│   ├── storage.py     # ArrayStorage / TupleStorage / StringStorage
-│   ├── numeric.py     # _Int, _Float typed subclasses
-│   ├── string.py      # _String
-│   ├── dates.py       # _Date
-│   ├── categorical.py # _Category
-│   └── nullable.py    # null-mask storage support
+│   ├── construction.py, selection.py, mutation.py
+│   ├── operators.py, reductions.py, transforms.py
+│   ├── dtype.py, storage.py, nullable.py
+│   ├── numeric.py, string.py, dates.py, categorical.py
+│   ├── math.py, statistics.py
+│   └── _python/, _numpy/, _arrow/  # Vector execution backends
+├── _table/
+│   ├── columns.py, row.py, rows.py
+│   ├── selection.py, mutation.py, sort.py
+│   ├── grouping.py, aggregation.py, window.py, joins.py
+│   └── _python/, _numpy/, _arrow/  # Table execution backends
 └── io/
     ├── csv.py         # read_csv
     ├── parquet.py     # serif-native read_parquet / write_parquet
@@ -75,13 +79,13 @@ installed package then tracks your working tree.
 
 ## Key Modules
 
-- **`_vector/base.py`** — the `Vector` class: elementwise operators,
-  boolean masks, aggregations, copy-on-write mutation.
-  Typed subclasses (`_Int`, `_Float`, `_String`, `_Date`, `_Category`)
-  layer dtype-specific methods on top.
-- **`table.py`** — `Table` (a vector of column vectors): construction,
-  single- and two-axis indexing, joins, `aggregate()`/`window()`, and
-  the column map behind dot access.
+- **`vector.py`** — the public `Vector` class. Its methods delegate construction,
+  selection, mutation, operators, reductions, and transforms to focused modules
+  under `_vector/`. Typed subclasses (`_Int`, `_Float`, `_String`, `_Date`, and
+  `_Category`) layer dtype-specific capabilities on top.
+- **`table.py`** — the public `Table` class, a Vector of column Vectors. Table
+  operations delegate to focused modules under `_table/`, including selection,
+  mutation, sorting, grouping, joins, aggregation, and windows.
 - **`errors.py`** — `SerifError` base plus `SerifKeyError`,
   `SerifValueError`, `SerifTypeError`, `SerifIndexError`, and the
   `SerifEmptyReductionWarning` warning. See docs/exceptions.md.

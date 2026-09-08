@@ -239,6 +239,41 @@ def test_sort_by_does_not_mutate_original():
 	assert list(result['name']) == ['Alice', 'Bob', 'Charlie']
 
 
+@pytest.mark.parametrize('key_form', ['column_name', 'vector'])
+@pytest.mark.parametrize(
+	'reverse, na_last, expected_rows',
+	[
+		(False, True, [3, 0, 4, 2, 1]),
+		(True, True, [2, 0, 4, 3, 1]),
+		(False, False, [1, 3, 0, 4, 2]),
+		(True, False, [1, 2, 0, 4, 3]),
+	],
+)
+def test_sort_by_categorical_respects_category_order(
+	key_form,
+	reverse,
+	na_last,
+	expected_rows,
+):
+	values = ['medium', None, 'high', 'low', 'medium']
+	categories = ['low', 'medium', 'high']
+	rows = [0, 1, 2, 3, 4]
+
+	if key_form == 'column_name':
+		table = Table({
+			'priority': Vector(values).categorize(categories),
+			'row': rows,
+		})
+		key = 'priority'
+	else:
+		table = Table({'priority': values, 'row': rows})
+		key = table.priority.categorize(categories)
+
+	result = table.sort_by(key, reverse=reverse, na_last=na_last)
+
+	assert list(result['row']) == expected_rows
+
+
 @pytest.mark.parametrize(
 	"vector, storage_type, expected",
 	[
