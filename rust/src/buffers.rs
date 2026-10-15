@@ -29,7 +29,7 @@ pub fn read<'a, T: Element>(buffer: &'a PyBuffer<T>, name: &str) -> PyResult<&'a
 }
 
 /// Borrow a writable view of a freshly allocated output `buffer`.
-pub fn write<'a, T: Element>(buffer: &'a PyBuffer<T>, name: &str) -> PyResult<&'a mut [T]> {
+pub fn write<'a, T: Element>(buffer: &'a mut PyBuffer<T>, name: &str) -> PyResult<&'a mut [T]> {
     check(buffer, name)?;
     if buffer.readonly() {
         return Err(PyValueError::new_err(format!("{name} must be writable")));
@@ -38,7 +38,7 @@ pub fn write<'a, T: Element>(buffer: &'a PyBuffer<T>, name: &str) -> PyResult<&'
     if len == 0 {
         return Ok(&mut []);
     }
-    // SAFETY: as in `read`; the caller owns this buffer exclusively.
+    // SAFETY: as in `read`; `&mut` makes this the buffer's only live view.
     Ok(unsafe { slice::from_raw_parts_mut(buffer.buf_ptr() as *mut T, len) })
 }
 

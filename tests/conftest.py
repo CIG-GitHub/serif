@@ -9,5 +9,7 @@ def _keep_rust_out_of_other_backend_tests(request, monkeypatch):
     name = request.node.path.name
     if not name.startswith('test_accel_') or name.startswith('test_accel_rust'):
         return
+    from serif._table._rust import joins as rust_joins
     from serif._vector._rust import operators as rust_ops
     monkeypatch.setattr(rust_ops, '_USE_RUST', False)
+    monkeypatch.setattr(rust_joins, '_USE_RUST', False)

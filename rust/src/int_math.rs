@@ -218,14 +218,14 @@ pub fn int_binary(
     left_mask: Option<PyBuffer<u8>>,
     right: Operand,
     right_mask: Option<PyBuffer<u8>>,
-    out: PyBuffer<i64>,
-    out_mask: Option<PyBuffer<u8>>,
+    mut out: PyBuffer<i64>,
+    mut out_mask: Option<PyBuffer<u8>>,
 ) -> PyResult<bool> {
-    let out = write(&out, "out")?;
+    let out = write(&mut out, "out")?;
     let n = out.len();
     let left_bits = mask(&left_mask, "left_mask", n)?;
     let right_bits = mask(&right_mask, "right_mask", n)?;
-    let out_bits = match &out_mask {
+    let out_bits = match &mut out_mask {
         Some(buffer) => {
             let bits = write(buffer, "out_mask")?;
             if bits.len() != mask_bytes(n) {

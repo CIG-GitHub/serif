@@ -18,6 +18,7 @@ from serif._table._numpy import grouping as numpy_grouping
 from serif._table._numpy import joins as numpy_joins
 from serif._table._python import grouping as python_grouping
 from serif._table._python import joins as python_joins
+from serif._table._rust import joins as rust_joins
 from serif._vector import dispatch as vector_dispatch
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
@@ -846,6 +847,7 @@ def test_join_declines_reach_mandatory_python_path(monkeypatch):
     original = python_joins.probe
 
     for module, name in (
+        (rust_joins, 'probe_int64'),
         (numpy_joins, 'probe_int64_dense'),
         (arrow_joins, 'probe_strings_hash'),
         (numpy_joins, 'probe_int64'),
@@ -925,6 +927,11 @@ def test_join_backend_defects_propagate_without_fallback(monkeypatch):
         calls.append('unexpected')
         return execution.DECLINED
 
+    monkeypatch.setattr(
+        rust_joins,
+        'probe_int64',
+        lambda *args: execution.DECLINED,
+    )
     monkeypatch.setattr(numpy_joins, 'probe_int64_dense', broken_dense)
     monkeypatch.setattr(arrow_joins, 'probe_strings_hash', unexpected)
     monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)

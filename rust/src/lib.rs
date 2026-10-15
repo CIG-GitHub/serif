@@ -10,9 +10,11 @@ use pyo3::prelude::*;
 
 mod buffers;
 mod int_math;
+mod join;
 
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(int_math::int_binary, m)?)?;
+    m.add_function(wrap_pyfunction!(join::join_probe_int64, m)?)?;
     Ok(())
 }

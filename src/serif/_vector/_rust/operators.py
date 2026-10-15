@@ -70,6 +70,9 @@ def binop_storage(lhs_storage, rhs, op_func, result_kind):
     (left_values, left_mask), (right_values, right_mask) = left, right
 
     n = len(lhs_storage)
+    # An empty array('q') exposes an unaligned buffer pointer.
+    if not n:
+        return DECLINED
     out = _pyarray.array('q', [0]) * n
     out_mask = None
     if left_mask is not None or right_mask is not None:
