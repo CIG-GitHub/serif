@@ -7,8 +7,10 @@ from collections.abc import Iterable
 from datetime import date
 from datetime import datetime
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from . import dispatch as _dispatch
 from .dtype import Schema
 from .dtype import infer_dtype
 from .selection import take_storage
@@ -314,6 +316,10 @@ def unique(vector):
 def sort_by(vector, reverse=False, na_last=True):
     storage = vector._storage
     count = len(storage)
+
+    order = _dispatch.sort_indices([storage], [reverse], na_last)
+    if order is not DECLINED:
+        return vector._clone(take_storage(storage, order))
 
     def key(index):
         is_null = storage.is_null(index)

@@ -129,6 +129,16 @@ def take_pad_storage(storage, indices):
     return selection.take_pad_storage(storage, indices)
 
 
+def sort_indices(storages, reverse_flags, na_last):
+    """Return a stable multi-key row order, or DECLINED."""
+    def rust_sort():
+        from ._rust import sort
+
+        return sort.sort_indices(storages, reverse_flags, na_last)
+
+    return first_supported(rust_sort)
+
+
 def popcount(storage):
     from ._numpy import selection
 
