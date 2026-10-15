@@ -14,9 +14,9 @@ class MaskedTable(Table):
 
     Why a snapshot is sound: the storage protocol is rebuild-only and the
     mutation doctrine makes owner-addressed writes swap-on-write — no code
-    anywhere mutates a frozen column's storage in place. Capturing each
+    anywhere mutates a read-only column's storage in place. Capturing each
     column at the storage level at defer time is therefore a permanently
-    frozen snapshot: `q = t[t.a > 10]` means "t as it was", forever, with
+    immutable snapshot: `q = t[t.a > 10]` means "t as it was", forever, with
     no version counters. (The one exception — batch() scopes write into
     private buffers in place — never reaches here: __getitem__ keeps the
     eager path while `t._batch_edit` is active.)
@@ -50,7 +50,7 @@ class MaskedTable(Table):
 
     def __init__(self, source, mask):
         capture = getattr(type(source), '_mask_capture', None)
-        # Capture at the storage level: private shells sharing each frozen
+        # Capture at the storage level: private shells sharing each immutable
         # storage O(1), never the source Table or its column objects.
         if capture is None:
             captured = tuple(col.copy() for col in source._storage)
@@ -95,8 +95,8 @@ class MaskedTable(Table):
         Runs the exact per-column program of the old eager path —
         shell[mask] takes the accel filter or the pure zip-filter — so
         results are identical by construction. Cached: the snapshot is
-        frozen, so `q.b + q.b` must not gather twice. The gathered column
-        is table-owned and frozen, exactly like every eager table column.
+        immutable, so `q.b + q.b` must not gather twice. The gathered column
+        is table-owned and read-only, exactly like every eager table column.
         """
         col = self._gathered.get(idx)
         if col is None:

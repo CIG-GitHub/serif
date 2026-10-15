@@ -41,7 +41,7 @@ def test_table_ownership_is_one_public_mutability_boundary():
 
     with pytest.raises(SerifTypeError, match='owning table'):
         owned[0] = 9
-    with pytest.raises(SerifTypeError, match='metadata is frozen'):
+    with pytest.raises(SerifTypeError, match='metadata is read-only'):
         owned.alias('renamed')
 
     detached = owned.copy().alias('renamed')

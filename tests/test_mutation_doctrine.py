@@ -1,14 +1,14 @@
 """
 The mutation doctrine: READ THROUGH THE COLUMN, WRITE THROUGH THE TABLE.
 
-- Anything read out of a table is a value: owned columns are frozen
+- Anything read out of a table is a value: owned columns are read-only
   (vector-addressed writes raise), and owner writes swap in a fresh
   column object, so a previously read-out column never changes.
 - The table itself is a normal Python object you mutate by addressing
   it: t[mask, 'v'] = ..., t[3, 'v'] = ..., t.v = ... — no ceremony,
   rebuild-on-write, everything derived stays safe.
 - `with t.batch() as m:` is the bulk fast path (copy-on-enter → raw
-  in-place writes → refreeze-on-exit) for read-modify-write loops.
+  in-place writes → read-only again on exit) for read-modify-write loops.
   Same observable semantics, O(1) per write.
 """
 
@@ -49,7 +49,7 @@ def test_error_message_names_the_column():
 
 def test_owned_column_via_string_key_raises():
     t = make_table()
-    with pytest.raises(SerifTypeError, match="frozen"):
+    with pytest.raises(SerifTypeError, match="read-only"):
         t['a'][0] = 99
 
 
@@ -74,7 +74,7 @@ def test_carried_away_column_does_not_keep_table_alive():
         column[0] = 99
 
 
-def test_filtered_result_column_is_frozen():
+def test_filtered_result_column_is_read_only():
     t = make_table()
     with pytest.raises(SerifTypeError):
         t[t.a > 1].a[0] = 99
@@ -83,7 +83,7 @@ def test_filtered_result_column_is_frozen():
 def test_owned_categorical_setitem_raises():
     c = Vector(['lo', 'hi', 'lo']).categorize(['lo', 'hi']).alias('c')
     t = Table([c])
-    with pytest.raises(SerifTypeError, match="frozen"):
+    with pytest.raises(SerifTypeError, match="read-only"):
         t.c[0] = 'hi'
 
 
@@ -213,7 +213,7 @@ def test_source_vector_untouched_by_owner_write():
 def test_batch_point_writes_land_on_table():
     t = make_table()
     with t.batch() as m:
-        m.a[0] = 99                # vector-addressed works inside: thawed
+        m.a[0] = 99                # vector-addressed works inside: writable
         m[1, 'a'] = 88             # table-addressed works too
     assert list(t.a) == [99, 88, 3]
 
@@ -249,7 +249,7 @@ def test_batch_read_modify_write_loop():
     assert t.a[99] == sum(range(100))
 
 
-def test_escaped_column_ref_refreezes_after_batch():
+def test_escaped_column_ref_is_read_only_after_batch():
     t = make_table()
     with t.batch() as m:
         leak = m.a
@@ -259,7 +259,7 @@ def test_escaped_column_ref_refreezes_after_batch():
         leak[0] = 1
 
 
-def test_replaced_column_ref_refreezes_after_batch():
+def test_replaced_column_ref_is_read_only_after_batch():
     t = make_table()
     with t.batch() as m:
         replaced = m.a
@@ -272,7 +272,7 @@ def test_replaced_column_ref_refreezes_after_batch():
         replaced[1] = 1
 
 
-def test_stale_column_does_not_thaw_in_later_batch():
+def test_stale_column_stays_read_only_in_later_batch():
     t = make_table()
     stale = t.a
     t.a = Vector([10, 20, 30])
@@ -303,7 +303,7 @@ def test_sequential_batches_work():
     assert list(t.a) == [10, 20, 3]
 
 
-def test_exception_mid_batch_keeps_partial_writes_and_refreezes():
+def test_exception_mid_batch_keeps_partial_writes_read_only_after():
     t = make_table()
     with pytest.raises(RuntimeError):
         with t.batch() as m:
@@ -311,7 +311,7 @@ def test_exception_mid_batch_keeps_partial_writes_and_refreezes():
             raise RuntimeError("boom")
     assert t.a[0] == 99                 # no rollback — documented
     with pytest.raises(SerifTypeError):
-        t.a[1] = 1                      # refrozen despite the exception
+        t.a[1] = 1                      # read-only again despite the exception
 
 
 def test_batch_write_none_in_place():

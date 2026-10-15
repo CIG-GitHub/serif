@@ -29,7 +29,7 @@ t.v += 1                          # no __iadd__: desugars to t.v = t.v + 1
 t >>= {'w': t.v * 2}              # add columns
 ```
 
-Standalone vectors were never frozen — a vector you built is yours:
+Standalone vectors are not read-only — a vector you built is yours:
 
 ```python
 v = Vector([1, 2, 3])
@@ -47,7 +47,7 @@ t.v[0] = 5          # ✗ SerifTypeError — and the error contains the fix
 t['v'][0] = 5       # ✗ same path, string spelling
 v = t.v
 v[0] = 5            # ✗ the same operation, three lines apart
-t.v.alias('new')     # ✗ metadata is frozen too; use t.rename_columns(...)
+t.v.alias('new')     # ✗ metadata is read-only too; use t.rename_columns(...)
 ```
 
 ## Why: the two spellings are the same spelling
@@ -111,23 +111,73 @@ batch scope. Entering copies each column's buffers once, so every write
 inside can land raw and O(1):
 
 ```python
-with t.batch() as m:              # m IS t; columns thawed
+with t.batch() as m:              # m IS t; columns writable
     for i in hot_indices:
         m.v[i] = fix(m.v[i])
 ```
 
 Observable semantics are identical to table-addressed writes — anything
 snapshotted before the scope is untouched; only the speed differs.
-Exiting refreezes everything, including column references that escaped
+Exiting makes every column read-only again, including references that escaped
 the scope. Nesting raises. An exception mid-scope leaves the table
 partially mutated (no rollback) — a batch is imperative code and owns
 its own consistency.
+
+## Freezing: `freeze()`
+
+Everything above protects what is *derived* from a table. It cannot
+protect the table from code that holds the table itself: if two
+consumers share `t` and one of them writes `t[0, 'v'] = 5`, the other
+sees it. When an object is about to be shared — handed across a
+pipeline or DAG edge, cached, returned from a library — freeze it:
+
+```python
+t.freeze()                        # returns t, so `return t.freeze()` works
+t.frozen                          # True
+
+t[0, 'v'] = 5                     # ✗ SerifTypeError
+t.v = t.v + 1                     # ✗ (and t.v += 1)
+t.v[0] = 5                        # ✗
+with t.batch() as m: ...          # ✗
+```
+
+The error says what to do instead:
+
+```
+Table is frozen: it may be shared, so it cannot change in place. Freezing is permanent.
+For a private mutable copy: t = t.copy()
+```
+
+There is no unfreeze. The one reason to want it — "I need a mutable
+version and copying is expensive" — does not hold here: `copy()` shares
+the immutable storage and is O(1). So the answer to "this cell needs to
+change the shared table" is always a private copy, and an unfreeze would
+only ever be used to do the wrong thing.
+
+Freezing changes nothing else. Reads, math, selections, joins and
+aggregations work as before, and everything they return is a new,
+unfrozen value. Augmented shifts rebind rather than mutate, exactly as
+with a tuple:
+
+```python
+shared = t.freeze()
+t >>= {'w': t.v * 2}              # t is now a new, unfrozen table
+shared                            # unchanged, still frozen
+```
+
+`v.freeze()` does the same for a standalone Vector. Putting a frozen
+vector into a table snapshots it as usual, and the table's column is
+the table's to change.
+
+Freezing is a guardrail against mistakes, not a security boundary, and
+it is shallow: in an `object` column holding lists or dicts, the Python
+objects themselves can still be mutated.
 
 ## The payoff
 
 Because no operation anywhere can write into shared memory, every
 derived object is a true value: a filtered selection means
 "the table as it was", permanently; and `copy()` is O(1) because sharing
-frozen storage is always safe. Table-owns-storage and copy-on-write
+immutable storage is always safe. Table-owns-storage and copy-on-write
 coexist precisely because mutation is owner-addressed: the table may
 rebuild what it owns *because* nobody else is allowed to write it.

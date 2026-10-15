@@ -177,7 +177,7 @@ be owner-addressed:
 
 ```python
 t[mask, 'col'] = value   # valid; writes through the Table
-t[mask]['col'] = value   # raises; the read-out column is frozen
+t[mask]['col'] = value   # raises; the read-out column is read-only
 ```
 
 The complete row and column selector is validated before any write lands.

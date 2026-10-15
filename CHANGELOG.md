@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Table.freeze()` and `Vector.freeze()` permanently forbid in-place
+  changes, for handing a value to code that must not change it. Writes,
+  column replacement, renames and `batch()` on a frozen object raise
+  `SerifTypeError` with the fix: a private `copy()`. There is no
+  unfreeze. Copies and derived results are new, unfrozen objects. The
+  `frozen` property reports the state.
+
+### Changed
+
+- Errors and docs now call table-owned columns "read-only" instead of
+  "frozen", which now means only the permanent state set by `freeze()`.
+  Code that matches on the old error text needs updating.
+- A column named `freeze` or `frozen` now collides with the new reserved
+  names and gets a suffixed dot-access name, like other reserved names.
+
 ## 0.2.3 – 2026-09-02
 
 ### Fixed

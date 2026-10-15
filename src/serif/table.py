@@ -71,7 +71,7 @@ class Table(Vector):
         self._length = len(initial[0]) if initial else 0
         
         # Snapshot columns to enforce value semantics. copy() shares the
-        # frozen storage (rebuild-on-write makes a share a true snapshot),
+        # immutable storage (rebuild-on-write makes a share a true snapshot),
         # so this is O(1) per column — no aliasing: a write to either side
         # rebinds that side a new storage. copy() preserves names on every
         # Vector flavor, so no separate name save/restore is needed.
@@ -299,7 +299,7 @@ class Table(Vector):
         any number of rows, quadratic only if you WRITE IN A LOOP. That
         loop is what batch() is for: entering copies each column's
         buffers once (un-sharing), then every write inside lands raw and
-        O(1), and thawed columns accept vector-addressed writes:
+        O(1), and writable columns accept vector-addressed writes:
 
             with t.batch() as m:
                 for i in hot_indices:
@@ -308,7 +308,7 @@ class Table(Vector):
         Observable semantics are identical to table-addressed writes —
         snapshots taken before the scope (copies, slices, filtered
         results, read-out columns) are untouched by construction; only
-        the speed differs. Exiting refreezes everything, including column
+        the speed differs. Exiting makes every column read-only again, including column
         refs that escaped the scope. Nesting raises; an exception
         mid-scope leaves the table partially mutated (no rollback).
         """

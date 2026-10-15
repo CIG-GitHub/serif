@@ -3,7 +3,7 @@ import pytest
 from serif import SerifTypeError, Table
 
 
-def test_table_owned_column_vector_name_is_frozen():
+def test_table_owned_column_vector_name_is_read_only():
     t = Table({'old_name': [1, 2, 3], 'other': [4, 5, 6]})
     col = t.old_name
 
@@ -14,10 +14,10 @@ def test_table_owned_column_vector_name_is_frozen():
     assert list(t.old_name) == [1, 2, 3]
 
 
-def test_table_owned_column_alias_is_frozen():
+def test_table_owned_column_alias_is_read_only():
     t = Table({'old_name': [1, 2, 3]})
 
-    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+    with pytest.raises(SerifTypeError, match="metadata is read-only"):
         t.old_name.alias('new_name')
 
     assert t.column_names() == ['old_name']

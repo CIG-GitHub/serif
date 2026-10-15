@@ -85,12 +85,18 @@ All joins/merges must be explicit.
 Null positions yield `None`.
 
 ## 12. Table-owned columns are complete values
-Data and metadata read out of a table are frozen. Element assignment,
+Data and metadata read out of a table are read-only. Element assignment,
 `.vector_name = ...`, and `.alias(...)` all raise on table-owned columns.
 Write data through table indexing and rename through `Table.rename_columns()`.
 A `.copy()` is an independent mutable and renameable Vector.
 
-## 13. Row cardinality does not define table schemas
+## 13. Frozen objects never change in place
+After `freeze()`, a Vector or Table — and every column of a frozen
+Table — rejects element assignment, column replacement, renames, and
+`batch()`. There is no unfreeze. Copies and every derived result are
+new, unfrozen objects.
+
+## 14. Row cardinality does not define table schemas
 Rows determine how many values a Table contains, not which columns exist.
 When an operation produces zero rows, every output column implied by that
 operation remains present with its name, order, and known dtype.

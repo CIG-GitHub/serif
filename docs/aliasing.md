@@ -1,6 +1,6 @@
 # Aliasing
 
-For the rules on WHERE writes are allowed (owned columns are frozen;
+For the rules on WHERE writes are allowed (owned columns are read-only;
 write through the table), see [mutation.md](mutation.md). This document
 covers the machinery underneath: why sharing storage is always safe.
 
