@@ -59,7 +59,11 @@ impl Key<'_> {
                 }
                 // -0.0 == 0.0 in Python, so they must tie.
                 let bits = if value == 0.0 { 0 } else { value.to_bits() };
-                if bits & SIGN != 0 { !bits } else { bits | SIGN }
+                if bits & SIGN != 0 {
+                    !bits
+                } else {
+                    bits | SIGN
+                }
             }
         };
         Some(if self.reverse { !code } else { code })
@@ -111,7 +115,9 @@ fn sort_by_key(key: &Key, perm: &mut Vec<u32>, na_last: bool) -> bool {
     for &row in perm.iter() {
         let row = row as usize;
         if key.is_valid(row) {
-            let Some(code) = key.code(row) else { return false };
+            let Some(code) = key.code(row) else {
+                return false;
+            };
             low = low.min(code);
             codes.push(code);
         } else {
@@ -123,7 +129,11 @@ fn sort_by_key(key: &Key, perm: &mut Vec<u32>, na_last: bool) -> bool {
     // are skipped. Null lanes become a constant 0, keeping their order.
     if low != u64::MAX {
         for (code, &row) in codes.iter_mut().zip(perm.iter()) {
-            *code = if key.is_valid(row as usize) { *code - low } else { 0 };
+            *code = if key.is_valid(row as usize) {
+                *code - low
+            } else {
+                0
+            };
         }
     }
     radix_sort(&mut codes, perm);
@@ -176,7 +186,9 @@ pub fn argsort<'py>(
     na_last: bool,
 ) -> PyResult<Option<Bound<'py, PyBytes>>> {
     if kinds.len() != values.len() || kinds.len() != masks.len() || kinds.len() != reverse.len() {
-        return Err(PyValueError::new_err("one kind, buffer, mask and direction per key"));
+        return Err(PyValueError::new_err(
+            "one kind, buffer, mask and direction per key",
+        ));
     }
     if n >= u32::MAX as usize {
         return Ok(None);
@@ -212,7 +224,11 @@ pub fn argsort<'py>(
                 Some(bits)
             }
         };
-        keys.push(Key { values, valid, reverse });
+        keys.push(Key {
+            values,
+            valid,
+            reverse,
+        });
     }
 
     let Some(perm) = argsort_keys(&keys, n, na_last) else {
@@ -232,12 +248,28 @@ mod tests {
 
     fn python_order(rows: &[Option<i64>], reverse: bool, na_last: bool) -> Vec<u32> {
         // Python: sorted(range(n), key=(null_flag, value), reverse=reverse).
-        let flag = |null: bool| if na_last { null != reverse } else { null == reverse };
+        let flag = |null: bool| {
+            if na_last {
+                null != reverse
+            } else {
+                null == reverse
+            }
+        };
         let mut order: Vec<u32> = (0..rows.len() as u32).collect();
         order.sort_by(|&a, &b| {
-            let ka = (flag(rows[a as usize].is_none()), rows[a as usize].unwrap_or(0));
-            let kb = (flag(rows[b as usize].is_none()), rows[b as usize].unwrap_or(0));
-            if reverse { kb.cmp(&ka) } else { ka.cmp(&kb) }
+            let ka = (
+                flag(rows[a as usize].is_none()),
+                rows[a as usize].unwrap_or(0),
+            );
+            let kb = (
+                flag(rows[b as usize].is_none()),
+                rows[b as usize].unwrap_or(0),
+            );
+            if reverse {
+                kb.cmp(&ka)
+            } else {
+                ka.cmp(&kb)
+            }
         });
         order
     }
@@ -255,15 +287,31 @@ mod tests {
     #[test]
     fn matches_python_stable_order() {
         let rows = [
-            Some(3), None, Some(-1), Some(3), None, Some(i64::MIN), Some(i64::MAX), Some(-1), Some(0),
+            Some(3),
+            None,
+            Some(-1),
+            Some(3),
+            None,
+            Some(i64::MIN),
+            Some(i64::MAX),
+            Some(-1),
+            Some(0),
         ];
         let values: Vec<i64> = rows.iter().map(|r| r.unwrap_or(77)).collect();
         let mask = mask_of(&rows);
         for reverse in [false, true] {
             for na_last in [false, true] {
-                let key = Key { values: Values::Int(&values), valid: Some(&mask), reverse };
+                let key = Key {
+                    values: Values::Int(&values),
+                    valid: Some(&mask),
+                    reverse,
+                };
                 let got = argsort_keys(&[key], rows.len(), na_last).unwrap();
-                assert_eq!(got, python_order(&rows, reverse, na_last), "rev={reverse} na_last={na_last}");
+                assert_eq!(
+                    got,
+                    python_order(&rows, reverse, na_last),
+                    "rev={reverse} na_last={na_last}"
+                );
             }
         }
     }
@@ -271,13 +319,28 @@ mod tests {
     #[test]
     fn floats_tie_signed_zeros_and_decline_nan() {
         let values = [0.0, -0.0, -1.5, 0.0, f64::INFINITY, f64::NEG_INFINITY];
-        let key = Key { values: Values::Float(&values), valid: None, reverse: false };
-        assert_eq!(argsort_keys(&[key], 6, true).unwrap(), vec![5, 2, 0, 1, 3, 4]);
+        let key = Key {
+            values: Values::Float(&values),
+            valid: None,
+            reverse: false,
+        };
+        assert_eq!(
+            argsort_keys(&[key], 6, true).unwrap(),
+            vec![5, 2, 0, 1, 3, 4]
+        );
         let with_nan = [1.0, f64::NAN];
-        let key = Key { values: Values::Float(&with_nan), valid: None, reverse: false };
+        let key = Key {
+            values: Values::Float(&with_nan),
+            valid: None,
+            reverse: false,
+        };
         assert!(argsort_keys(&[key], 2, true).is_none());
         // A NaN under a null lane is not a value and must not decline.
-        let key = Key { values: Values::Float(&with_nan), valid: Some(&[0b01]), reverse: false };
+        let key = Key {
+            values: Values::Float(&with_nan),
+            valid: Some(&[0b01]),
+            reverse: false,
+        };
         assert_eq!(argsort_keys(&[key], 2, true).unwrap(), vec![0, 1]);
     }
 
@@ -286,8 +349,16 @@ mod tests {
         let group = [1i64, 0, 1, 0, 1];
         let value = [5i64, 7, 9, 7, 5];
         let keys = [
-            Key { values: Values::Int(&group), valid: None, reverse: false },
-            Key { values: Values::Int(&value), valid: None, reverse: true },
+            Key {
+                values: Values::Int(&group),
+                valid: None,
+                reverse: false,
+            },
+            Key {
+                values: Values::Int(&value),
+                valid: None,
+                reverse: true,
+            },
         ];
         // group asc, value desc, ties in original order.
         assert_eq!(argsort_keys(&keys, 5, true).unwrap(), vec![1, 3, 2, 0, 4]);

@@ -13,4 +13,6 @@ codegen-units = 1
 lto = "fat"
 
 [dependencies]
-pyo3 = { version = "0.30.1", features = ["extension-module"] }
+# setuptools-rust enables pyo3/extension-module for builds; leaving it off
+# here lets `cargo test` link against libpython on every platform.
+pyo3 = "0.30.1"

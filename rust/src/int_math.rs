@@ -195,7 +195,9 @@ fn combine<'a>(
         return Ok(None);
     }
     let Some(out_mask) = out_mask else {
-        return Err(PyValueError::new_err("out_mask is required when inputs have masks"));
+        return Err(PyValueError::new_err(
+            "out_mask is required when inputs have masks",
+        ));
     };
     for (i, slot) in out_mask.iter_mut().enumerate() {
         *slot = left.map_or(0xff, |m| m[i]) & right.map_or(0xff, |m| m[i]);
@@ -238,18 +240,22 @@ pub fn int_binary(
     let valid = combine(left_bits, right_bits, out_bits)?;
 
     match (&left, &right) {
-        (Operand::Column(a), Operand::Column(b)) => {
-            dispatch(op, column(a, "left", n)?, column(b, "right", n)?, valid, out)
-        }
+        (Operand::Column(a), Operand::Column(b)) => dispatch(
+            op,
+            column(a, "left", n)?,
+            column(b, "right", n)?,
+            valid,
+            out,
+        ),
         (Operand::Column(a), Operand::Scalar(b)) => {
             dispatch(op, column(a, "left", n)?, *b, valid, out)
         }
         (Operand::Scalar(a), Operand::Column(b)) => {
             dispatch(op, *a, column(b, "right", n)?, valid, out)
         }
-        (Operand::Scalar(_), Operand::Scalar(_)) => {
-            Err(PyValueError::new_err("at least one operand must be a column"))
-        }
+        (Operand::Scalar(_), Operand::Scalar(_)) => Err(PyValueError::new_err(
+            "at least one operand must be a column",
+        )),
     }
 }
 

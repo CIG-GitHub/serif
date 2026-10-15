@@ -1,0 +1,75 @@
+name: Wheels
+
+# Builds every release artifact and uploads them to the run; publishing to
+# PyPI stays a manual step. Configuration lives in pyproject.toml under
+# [tool.cibuildwheel].
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "rust/**"
+      - "setup.py"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - ".github/workflows/wheels.yml"
+
+jobs:
+  compiled:
+    name: Compiled wheels / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest      # manylinux + musllinux x86_64
+          - ubuntu-24.04-arm   # manylinux + musllinux aarch64
+          - windows-latest     # win_amd64
+          - macos-latest       # arm64, plus x86_64 cross-compiled
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build and test wheels
+      uses: pypa/cibuildwheel@v4.3.1
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.os }}
+        path: wheelhouse/*.whl
+
+  pure:
+    name: Pure-Python wheel and sdist
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Build
+      env:
+        SERIF_RUST: "off"
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install build twine
+        python -m build
+        python -m twine check dist/*
+        test -f dist/serif-*-py3-none-any.whl
+
+    # The fallback a user without a compiled wheel or Rust toolchain gets.
+    - name: Test pure wheel without Rust
+      run: |
+        python -m pip install pytest dist/*-py3-none-any.whl
+        python -c "import importlib.util; assert importlib.util.find_spec('serif._rust') is None"
+        cd tests && python -m pytest -q
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: pure-and-sdist
+        path: dist/*

@@ -52,7 +52,13 @@ impl KeyIndex {
             dense_min: None,
             shift: 64 - capacity.trailing_zeros(),
             dense: Vec::new(),
-            hashed: vec![Slot { key: 0, entry: EMPTY }; capacity],
+            hashed: vec![
+                Slot {
+                    key: 0,
+                    entry: EMPTY
+                };
+                capacity
+            ],
         }
     }
 
@@ -98,7 +104,10 @@ impl KeyIndex {
         loop {
             let probe = &mut self.hashed[slot];
             if probe.entry == EMPTY {
-                *probe = Slot { key, entry: next_id };
+                *probe = Slot {
+                    key,
+                    entry: next_id,
+                };
                 return (next_id, true);
             }
             if probe.key == key {
@@ -184,7 +193,11 @@ fn index_right(right: &Keys, track_rows: bool) -> RightIndex {
         first: Vec::with_capacity(n),
         count: Vec::with_capacity(n),
         next: Vec::new(),
-        row_entry: if track_rows { vec![EMPTY; n] } else { Vec::new() },
+        row_entry: if track_rows {
+            vec![EMPTY; n]
+        } else {
+            Vec::new()
+        },
         first_duplicate: None,
     };
     let mut last: Vec<u32> = Vec::with_capacity(n);
@@ -251,7 +264,14 @@ fn probe(
     }
 
     let n_left = left.values.len();
-    let mut hit = vec![false; if keep_unmatched_right { built.first.len() } else { 0 }];
+    let mut hit = vec![
+        false;
+        if keep_unmatched_right {
+            built.first.len()
+        } else {
+            0
+        }
+    ];
     // One output row per left row is exact for unique right sides; more
     // matches simply grow the vectors.
     let mut left_take: Vec<i64> = Vec::with_capacity(n_left);
@@ -380,8 +400,14 @@ mod tests {
     use super::*;
 
     fn run(left: &[i64], right: &[i64], flags: (bool, bool, bool, bool)) -> Probe {
-        let left = Keys { values: left, valid: None };
-        let right = Keys { values: right, valid: None };
+        let left = Keys {
+            values: left,
+            valid: None,
+        };
+        let right = Keys {
+            values: right,
+            valid: None,
+        };
         probe(&left, &right, flags.0, flags.1, flags.2, flags.3)
     }
 
@@ -407,7 +433,11 @@ mod tests {
     #[test]
     fn sparse_keys_use_hashing() {
         let big = [i64::MIN, i64::MAX, 0, -1];
-        let got = pairs(run(&big, &[i64::MAX, i64::MIN], (false, false, false, false)));
+        let got = pairs(run(
+            &big,
+            &[i64::MAX, i64::MIN],
+            (false, false, false, false),
+        ));
         assert_eq!(got, vec![(0, 1), (1, 0)]);
     }
 
