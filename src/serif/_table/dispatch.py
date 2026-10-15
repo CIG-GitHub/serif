@@ -39,6 +39,11 @@ def join_single_key(
         keep_unmatched_right,
     )
 
+    def rust_hash():
+        from ._rust import joins
+
+        return joins.probe_int64(*arguments)
+
     def numpy_dense():
         from ._numpy import joins
 
@@ -60,6 +65,7 @@ def join_single_key(
         return joins.probe_strings(*arguments)
 
     return first_supported(
+        rust_hash,
         numpy_dense,
         arrow_hash,
         numpy_sorted,

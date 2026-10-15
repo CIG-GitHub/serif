@@ -1,0 +1,5 @@
+# Rust sources for the optional serif._rust extension, so an sdist can build
+# it (or, by default, fall back to pure Python when it can't).
+include rust/Cargo.toml rust/Cargo.lock
+recursive-include rust/src *.rs
+prune rust/target

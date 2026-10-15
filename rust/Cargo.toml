@@ -1,0 +1,18 @@
+[package]
+name = "serif-rust"
+version = "0.2.3"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
+[dependencies]
+# setuptools-rust enables pyo3/extension-module for builds; leaving it off
+# here lets `cargo test` link against libpython on every platform.
+pyo3 = "0.30.1"

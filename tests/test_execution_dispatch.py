@@ -18,6 +18,7 @@ from serif._table._numpy import grouping as numpy_grouping
 from serif._table._numpy import joins as numpy_joins
 from serif._table._python import grouping as python_grouping
 from serif._table._python import joins as python_joins
+from serif._table._rust import joins as rust_joins
 from serif._vector import dispatch as vector_dispatch
 from serif._vector import operators as vector_ops
 from serif._vector import reductions as vector_reductions
@@ -30,6 +31,7 @@ from serif._vector._numpy import selection as numpy_selection
 from serif._vector._numpy import statistics as numpy_statistics
 from serif._vector._python import reductions as python_reductions
 from serif._vector._python import selection as python_selection
+from serif._vector._rust import operators as rust_ops
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import StringStorage
 from serif._vector.storage import TupleStorage
@@ -154,9 +156,13 @@ def test_true_division_decline_advances_to_numpy(monkeypatch):
     assert calls == ['arrow', 'numpy']
 
 
-def test_arithmetic_dispatch_is_numpy_then_checked_arrow(monkeypatch):
+def test_arithmetic_dispatch_is_rust_then_numpy_then_checked_arrow(monkeypatch):
     calls = []
     result = object()
+
+    def decline_rust(*args):
+        calls.append('rust')
+        return execution.DECLINED
 
     def decline_numpy(*args):
         calls.append('numpy')
@@ -166,6 +172,7 @@ def test_arithmetic_dispatch_is_numpy_then_checked_arrow(monkeypatch):
         calls.append('arrow')
         return result
 
+    monkeypatch.setattr(rust_ops, 'binop_storage', decline_rust)
     monkeypatch.setattr(numpy_ops, 'binop_storage', decline_numpy)
     monkeypatch.setattr(arrow_ops, 'binop_ints', accept_arrow)
 
@@ -176,7 +183,7 @@ def test_arithmetic_dispatch_is_numpy_then_checked_arrow(monkeypatch):
         int,
     )
     assert actual is result
-    assert calls == ['numpy', 'arrow']
+    assert calls == ['rust', 'numpy', 'arrow']
 
 
 def test_only_declined_advances_dispatch(monkeypatch):
@@ -201,6 +208,11 @@ def test_only_declined_advances_dispatch(monkeypatch):
 def test_declined_backends_reach_mandatory_python_path(monkeypatch):
     calls = []
 
+    monkeypatch.setattr(
+        rust_ops,
+        'binop_storage',
+        lambda *args: execution.DECLINED,
+    )
     monkeypatch.setattr(
         numpy_ops,
         'binop_storage',
@@ -835,6 +847,7 @@ def test_join_declines_reach_mandatory_python_path(monkeypatch):
     original = python_joins.probe
 
     for module, name in (
+        (rust_joins, 'probe_int64'),
         (numpy_joins, 'probe_int64_dense'),
         (arrow_joins, 'probe_strings_hash'),
         (numpy_joins, 'probe_int64'),
@@ -914,6 +927,11 @@ def test_join_backend_defects_propagate_without_fallback(monkeypatch):
         calls.append('unexpected')
         return execution.DECLINED
 
+    monkeypatch.setattr(
+        rust_joins,
+        'probe_int64',
+        lambda *args: execution.DECLINED,
+    )
     monkeypatch.setattr(numpy_joins, 'probe_int64_dense', broken_dense)
     monkeypatch.setattr(arrow_joins, 'probe_strings_hash', unexpected)
     monkeypatch.setattr(numpy_joins, 'probe_int64', unexpected)
