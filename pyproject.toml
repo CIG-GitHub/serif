@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools-rust>=1.9"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -55,3 +55,14 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Optional compiled kernels. A failed Rust build still installs a working,
+# pure-Python serif: the extension is simply absent and every accelerator
+# that would use it declines.
+[[tool.setuptools-rust.ext-modules]]
+target = "serif._rust"
+path = "rust/Cargo.toml"
+binding = "PyO3"
+optional = true
+# Editable installs would otherwise build unoptimized debug code.
+debug = false

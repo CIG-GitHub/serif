@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.so
 .Python
 
 # Testing artifacts
@@ -20,3 +21,6 @@ venv/
 .venv/
 env/
 ENV/
+
+# Rust build output
+rust/target/

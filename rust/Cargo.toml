@@ -1,0 +1,16 @@
+[package]
+name = "serif-rust"
+version = "0.2.3"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
+[dependencies]
+pyo3 = { version = "0.30.1", features = ["extension-module"] }
