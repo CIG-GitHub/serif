@@ -30,9 +30,79 @@ class _EditToken:
             self._refresh_metadata(table, changed_column=vector)
 
 
+class _Frozen:
+    """The permanent owner of a frozen object: no one may edit it, ever.
+
+    Freezing is ownership, not a separate flag. A frozen standalone Vector
+    or Table has this sentinel as its _owner; a column of a frozen Table
+    keeps its weak reference to that Table, whose own _owner is FROZEN.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return 'FROZEN'
+
+    def __reduce__(self):
+        return 'FROZEN'
+
+
+FROZEN = _Frozen()
+
+
 def _is_editable(vector):
     owner = vector._owner
     return isinstance(owner, _EditToken) and owner.active
+
+
+def _frozen_owner_table(vector):
+    """Return the frozen Table that owns this column, if there is one."""
+    owner = vector._owner
+    if isinstance(owner, ref):
+        table = owner()
+        if table is not None and table._owner is FROZEN:
+            return table
+    return None
+
+
+def is_frozen(vector):
+    """True when nothing can ever change this object in place again."""
+    return (
+        vector._owner is FROZEN
+        or _frozen_owner_table(vector) is not None
+    )
+
+
+def freeze(vector):
+    """Permanently forbid in-place changes; return the same object."""
+    if getattr(vector, '_batch_edit', None) is not None:
+        raise SerifValueError(
+            "Cannot freeze a Table inside its own batch() scope; "
+            "freeze it after the scope exits."
+        )
+    vector._owner = FROZEN
+    return vector
+
+
+def frozen_error(vector):
+    """The error for any in-place change to a frozen object."""
+    if vector._ndims == 2:
+        subject, fix = "Table is frozen", "t = t.copy()"
+    elif vector._owner is FROZEN:
+        subject, fix = "Vector is frozen", "v = v.copy()"
+    else:
+        subject, fix = "This column's Table is frozen", "v = v.copy()"
+    return SerifTypeError(
+        f"{subject}: it may be shared, so it cannot change in place. "
+        "Freezing is permanent.\n"
+        f"For a private mutable copy: {fix}"
+    )
+
+
+def require_unfrozen(vector):
+    """Raise if vector (a Vector or Table) is frozen."""
+    if is_frozen(vector):
+        raise frozen_error(vector)
 
 
 def metadata_changed(vector):
@@ -49,12 +119,13 @@ def _vector_class():
 
 
 def require_mutable(vector):
-    """Raise if vector is a frozen table-owned column."""
+    """Raise if vector is frozen or a read-only table-owned column."""
+    require_unfrozen(vector)
     if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
-            "Table and is frozen. Write through the owning table "
+            "Table and is read-only. Write through the owning table "
             "instead:\n"
             f"    t[key, {column!r}] = value\n"
             "For an independent mutable vector use .copy(); for bulk "
@@ -63,12 +134,13 @@ def require_mutable(vector):
 
 
 def require_mutable_metadata(vector):
-    """Reject metadata mutation through a table-owned column."""
+    """Reject metadata mutation through a frozen or table-owned vector."""
+    require_unfrozen(vector)
     if vector._owner is not None and not _is_editable(vector):
         column = vector._name if vector._name is not None else 'col'
         raise SerifTypeError(
             "Read-out columns are values: this vector is owned by a "
-            "Table and its metadata is frozen. Rename through the table "
+            "Table and its metadata is read-only. Rename through the table "
             "instead:\n"
             f"    t = t.rename_columns({{{column!r}: 'new_name'}})\n"
             "For an independent renameable vector use .copy()."

@@ -335,7 +335,7 @@ def test_copy_is_independent(case_id, factory, values):
 # ---------------------------------------------------------------------------
 # Copy-on-write tripwires
 #
-# copy() SHARES the frozen storage object (O(1) snapshot); independence is
+# copy() SHARES the immutable storage object (O(1) snapshot); independence is
 # guaranteed by the rebuild-on-write doctrine (storage.py) — every public
 # mutation path rebinds a NEW storage — not by physical duplication. These
 # tests trip the moment either half of that contract regresses: the identity

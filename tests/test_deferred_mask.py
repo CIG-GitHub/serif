@@ -10,7 +10,7 @@ The contract under test:
   schemas, and storage types, on both the accel and pure tiers.
 - Laziness is real: single-column access gathers exactly that column;
   len / shape / column_names gather nothing.
-- The capture is a frozen snapshot: writes to the source after deferral
+- The capture is an immutable snapshot: writes to the source after deferral
   (owner-addressed or batch()) never show through, in any order.
 - Everything unanticipated falls through materialization (the latch)
   and behaves as a plain Table; derived results are plain Tables — the
@@ -300,14 +300,14 @@ def test_column_replacement_after_defer_does_not_leak(tier):
 def test_source_alias_after_defer_is_rejected_and_keeps_capture_names(tier):
     t = make_table()
     q = t[t.a > 3]
-    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+    with pytest.raises(SerifTypeError, match="metadata is read-only"):
         t.a.alias('z')
     assert q.column_names() == ['a', 'b', 's', 'n', 'f']
     assert list(q.a) == [4, 5, 6]
     assert q._mat is None
 
 
-def test_gathered_columns_are_frozen_like_eager(tier):
+def test_gathered_columns_are_read_only_like_eager(tier):
     t = make_table()
     mask = t.a > 3
     q, e = t[mask], eager(t, mask)
@@ -417,11 +417,11 @@ def test_batch_on_deferred_table(tier):
     q = t[t.a > 3]
     with q.batch() as m:
         m[0, 'a'] = 40           # point write, table-addressed
-        m.a[1] = 50              # vector-addressed works on thawed columns
+        m.a[1] = 50              # vector-addressed works on writable columns
     assert list(q.a) == [40, 50, 6]
     assert list(t.a) == [1, 2, 3, 4, 5, 6]   # source untouched
     with pytest.raises(SerifTypeError, match="owned by a Table"):
-        q.a[0] = 0               # refrozen on scope exit
+        q.a[0] = 0               # read-only again on scope exit
 
 
 def test_mask_inside_deferred_batch_scope_is_eager(tier):
@@ -609,7 +609,7 @@ def test_alias_on_gathered_column_is_rejected_without_latching(tier):
     # happens on the gathered column without forcing the other columns.
     t = make_table()
     q = t[t.a > 3]
-    with pytest.raises(SerifTypeError, match="metadata is frozen"):
+    with pytest.raises(SerifTypeError, match="metadata is read-only"):
         q.b.alias('height')
     assert q.column_names() == ['a', 'b', 's', 'n', 'f']
     assert q._mat is None

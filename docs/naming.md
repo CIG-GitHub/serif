@@ -11,7 +11,7 @@ Names in Vector and Table are simple, non-magical metadata.
 
 Names are human-facing, not structural.
 
-A table-owned column's name is frozen along with its values. Rename through
+A table-owned column's name is read-only along with its values. Rename through
 the owner with `t.rename_columns({'old': 'new'})`; use
 `t.col.copy().alias('new')` for an independent named Vector.
 

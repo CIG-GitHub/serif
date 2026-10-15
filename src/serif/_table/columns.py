@@ -14,6 +14,7 @@ from ..naming import _normalize_name
 from ..naming import _reserved_collision
 from ..naming import _sanitize_user_name
 from ..vector import Vector
+from .._vector.mutation import FROZEN
 from .._vector.storage import TupleStorage
 
 
@@ -37,7 +38,9 @@ def adopt_columns(table, columns=None):
     if columns is None:
         columns = iter_columns(table)
     for column in columns:
-        column._owner = owner
+        # A frozen column stays frozen even while its Table holds it.
+        if column._owner is not FROZEN:
+            column._owner = owner
 
 
 def missing_column_error(name, context="Table"):

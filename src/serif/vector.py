@@ -49,9 +49,9 @@ class Vector():
     _ndims = 1     # Class-level constant; Table overrides with 2
     # Mutation doctrine: read through the column, write through the table.
     # _owner is None for a standalone value, a weak reference to the owning
-    # Table for a frozen column, or an active edit token inside batch().
-    # Standalone vectors use rebuild-on-write; only the active token licenses
-    # raw in-place writes.
+    # Table for a read-only column, an active edit token inside batch(), or
+    # FROZEN after freeze(). Standalone vectors use rebuild-on-write; only
+    # the active token licenses raw in-place writes.
     _owner = None
     
     def schema(self):
@@ -161,8 +161,23 @@ class Vector():
 
 
 
+    def freeze(self):
+        """Permanently forbid in-place changes and return self.
+
+        For handing a value to code that must not change it. Every
+        in-place write or rename afterwards raises; there is no unfreeze.
+        Anything derived (copies, slices, results) is a new, unfrozen
+        object, so `v.copy()` is the way to get a private mutable version.
+        """
+        return _mutation.freeze(self)
+
+    @property
+    def frozen(self):
+        """True after freeze(), or for a column of a frozen Table."""
+        return _mutation.is_frozen(self)
+
     def copy(self, new_values=None, name=...):
-        """Create an independent Vector shell, sharing frozen storage when possible."""
+        """Create an independent Vector shell, sharing immutable storage when possible."""
         return _construction.copy(
             self,
             new_values=new_values,

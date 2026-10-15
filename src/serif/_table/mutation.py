@@ -7,7 +7,9 @@ from ..errors import SerifKeyError
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from ..vector import Vector
+from .._vector.mutation import FROZEN
 from .._vector.mutation import _EditToken
+from .._vector.mutation import require_unfrozen
 from .._vector.storage import TupleStorage
 from . import columns as _columns
 
@@ -38,17 +40,18 @@ class _BatchScope:
     Enter: un-share — every column whose storage supports it gets
     privately-copied buffers (the same principle as Table.__init__ copying
     its vectors: un-share whenever write-ownership changes hands), columns
-    thaw. `m` IS the table.
+    become writable. `m` IS the table. A frozen Table cannot enter; a
+    frozen column stays frozen, and writes to it swap in a fresh column.
 
     Inside: point writes go raw into the private buffers (fast), and
-    thawed columns accept vector-addressed writes (m.v[i] = x); anything
+    writable columns accept vector-addressed writes (m.v[i] = x); anything
     the buffer can't hold, and any storage without in-place support,
     rebuilds exactly as before — correctness never depends on the fast
     path.
 
     Exit (including via exception — partial mutation persists, no
-    rollback): every column refreezes and in-place licenses revoke (so
-    escaped column refs re-freeze too).
+    rollback): every column is read-only again and in-place licenses
+    revoke (so escaped column refs are read-only again too).
     Observable semantics are identical to table-addressed writes; only
     the speed differs.
     """
@@ -60,6 +63,7 @@ class _BatchScope:
 
     def __enter__(self):
         table = self._table
+        require_unfrozen(table)
         if table._batch_edit is not None:
             raise SerifValueError(
                 "Table is already inside a batch() scope; "
@@ -69,6 +73,8 @@ class _BatchScope:
         table._batch_edit = token
         try:
             for column in table._storage:
+                if column._owner is FROZEN:
+                    continue
                 private = getattr(column._storage, 'private_copy', None)
                 if private is not None:
                     column._storage = private()
@@ -108,11 +114,14 @@ def setattr(table, attr, value):
     # Table name lives on an explicit, non-colliding property so that
     # columns own the rest of the attribute namespace (a column named
     # 'name' must resolve to the column, not shadow a property).
+    if attr == 'vector_name':
+        raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
+
+    require_unfrozen(table)
+
     if attr == 'table_name':
         object.__setattr__(table, '_name', value)
         return
-    if attr == 'vector_name':
-        raise AttributeError("Table has no 'vector_name' — use '.table_name'.")
 
     # After initialization, check if setting an existing column
     if table._column_map is not None:
@@ -188,6 +197,7 @@ def setattr(table, attr, value):
 
 def setitem(table, key, value):
     """Plan, validate, and apply an owner-addressed Table assignment."""
+    require_unfrozen(table)
     row_spec, col_spec = None, None
 
     # --- 1. Normalize Key ---
@@ -423,9 +433,10 @@ def write_column(table, col_idx, row_spec, value):
     """
     Land one column write, owner-addressed.
 
-    Inside a batch() scope: write on the thawed column directly —
+    Inside a batch() scope: write on the writable column directly —
     _setitem_impl takes the raw in-place path on the scope's private
-    buffers.
+    buffers. A column frozen inside the scope is never written in place;
+    it takes the swap path below like any write outside a batch.
 
     Outside: SWAP-ON-WRITE. The write is applied to a storage-sharing
     clone which then replaces the column in the table, so the original
@@ -434,7 +445,7 @@ def write_column(table, col_idx, row_spec, value):
     same guarantee column replacement via __setattr__ already gives).
     """
     column = table._storage[col_idx]
-    if table._batch_edit is not None:
+    if table._batch_edit is not None and column._owner is table._batch_edit:
         column._setitem_impl(row_spec, value)
         return
     new_column = column._clone(column._storage)  # O(1) storage share
