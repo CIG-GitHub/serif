@@ -367,7 +367,7 @@ def test_full_join_both_sides_nullable():
 
     assert j['a'].schema() == Schema(int, True)
     assert j['b'].schema() == Schema(int, True)
-    assert list(j['id']) == [1, 2, None]
+    assert list(j['id']) == [1, 2, 3]
     assert list(j['a']) == [10, 20, None]
     assert list(j['b']) == [None, 200, 300]
 

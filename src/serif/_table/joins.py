@@ -247,11 +247,26 @@ def _join(
         _raise_probe_diagnostic(probed)
     left_take, right_take = probed[1], probed[2]
 
+    # A de-duplicated key must still carry the right key on right-only rows,
+    # or a full join reports those keys as null.
+    coalesce_right = {}
+    if keep_unmatched_right:
+        for left_key, right_key in pairs:
+            if left_key._name != right_key._name:
+                continue
+            for index, column in enumerate(left_columns):
+                if column is left_key:
+                    coalesce_right[index] = right_key
+
     left_nullable_pad = keep_unmatched_right
     right_nullable_pad = keep_unmatched_left
     result_columns = [
-        _gather_join_column(column, left_take, left_nullable_pad)
-        for column in left_columns
+        _coalesce_join_key(
+            column, coalesce_right[index], left_take, right_take,
+        )
+        if index in coalesce_right
+        else _gather_join_column(column, left_take, left_nullable_pad)
+        for index, column in enumerate(left_columns)
     ]
     result_columns.extend(
         _gather_join_column(column, right_take, right_nullable_pad)
@@ -274,6 +289,18 @@ def _gather_join_column(original_column, indices, nullable_pad):
 
     values = take_pad_values(original_column._storage, indices)
     return _wrap_join_column(values, original_column, nullable_pad)
+
+
+def _coalesce_join_key(left_key, right_key, left_take, right_take):
+    """Gather a shared key from the left side, or the right where unmatched."""
+    left_values = take_pad_values(left_key._storage, left_take)
+    right_values = take_pad_values(right_key._storage, right_take)
+    values = [
+        right_value if left_index < 0 else left_value
+        for left_value, right_value, left_index
+        in zip(left_values, right_values, left_take)
+    ]
+    return _wrap_join_column(values, left_key, True)
 
 
 def _wrap_join_column(values, original_column, nullable_pad):

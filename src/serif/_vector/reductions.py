@@ -108,9 +108,10 @@ def sum(vector):
     fast = _dispatch.reduction('sum_', vector._storage)
     if fast is not DECLINED:
         return fast
+    schema = vector.schema()
     return _python_reductions.sum_(
         vector._storage,
-        vector.schema().kind,
+        schema.kind if schema is not None else object,
     )
 
 

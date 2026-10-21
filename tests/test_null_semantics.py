@@ -293,6 +293,13 @@ def test_all_null_aggregate_identity_rule(agg, expected):
         assert result == expected
 
 
+def test_untyped_empty_sum_is_int_zero():
+    # Vector([]) has no schema; sum must still return its identity.
+    assert Vector([]).sum() == 0
+    assert type(Vector([]).sum()) is int
+    assert list(Table({'a': []}).sum()) == [0]
+
+
 def test_float_sum_identity_preserves_dtype():
     empty = Vector([1.0])[:0]
     all_null = Vector([1.0, None])[1:]
