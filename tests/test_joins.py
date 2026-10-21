@@ -224,6 +224,68 @@ def test_full_join_no_matches():
 	assert list(result['right_val']).count(None) == 2
 
 
+def test_full_join_shared_key_keeps_right_only_keys():
+	"""The de-duplicated key carries the right key on right-only rows"""
+	left = Table({'id': [1, 2], 'left_val': ['A', 'B']})
+	right = Table({'id': [2, 3], 'right_val': ['X', 'Y']})
+
+	result = left.full_join(right, left_on='id', right_on='id')
+
+	assert result.column_names() == ['id', 'left_val', 'right_val']
+	assert list(result['id']) == [1, 2, 3]
+	assert list(result['left_val']) == ['A', 'B', None]
+	assert list(result['right_val']) == [None, 'X', 'Y']
+
+
+def test_full_join_shared_key_null_keys_stay_null():
+	"""Null keys never match, so each side's null row keeps its own null"""
+	left = Table({'id': [1, None], 'left_val': ['A', 'B']})
+	right = Table({'id': [None, 3], 'right_val': ['X', 'Y']})
+
+	result = left.full_join(right, left_on='id', right_on='id')
+
+	rows = sorted(
+		zip(result['id'], result['left_val'], result['right_val']),
+		key=lambda row: (row[1] is None, row[1] or '', row[2] or ''),
+	)
+	assert rows == [
+		(1, 'A', None),
+		(None, 'B', None),
+		(None, None, 'X'),
+		(3, None, 'Y'),
+	]
+
+
+def test_full_join_shared_multi_key_keeps_right_only_keys():
+	"""Every shared key component is filled from the right-only row"""
+	left = Table({'a': [1, 1], 'b': ['x', 'y'], 'v': [10, 20]})
+	right = Table({'a': [1, 2], 'b': ['y', 'z'], 'w': [30, 40]})
+
+	result = left.full_join(right, left_on=['a', 'b'], right_on=['a', 'b'])
+
+	assert result.column_names() == ['a', 'b', 'v', 'w']
+	assert list(zip(result['a'], result['b'])) == [(1, 'x'), (1, 'y'), (2, 'z')]
+	assert list(result['v']) == [10, 20, None]
+	assert list(result['w']) == [None, 30, 40]
+
+
+@pytest.mark.parametrize('make_key', [int, str])
+def test_full_join_shared_key_keeps_right_only_keys_at_scale(make_key):
+	"""Large int and string keys take the accelerated probes"""
+	n = 5000
+	left = Table({'id': [make_key(i) for i in range(n)], 'lv': list(range(n))})
+	right = Table({
+		'id': [make_key(i) for i in range(n // 2, n + n // 2)],
+		'rv': list(range(n)),
+	})
+
+	result = left.full_join(right, left_on='id', right_on='id')
+
+	assert len(result) == n + n // 2
+	assert sorted(result['id'], key=int) == [make_key(i) for i in range(n + n // 2)]
+	assert result['id'].count() == len(result)
+
+
 def test_join_different_column_names():
 	"""Test join where left and right use different column names"""
 	left = Table({

@@ -168,8 +168,8 @@ def test_full_join_multi_key():
     t1, t2 = _fj_tables()
     j = t1.full_join(t2, ['k1', 'k2'], ['k1', 'k2'])
 
-    assert list(j['k1']) == [1, 1, 2, None]
-    assert list(j['k2']) == ['a', 'b', 'a', None]
+    assert list(j['k1']) == [1, 1, 2, 3]
+    assert list(j['k2']) == ['a', 'b', 'a', 'z']
     assert list(j['v']) == [10, 20, 30, None]
     assert list(j['w']) == [100, None, 200, 300]
     # Same-named right key columns are dropped
