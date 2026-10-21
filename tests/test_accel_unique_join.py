@@ -130,7 +130,7 @@ def test_numpy_indexers_drive_object_payload_fallback():
 
     result = left.full_join(right, 'key', 'key')
 
-    assert list(result.key) == [2, 1, None]
+    assert list(result.key) == [2, 1, 3]
     assert list(result.left_object) == [[2], [1], None]
     assert list(result.right_object) == [None, {'value': 1}, {'value': 3}]
 
