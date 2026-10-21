@@ -81,3 +81,9 @@ environment = { SERIF_RUST = "required", PATH = "$HOME/.cargo/bin:$PATH" }
 # Runners are arm64; also cross-compile Intel wheels (tested under Rosetta).
 archs = ["arm64", "x86_64"]
 before-all = "rustup target add aarch64-apple-darwin x86_64-apple-darwin"
+
+# Rust's x86_64 macOS target needs 10.12+, but older CPython installers ask
+# for 10.9, and delocate rejects a binary newer than the declared target.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { SERIF_RUST = "required", MACOSX_DEPLOYMENT_TARGET = "10.13" }
