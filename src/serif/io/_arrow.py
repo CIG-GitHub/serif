@@ -39,9 +39,9 @@ Why this is fast: serif's storage layout is deliberately arrow-shaped.
   * bools     — arrow bit-packed values → BoolStorage's 0/1 bytes: one
                 unpack pass (a single numpy C call when available), no
                 interned-bool boxing.
-  * objects   — date/datetime columns are TupleStorage of Python objects
-                either way; arrow's C-implemented to_pylist() is the
-                fastest available boxer, with None already in place.
+  * temporal  — arrow date32 days and timestamp[us] micros ARE serif's
+                DateStorage / DatetimeStorage ticks: one buffer copy, no
+                date objects built. timestamp[ms] scales to us in C first.
 """
 
 from __future__ import annotations
@@ -56,6 +56,13 @@ from .._execution import DECLINED
 from ..vector import Vector
 from .._vector._arrow import storage as _arrow_storage
 from .._vector.dtype import Schema as _Schema
+from .._vector.storage import DateStorage as _DateStorage
+from .._vector.storage import DatetimeStorage as _DatetimeStorage
+
+
+class _DeclineFile(Exception):
+    """A column's values are outside what serif reads: decline the WHOLE
+    file, so the pure reader's error is the one users see."""
 
 
 def _target_type(t):
@@ -159,7 +166,7 @@ def try_read(path):
                 return DECLINED
             cols.append(_to_vector(arr, field.name, field.nullable))
         return Table._from_columns_nocopy(cols)
-    except (_pa.ArrowException, OSError):
+    except (_pa.ArrowException, OSError, _DeclineFile):
         return DECLINED
 
 
@@ -218,7 +225,7 @@ def try_read_column(path, column_index, row_groups, batched=False):
                 vectors.append(_to_vector(arr, field.name, field.nullable))
             groups.append(vectors)
         return groups
-    except (_pa.ArrowException, OSError):
+    except (_pa.ArrowException, OSError, _DeclineFile):
         return DECLINED
 
 
@@ -262,17 +269,22 @@ def _to_vector(arr, name, nullable):
         return _wrap_storage(
             _arrow_storage.bool_storage(arr), dtype, name)
 
-    # date32 / timestamp → TupleStorage of Python objects, the same
-    # backend the pure reader builds. arrow's to_pylist() boxes in C with
-    # None already at the null positions.
+    # date32 / timestamp → the epoch-tick storage the pure reader builds.
     if _pa.types.is_date32(t):
-        kind = _date
+        kind, storage_class = _date, _DateStorage
     else:  # timestamp[us/ms], per _target_type
-        kind = _datetime
+        kind, storage_class = _datetime, _DatetimeStorage
         if t.tz is not None:
             # The pure reader surfaces naive datetimes (µs since epoch,
             # no zone). Cast tz-aware columns to naive in C so both paths
             # agree; same underlying instant, same values out.
             arr = arr.cast(_pa.timestamp(t.unit))
+        if t.unit == 'ms':
+            # Safe cast: an overflowing scale raises ArrowInvalid, which
+            # declines the file like any other arrow conversion failure.
+            arr = arr.cast(_pa.timestamp('us'))
     dtype = _Schema(kind, nullable)
-    return Vector._from_iterable_known_dtype(arr.to_pylist(), dtype, name=name)
+    storage = _arrow_storage.temporal_storage(arr, storage_class)
+    if storage is DECLINED:
+        raise _DeclineFile(name)
+    return Vector._from_storage(storage, dtype, name=name)

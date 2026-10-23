@@ -5,6 +5,7 @@ import array as _pyarray
 from ..._execution import DECLINED
 from ..._execution import _load_numpy
 from . import _pa
+from . import _pc
 from . import _USE_ARROW
 from ..nullable import BitMask
 from ..storage import ArrayStorage
@@ -101,6 +102,30 @@ def string_storage(array):
         else b''
     )
     return StringStorage.from_raw(raw, offsets, bitmask(array))
+
+
+def temporal_storage(array, storage_class):
+    """Copy an Arrow date32 / timestamp[us] array into epoch-tick storage.
+
+    Arrow's int32 days / int64 micros are the storage ticks: one buffer copy,
+    no date objects. Declines on a nonzero offset, or when a present value
+    lies outside Python's date range — the pure reader raises on such files,
+    and its error is the one users see.
+    """
+    if array.offset != 0:
+        return DECLINED
+    n = len(array)
+    ticks = _pyarray.array(storage_class._TYPECODE)
+    if n == 0:
+        return storage_class(ticks, None)
+    if array.null_count < n:
+        width = _pa.int32() if ticks.itemsize == 4 else _pa.int64()
+        bounds = _pc.min_max(array.cast(width))
+        if (bounds['min'].as_py() < storage_class._MIN_TICK
+                or bounds['max'].as_py() > storage_class._MAX_TICK):
+            return DECLINED
+    ticks.frombytes(memoryview(array.buffers()[1])[:n * ticks.itemsize])
+    return storage_class(ticks, bitmask(array))
 
 
 def bitmask(array):

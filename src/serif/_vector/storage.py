@@ -691,9 +691,10 @@ class _TemporalStorage:
     view ArrayStorage._data as plain numbers must never pick temporal
     columns up by attribute shape. They opt in by isinstance.
 
-    Subclasses set _KIND, _TYPECODE, and the scalar conversions _box
-    (tick -> Python value) and _unbox (Python value -> tick, or None when the
-    value has no exact tick).
+    Subclasses set _KIND, _TYPECODE, the tick bounds of Python's own range
+    (_MIN_TICK/_MAX_TICK, which I/O checks before trusting a file's ticks),
+    and the scalar conversions _box (tick -> Python value) and _unbox
+    (Python value -> tick, or None when the value has no exact tick).
     """
 
     __slots__ = ('_ticks', '_mask')
@@ -805,6 +806,8 @@ class DateStorage(_TemporalStorage):
 
     _KIND = date
     _TYPECODE = 'i'
+    _MIN_TICK = date.min.toordinal() - _EPOCH_ORDINAL
+    _MAX_TICK = date.max.toordinal() - _EPOCH_ORDINAL
 
     @staticmethod
     def _box(tick: int) -> date:
@@ -830,6 +833,10 @@ class DatetimeStorage(_TemporalStorage):
 
     _KIND = datetime
     _TYPECODE = 'q'
+    _MIN_TICK = (date.min.toordinal() - _EPOCH_ORDINAL) * _MICROS_PER_DAY
+    _MAX_TICK = (
+        (date.max.toordinal() - _EPOCH_ORDINAL + 1) * _MICROS_PER_DAY - 1
+    )
 
     @staticmethod
     def _box(tick: int) -> datetime:
