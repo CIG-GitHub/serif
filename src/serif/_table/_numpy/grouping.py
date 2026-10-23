@@ -6,16 +6,20 @@ from . import _USE_NUMPY
 from ..._vector.storage import ArrayStorage
 
 
+_INT_DTYPES = {'q': 'int64', 'i': 'int32'}
+
+
 def group_indices(storage):
-    """Bucket dense int64 keys, or return ``DECLINED``."""
+    """Bucket dense int64 / int32 keys, or return ``DECLINED``."""
     if not _USE_NUMPY:
         return DECLINED
     if not isinstance(storage, ArrayStorage) or storage._mask is not None:
         return DECLINED
-    if storage._data.typecode != 'q':
+    np_dtype = _INT_DTYPES.get(storage._data.typecode)
+    if np_dtype is None:
         return DECLINED
 
-    values = _np.frombuffer(storage._data, dtype=_np.int64)
+    values = _np.frombuffer(storage._data, dtype=np_dtype)
     unique, first_indices, inverse = _np.unique(
         values,
         return_index=True,

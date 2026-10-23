@@ -15,6 +15,7 @@ Skipped entirely when numpy isn't installed.
 
 import math
 from datetime import date
+from datetime import datetime
 
 import pytest
 
@@ -111,6 +112,17 @@ def test_group_indices_matches_pure_dict(vals):
     } == pure
 
 
+def test_group_indices_buckets_date_ticks():
+    # Date keys reach the bucketer as their int32 tick view.
+    dates = [date(2026, 1, 3), date(1969, 12, 31), date(2026, 1, 3)]
+    view = Vector(dates)._storage.tick_view()
+    fast = group_mod.group_indices(view)
+    assert fast is not DECLINED
+    assert {
+        key: bucket.tolist() for key, bucket in fast.items()
+    } == _pure_partition(list(view))
+
+
 def test_group_indices_declines_unsupported():
     assert group_mod.group_indices(
         Vector([1.5, 2.5])._storage
@@ -136,6 +148,11 @@ VECTORS = [
     ("bool_null",   lambda: Vector([True, None, False, None], name='v')),
     ("str_dense",   lambda: Vector(['alpha', '', 'γδ 🎉', 'd' * 200], name='v')),
     ("str_null",    lambda: Vector(['alpha', None, '', None], name='v')),
+    ("date_null",   lambda: Vector([date(2026, 1, 5), None,
+                                    date(1969, 12, 31), date(1, 1, 1)], name='v')),
+    ("datetime_null", lambda: Vector([datetime(2026, 1, 5, 9, 30), None,
+                                      datetime(1969, 12, 31, 23, 59), None],
+                                     name='v')),
 ]
 
 
@@ -235,6 +252,48 @@ def test_expect_left_unique_error_matches_pure():
     assert str(fast_err.value) == str(pure_err.value)
 
 
+D = [date(2026, 1, i) for i in range(1, 6)]
+
+
+@pytest.mark.parametrize("flavor", ["inner_join", "left_join", "full_join"])
+def test_date_key_join_conforms(flavor):
+    def run():
+        left = Table({'d': [D[0], D[1], D[2], D[3], D[1]], 'x': [1, 2, 3, 4, 5]})
+        right = Table({'d': [D[1], D[2], D[4], D[1]], 'y': [20, 30, 50, 21]})
+        return getattr(left, flavor)(right, 'd', 'd', expect_right_unique=False)
+    fast, pure = run(), _pure(run)
+    _assert_tables_identical(pure, fast)
+    assert all(type(value) is date for value in fast['d'] if value is not None)
+
+
+def test_datetime_key_join_conforms():
+    stamps = [datetime(2026, 1, 1, 9, 0, 0, i) for i in range(4)]
+
+    def run():
+        left = Table({'ts': stamps[:3], 'x': [1, 2, 3]})
+        right = Table({'ts': [stamps[2], stamps[0], stamps[3]], 'y': [30, 10, 40]})
+        return left.left_join(right, 'ts', 'ts')
+    _assert_tables_identical(_pure(run), run())
+
+
+@pytest.mark.parametrize("expect", ["right", "left"])
+def test_date_key_duplicate_error_names_the_date(expect):
+    def run():
+        left = Table({'d': [D[4], D[2], D[4]]})
+        right = Table({'d': [D[4], D[2], D[4], D[2], D[2]], 'v': [1, 2, 3, 4, 5]})
+        return left.inner_join(
+            right, 'd', 'd',
+            expect_left_unique=expect == "left",
+            expect_right_unique=expect == "right",
+        )
+    with pytest.raises(SerifValueError) as fast_err:
+        run()
+    with pytest.raises(SerifValueError) as pure_err:
+        _pure(run)
+    assert str(fast_err.value) == str(pure_err.value)
+    assert 'datetime.date(2026, 1' in str(fast_err.value)
+
+
 def test_multi_key_join_declines_conforms():
     def run():
         left = Table({'a': [1, 1, 2], 'b': [1, 2, 1], 'x': [10, 20, 30]})
@@ -265,6 +324,23 @@ def test_aggregate_int_groupby_conforms():
     fast, pure = run(), _pure(run)
     _assert_tables_identical(pure, fast)
     assert list(fast.cols(0)) == [3, 1, 2]  # first-appearance order pinned
+
+
+@pytest.mark.parametrize("keys", [
+    [date(2026, 1, 3), date(1969, 12, 31), date(2026, 1, 3), date(1, 1, 1)],
+    [datetime(2026, 1, 3, 9), datetime(1969, 12, 31), datetime(2026, 1, 3, 9)],
+], ids=["date", "datetime"])
+def test_aggregate_temporal_groupby_conforms(keys, monkeypatch):
+    from serif._table._arrow import aggregation as arrow_mod
+    # Exercise the bucket path rather than the fused Arrow grouped sum.
+    monkeypatch.setattr(arrow_mod, '_USE_ARROW', False)
+
+    def run():
+        t = Table({'g': keys, 'x': list(range(len(keys)))})
+        return t.aggregate(groupby=t.g, aggregations={'total': t.x.sum})
+    fast, pure = run(), _pure(run)
+    _assert_tables_identical(pure, fast)
+    assert list(fast.cols(0)) == list(dict.fromkeys(keys))  # first appearance
 
 
 def test_group_index_arrays_drive_object_slicing():
@@ -334,6 +410,12 @@ def test_group_fallback_engages_when_fused_sum_declines(monkeypatch):
     assert calls == [True]
 
     calls.clear()
+    t_date = Table({'g': [date(2026, 1, 2), date(2026, 1, 1), date(2026, 1, 2)],
+                    'x': [1.0, 2.0, 3.0]})
+    t_date.aggregate(groupby=t_date.g, aggregations={'m': t_date.x.sum})
+    assert calls == [True]   # date key buckets as its int32 ticks
+
+    calls.clear()
     t2 = Table({'g': ['a', 'b', 'a'], 'x': [1.0, 2.0, 3.0]})
     t2.aggregate(groupby=t2.g, aggregations={'m': t2.x.sum})
     assert calls == [False]  # str key declines HERE; Table's Arrow grouping
@@ -355,6 +437,12 @@ def test_join_sort_fallback_engages_when_hash_probe_declines(monkeypatch):
 
     assert probe_calls == [True]         # int64 keys probe in numpy
     assert pad_calls and all(pad_calls)  # every typed column gathered fast
+
+    probe_calls.clear()
+    left_d = Table({'d': [date(2026, 1, 1), date(2026, 1, 2)], 'x': [1, 2]})
+    right_d = Table({'d': [date(2026, 1, 2)], 'y': [2.5]})
+    left_d.left_join(right_d, 'd', 'd')
+    assert probe_calls == [True]         # date keys probe as int32 ticks
 
     probe_calls.clear()
     left2 = Table({'k': ['a', 'b'], 'x': [1, 2]})

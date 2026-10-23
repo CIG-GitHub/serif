@@ -6,12 +6,22 @@ from . import _np
 from . import _USE_NUMPY
 
 
+_INT_DTYPES = {'q': 'int64', 'i': 'int32'}
+
+
 def _supported(storage):
     return (
         isinstance(storage, ArrayStorage)
         and storage._mask is None
-        and storage._data.typecode == 'q'
+        and storage._data.typecode in _INT_DTYPES
     )
+
+
+def _int64_values(storage):
+    """Key lanes as int64; int32 (date tick) keys widen, int64 stay views."""
+    values = _np.frombuffer(
+        storage._data, dtype=_INT_DTYPES[storage._data.typecode])
+    return values.astype(_np.int64, copy=False)
 
 
 def _first_duplicate(sorted_keys, order):
@@ -45,8 +55,8 @@ def probe_int64(
     if not (_supported(left_storage) and _supported(right_storage)):
         return DECLINED
 
-    left_values = _np.frombuffer(left_storage._data, dtype=_np.int64)
-    right_values = _np.frombuffer(right_storage._data, dtype=_np.int64)
+    left_values = _int64_values(left_storage)
+    right_values = _int64_values(right_storage)
     return probe_codes(
         left_values,
         right_values,
@@ -73,8 +83,8 @@ def probe_int64_dense(
     if len(left_storage) == 0 or len(right_storage) == 0:
         return DECLINED
 
-    left_values = _np.frombuffer(left_storage._data, dtype=_np.int64)
-    right_values = _np.frombuffer(right_storage._data, dtype=_np.int64)
+    left_values = _int64_values(left_storage)
+    right_values = _int64_values(right_storage)
     low = min(int(left_values.min()), int(right_values.min()))
     high = max(int(left_values.max()), int(right_values.max()))
     span = high - low + 1
