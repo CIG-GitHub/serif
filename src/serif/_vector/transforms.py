@@ -18,6 +18,7 @@ from .selection import take_storage
 from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import BoolStorage
+from .storage import DecimalStorage
 from .storage import StringStorage
 from .storage import TupleStorage
 from .storage import _TemporalStorage
@@ -186,15 +187,18 @@ def dropna(vector):
 def is_na(vector):
     storage = vector._storage
     Vector = _vector_class()
-    if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage)):
-        if storage._mask is None:
-            result = BoolStorage(bytearray(len(storage)))
+    if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage,
+                            DecimalStorage, _TemporalStorage)):
+        # Masked storage answers from its validity bitmap alone, without
+        # boxing a single value.
+        mask = storage._mask
+        if mask is None:
+            nulls = bytearray(len(storage))
         else:
-            result = BoolStorage(bytearray(
-                1 if is_null else 0
-                for is_null in storage._mask
-            ))
-        return Vector._from_storage(result, Schema(bool, False))
+            nulls = _dispatch.null_bytes(mask, len(storage))
+            if nulls is DECLINED:
+                nulls = bytearray(1 if is_null else 0 for is_null in mask)
+        return Vector._from_storage(BoolStorage(nulls), Schema(bool, False))
     return Vector._from_iterable_known_dtype(
         (element is None for element in storage),
         Schema(bool, False),

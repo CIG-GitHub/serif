@@ -143,3 +143,9 @@ def popcount(storage):
     from ._numpy import selection
 
     return selection.popcount_storage(storage)
+
+
+def null_bytes(mask, n):
+    from ._numpy import storage
+
+    return storage.null_bytes(mask, n)
