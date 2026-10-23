@@ -18,6 +18,23 @@ pip install -e ".[dev,pyarrow]"
 pip install -e ".[dev,numpy,pyarrow]"
 ```
 
+The optional Rust extension (`serif._rust`) builds during install whenever a
+Rust toolchain is on the PATH. `SERIF_RUST` chooses the behavior: `optional`
+(the default) falls back to pure Python if the build fails, `required` fails
+the install, and `off` skips the extension. Re-run the install after editing
+anything under `rust/`, and run the kernels' own unit tests from there:
+
+```bash
+SERIF_RUST=required pip install -e ".[dev]"
+SERIF_RUST=off pip install -e ".[dev]"
+cd rust && cargo test
+```
+
+On Windows, close every Python process that has imported serif before
+rebuilding. The build writes `_rust.*.pyd~` and renames it over the loaded
+`.pyd`; while that file is in use the rename fails, the old extension stays
+in place, and the `.pyd~` is left behind.
+
 ## Running Tests
 
 ```bash
@@ -31,7 +48,17 @@ only, PyArrow only, and NumPy + PyArrow. Python 3.11–3.14 run with both
 accelerators installed; conformance tests exercise their pure fallbacks
 internally (`.github/workflows/tests.yml`). The 3.10 jobs pin the declared
 minimum accelerator versions, and CI also builds and inspects the distribution
-artifacts.
+artifacts. Those jobs build with `SERIF_RUST=off`, so they keep testing what
+they name. Rust jobs build with `SERIF_RUST=required`: Rust only on Python
+3.10, and Rust + NumPy + PyArrow on Python 3.14 under Linux, Windows, and
+macOS. Each job asserts that exactly its named backends are importable.
+
+`.github/workflows/wheels.yml` builds every release artifact: compiled wheels
+through cibuildwheel (configured under `[tool.cibuildwheel]` in
+`pyproject.toml`), each tested against the full suite, plus the pure-Python
+wheel and sdist, tested without the extension. It runs on version tags, on
+manual dispatch, and on pull requests that touch `rust/` or the build
+configuration.
 
 ### Warnings are load-bearing
 
@@ -58,17 +85,19 @@ src/serif/
 │   ├── dtype.py, storage.py, nullable.py
 │   ├── numeric.py, string.py, dates.py, categorical.py
 │   ├── math.py, statistics.py
-│   └── _python/, _numpy/, _arrow/  # Vector execution backends
+│   └── _python/, _numpy/, _arrow/, _rust/  # Vector execution backends
 ├── _table/
 │   ├── columns.py, row.py, rows.py
 │   ├── selection.py, mutation.py, sort.py
 │   ├── grouping.py, aggregation.py, window.py, joins.py
-│   └── _python/, _numpy/, _arrow/  # Table execution backends
+│   └── _python/, _numpy/, _arrow/, _rust/  # Table execution backends
 └── io/
     ├── csv.py         # read_csv
     ├── parquet.py     # serif-native read_parquet / write_parquet
     └── _arrow.py      # optional projected PyArrow reader
 
+rust/                  # serif._rust kernels (int math, join probe, argsort)
+setup.py               # SERIF_RUST build hook; metadata lives in pyproject.toml
 tests/                 # pytest suite
 docs/                  # documentation (start with design-philosophy.md)
 ```
@@ -96,10 +125,16 @@ installed package then tracks your working tree.
 
 ## Versioning
 
-Release versions are declared in `pyproject.toml` and
-`src/serif/__init__.py`, with release notes in `CHANGELOG.md`. Distribution
-artifacts are built with `python -m build`, validated with
-`python -m twine check`, and published to PyPI with Twine.
+Release versions are declared in `pyproject.toml`, `src/serif/__init__.py`,
+and `rust/Cargo.toml` (with the matching entry in `rust/Cargo.lock`), with
+release notes in `CHANGELOG.md`. A release lands as its own pull request that
+bumps all of these and dates the changelog section.
+
+After it merges, tag the merge commit `vX.Y.Z` and push the tag. That runs
+`wheels.yml`, which builds and tests every artifact and uploads them to the
+run; it does not publish. Download the artifacts, check that every expected
+platform is present, validate them with `python -m twine check`, and publish
+them to PyPI with Twine.
 
 ## Contributing
 
