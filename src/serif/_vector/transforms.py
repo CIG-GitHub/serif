@@ -18,6 +18,7 @@ from .selection import take_storage
 from .dtype import validate_scalar
 from .storage import ArrayStorage
 from .storage import BoolStorage
+from .storage import DecimalStorage
 from .storage import StringStorage
 from .storage import TupleStorage
 from .storage import _TemporalStorage
@@ -106,9 +107,10 @@ def fillna(vector, value):
     dtype = vector.schema()
     Vector = _vector_class()
 
+    fill = None
     if dtype is not None and value is not None:
         try:
-            validate_scalar(value, dtype)
+            fill = validate_scalar(value, dtype)
         except TypeError:
             required_dtype = infer_dtype([value])
             try:
@@ -149,6 +151,16 @@ def fillna(vector, value):
         vector._dtype.nullable if vector._dtype is not None else True
     )
     new_dtype = None if dtype is None else Schema(dtype.kind, new_nullable)
+
+    # A same-kind fill writes the fill lane into the null lanes directly.
+    storage = vector._storage
+    if fill is not None and isinstance(storage, _TemporalStorage):
+        fill = storage._unbox(fill)   # None when it has no exact tick
+    if fill is not None:
+        fast = _dispatch.fill_nulls(storage, fill)
+        if fast is not DECLINED:
+            return Vector._from_storage(fast, new_dtype, name=vector._name)
+
     values = (
         value if item is None else item
         for item in vector._storage
@@ -186,15 +198,18 @@ def dropna(vector):
 def is_na(vector):
     storage = vector._storage
     Vector = _vector_class()
-    if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage)):
-        if storage._mask is None:
-            result = BoolStorage(bytearray(len(storage)))
+    if isinstance(storage, (ArrayStorage, StringStorage, BoolStorage,
+                            DecimalStorage, _TemporalStorage)):
+        # Masked storage answers from its validity bitmap alone, without
+        # boxing a single value.
+        mask = storage._mask
+        if mask is None:
+            nulls = bytearray(len(storage))
         else:
-            result = BoolStorage(bytearray(
-                1 if is_null else 0
-                for is_null in storage._mask
-            ))
-        return Vector._from_storage(result, Schema(bool, False))
+            nulls = _dispatch.null_bytes(mask, len(storage))
+            if nulls is DECLINED:
+                nulls = bytearray(1 if is_null else 0 for is_null in mask)
+        return Vector._from_storage(BoolStorage(nulls), Schema(bool, False))
     return Vector._from_iterable_known_dtype(
         (element is None for element in storage),
         Schema(bool, False),
@@ -255,9 +270,15 @@ def is_in(vector, members):
 
     # Native date/datetime columns look their members up as int ticks.
     values = vector
+    storage, physical_members = vector._storage, valid
     ticks = _temporal.member_ticks(vector._storage, valid)
     if ticks is not None:
         values, lookup = vector._storage.tick_view(), ticks
+        storage, physical_members = values, sorted(ticks)
+
+    fast = _dispatch.is_in(storage, physical_members, match_null)
+    if fast is not DECLINED:
+        return Vector._from_storage(fast, Schema(bool, fast._mask is not None))
 
     result = []
     saw_null = False
@@ -284,22 +305,37 @@ def is_type(vector, types):
 def unique(vector):
     Vector = _vector_class()
 
-    def hashable_values():
+    def hashable_values(source):
         seen = set()
-        for element in vector._storage:
+        for element in source:
             if element not in seen:
                 seen.add(element)
                 yield element
 
+    storage = vector._storage
+    if isinstance(storage, _TemporalStorage):
+        # Date/datetime ticks dedupe as ints; the result is rebuilt from
+        # the first-seen ticks without boxing a single value.
+        lanes = ArrayStorage.from_iterable(
+            hashable_values(storage.tick_view()),
+            storage._TYPECODE,
+            nullable=True,
+        )
+        result = type(storage)(lanes._data, lanes._mask)
+        return Vector._from_storage(
+            result,
+            Schema(vector._dtype.kind, result._mask is not None),
+        )
+
     try:
         if vector._dtype is not None:
             return Vector._from_iterable_known_kind(
-                hashable_values(),
+                hashable_values(vector._storage),
                 vector._dtype.kind,
             )
         # A dtype-less custom Vector still requires inference. Public vectors
         # reach this branch only when empty.
-        output = list(hashable_values())
+        output = list(hashable_values(vector._storage))
         return Vector(output)
     except TypeError:
         pass

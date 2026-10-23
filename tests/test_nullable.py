@@ -116,6 +116,16 @@ def test_any_null():
     assert BitMask.from_iterable([False, True, False]).any_null() is True
 
 
+@pytest.mark.parametrize("length", [1, 7, 8, 9, 16, 17])
+def test_any_null_ignores_padding_bits(length):
+    # Arrow may leave a validity bitmap's padding bits set to anything.
+    m = BitMask.from_size(length)
+    m._buf[-1] |= 0xFF
+    assert m.any_null() is False
+    m.set_null(length - 1)
+    assert m.any_null() is True
+
+
 def test_from_size_is_all_valid():
     m = BitMask.from_size(5)
     assert len(m) == 5
@@ -145,6 +155,42 @@ def test_slice_with_step():
     nulls = [False, True, False, True, True, False, False, True]
     m = BitMask.from_iterable(nulls)[::2]
     assert list(m) == [False, False, True, False]
+
+
+def _reference_slice(nulls, slc):
+    """The per-element rebuild every slice must match, bytes included."""
+    return BitMask.from_iterable(nulls[slc])
+
+
+@pytest.mark.parametrize("length", [0, 1, 7, 8, 9, 16, 17, 65])
+def test_step_one_slices_match_reference_bytes(length):
+    nulls = [(i * 7) % 3 == 0 for i in range(length)]
+    m = BitMask.from_iterable(nulls)
+    bounds = range(-length - 2, length + 3)
+    for start in bounds:
+        for stop in bounds:
+            slc = slice(start, stop)
+            got = m[slc]
+            want = _reference_slice(nulls, slc)
+            assert len(got) == len(want), slc
+            assert bytes(got._buf) == bytes(want._buf), slc
+
+
+def test_step_one_slice_drops_source_padding_bits():
+    # Garbage in the source's padding must not leak into the slice's.
+    m = BitMask.from_iterable([False, True, False])
+    m._buf[0] |= 0b11111000
+    assert bytes(m[1:3]._buf) == bytes([0b00000010])
+
+
+@pytest.mark.parametrize("slc", [
+    slice(None, None, -1), slice(None, None, 3), slice(10, 2, -2),
+], ids=['reverse', 'step3', 'reverse-step2'])
+def test_stepped_slices_match_reference(slc):
+    nulls = [(i * 5) % 4 == 0 for i in range(19)]
+    m = BitMask.from_iterable(nulls)
+    assert bytes(m[slc]._buf) == bytes(_reference_slice(nulls, slc)._buf)
+    assert list(m[slc]) == nulls[slc]
 
 
 # ---------------------------------------------------------------------------
