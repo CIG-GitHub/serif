@@ -1,4 +1,7 @@
-//! Single-key int64 join probe with Python's semantics.
+//! Single-key int64 / int32 join probe with Python's semantics.
+//!
+//! Keys of either width are read as i64 (int32 keys, e.g. date32 day
+//! ticks, widen as they are read), so everything below works on i64.
 //!
 //! Mirrors the canonical pure-Python probe exactly: index the right side,
 //! then walk the left side in row order, emitting each left row's matches in
@@ -10,7 +13,7 @@
 //! Keys whose span is small relative to the right side are addressed
 //! directly; anything else goes through an open-addressing hash table.
 
-use pyo3::buffer::PyBuffer;
+use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
@@ -119,17 +122,18 @@ impl KeyIndex {
 }
 
 /// A key column: values plus an optional Arrow validity bitmap.
-struct Keys<'a> {
-    values: &'a [i64],
+struct Keys<'a, T> {
+    values: &'a [T],
     valid: Option<&'a [u8]>,
 }
 
-impl Keys<'_> {
+impl<T: Copy + Into<i64>> Keys<'_, T> {
+    /// The key at row `i` as i64, or None for a null lane.
     #[inline(always)]
     fn get(&self, i: usize) -> Option<i64> {
         match self.valid {
             Some(mask) if (mask[i >> 3] >> (i & 7)) & 1 == 0 => None,
-            _ => Some(self.values[i]),
+            _ => Some(self.values[i].into()),
         }
     }
 
@@ -185,7 +189,7 @@ impl RightIndex {
     }
 }
 
-fn index_right(right: &Keys, track_rows: bool) -> RightIndex {
+fn index_right<T: Copy + Into<i64>>(right: &Keys<T>, track_rows: bool) -> RightIndex {
     let n = right.values.len();
     let (low, high) = right.bounds().unwrap_or((0, 0));
     let mut built = RightIndex {
@@ -226,7 +230,7 @@ fn index_right(right: &Keys, track_rows: bool) -> RightIndex {
     built
 }
 
-fn first_left_duplicate(left: &Keys) -> Option<i64> {
+fn first_left_duplicate<T: Copy + Into<i64>>(left: &Keys<T>) -> Option<i64> {
     let (low, high) = left.bounds()?;
     let mut seen = KeyIndex::new(low, high, left.values.len());
     let mut distinct = 0u32;
@@ -241,9 +245,9 @@ fn first_left_duplicate(left: &Keys) -> Option<i64> {
     None
 }
 
-fn probe(
-    left: &Keys,
-    right: &Keys,
+fn probe<T: Copy + Into<i64>>(
+    left: &Keys<T>,
+    right: &Keys<T>,
     expect_left_unique: bool,
     expect_right_unique: bool,
     keep_unmatched_left: bool,
@@ -253,7 +257,7 @@ fn probe(
     if expect_right_unique {
         if let Some(entry) = built.first_duplicate {
             let e = entry as usize;
-            let key = right.values[built.first[e] as usize];
+            let key: i64 = right.values[built.first[e] as usize].into();
             return Probe::RightDup(key, built.count[e]);
         }
     }
@@ -304,11 +308,11 @@ fn probe(
     Probe::Ok(left_take, right_take)
 }
 
-fn keys<'a>(
-    values: &'a PyBuffer<i64>,
+fn keys<'a, T: Element>(
+    values: &'a PyBuffer<T>,
     mask: &'a Option<PyBuffer<u8>>,
     name: &str,
-) -> PyResult<Keys<'a>> {
+) -> PyResult<Keys<'a, T>> {
     let values = read(values, name)?;
     let valid = match mask {
         None => None,
@@ -353,6 +357,59 @@ pub fn join_probe_int64<'py>(
     expect_right_unique: bool,
     keep_unmatched_left: bool,
     keep_unmatched_right: bool,
+) -> PyResult<Option<Bound<'py, PyTuple>>> {
+    probe_buffers(
+        py,
+        left,
+        left_mask,
+        right,
+        right_mask,
+        (expect_left_unique, expect_right_unique),
+        (keep_unmatched_left, keep_unmatched_right),
+    )
+}
+
+/// Probe two int32 key columns (date32 day ticks), exactly as the int64
+/// probe does; keys reported in diagnostics are the widened int64 values.
+#[pyfunction]
+#[pyo3(signature = (
+    left, left_mask, right, right_mask,
+    expect_left_unique, expect_right_unique,
+    keep_unmatched_left, keep_unmatched_right,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn join_probe_int32<'py>(
+    py: Python<'py>,
+    left: PyBuffer<i32>,
+    left_mask: Option<PyBuffer<u8>>,
+    right: PyBuffer<i32>,
+    right_mask: Option<PyBuffer<u8>>,
+    expect_left_unique: bool,
+    expect_right_unique: bool,
+    keep_unmatched_left: bool,
+    keep_unmatched_right: bool,
+) -> PyResult<Option<Bound<'py, PyTuple>>> {
+    probe_buffers(
+        py,
+        left,
+        left_mask,
+        right,
+        right_mask,
+        (expect_left_unique, expect_right_unique),
+        (keep_unmatched_left, keep_unmatched_right),
+    )
+}
+
+/// The shared body of both probes: borrow the buffers, probe, and build
+/// the Python result tuple.
+fn probe_buffers<'py, T: Element + Copy + Into<i64>>(
+    py: Python<'py>,
+    left: PyBuffer<T>,
+    left_mask: Option<PyBuffer<u8>>,
+    right: PyBuffer<T>,
+    right_mask: Option<PyBuffer<u8>>,
+    (expect_left_unique, expect_right_unique): (bool, bool),
+    (keep_unmatched_left, keep_unmatched_right): (bool, bool),
 ) -> PyResult<Option<Bound<'py, PyTuple>>> {
     let left = keys(&left, &left_mask, "left")?;
     let right = keys(&right, &right_mask, "right")?;
@@ -399,7 +456,11 @@ pub fn join_probe_int64<'py>(
 mod tests {
     use super::*;
 
-    fn run(left: &[i64], right: &[i64], flags: (bool, bool, bool, bool)) -> Probe {
+    fn run<T: Copy + Into<i64>>(
+        left: &[T],
+        right: &[T],
+        flags: (bool, bool, bool, bool),
+    ) -> Probe {
         let left = Keys {
             values: left,
             valid: None,
@@ -420,13 +481,13 @@ mod tests {
 
     #[test]
     fn many_to_many_in_python_order() {
-        let got = pairs(run(&[2, 1, 2], &[2, 3, 2], (false, false, false, false)));
+        let got = pairs(run(&[2i64, 1, 2], &[2, 3, 2], (false, false, false, false)));
         assert_eq!(got, vec![(0, 0), (0, 2), (2, 0), (2, 2)]);
     }
 
     #[test]
     fn full_outer_pads_both_sides() {
-        let got = pairs(run(&[1, 5], &[7, 1], (false, false, true, true)));
+        let got = pairs(run(&[1i64, 5], &[7, 1], (false, false, true, true)));
         assert_eq!(got, vec![(0, 1), (1, -1), (-1, 0)]);
     }
 
@@ -444,13 +505,35 @@ mod tests {
     #[test]
     fn first_duplicate_by_second_occurrence() {
         // 9's second occurrence (row 2) precedes 4's (row 3).
-        match run(&[], &[4, 9, 9, 4, 4], (false, true, false, false)) {
+        match run(&[], &[4i64, 9, 9, 4, 4], (false, true, false, false)) {
             Probe::RightDup(key, count) => assert_eq!((key, count), (9, 2)),
             _ => panic!("expected right_dup"),
         }
-        match run(&[3, 8, 8, 3], &[], (true, false, false, false)) {
+        match run(&[3i64, 8, 8, 3], &[], (true, false, false, false)) {
             Probe::LeftDup(key) => assert_eq!(key, 8),
             _ => panic!("expected left_dup"),
+        }
+    }
+
+    #[test]
+    fn int32_keys_probe_like_int64() {
+        let left = [19_723i32, i32::MIN, 0, 19_723, i32::MAX];
+        let right = [i32::MAX, 19_723, -719_162, 19_723];
+        let widen = |keys: &[i32]| keys.iter().map(|&k| i64::from(k)).collect::<Vec<_>>();
+        for flags in [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, false, true, true),
+        ] {
+            assert_eq!(
+                pairs(run(&left[..], &right[..], flags)),
+                pairs(run(&widen(&left)[..], &widen(&right)[..], flags)),
+                "{flags:?}"
+            );
+        }
+        match run(&[1i32], &right, (false, true, false, false)) {
+            Probe::RightDup(key, count) => assert_eq!((key, count), (19_723, 2)),
+            _ => panic!("expected right_dup"),
         }
     }
 }
