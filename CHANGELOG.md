@@ -10,14 +10,42 @@
   `SerifTypeError` with the fix: a private `copy()`. There is no
   unfreeze. Copies and derived results are new, unfrozen objects. The
   `frozen` property reports the state.
+- Optional compiled Rust kernels (`serif._rust`) accelerate int64
+  arithmetic (`+`, `-`, `*`, `//`, `%`, nullable or not), single-key
+  int64 joins, and `Table.sort_by()` / `Vector.sort_by()` over int,
+  float, bool and categorical keys. Results are identical to pure
+  Python's, including row order for ties and null placement. Cases the
+  kernels cannot reproduce exactly (int64 overflow, NaN sort keys,
+  2**32 - 1 or more rows) fall back to NumPy, PyArrow or pure Python.
+- Compiled wheels for CPython 3.10–3.14 on Linux (manylinux and
+  musllinux, x86_64 and aarch64), macOS (arm64, and x86_64 from 10.13)
+  and Windows (x86_64). A pure-Python wheel and the sdist are still
+  published, so other platforms install without a Rust toolchain.
 
 ### Changed
+
+- Building from source now requires `setuptools-rust`. The `SERIF_RUST`
+  environment variable controls the extension: `optional` (the default)
+  builds it when a Rust toolchain is available and otherwise installs
+  pure Python, `required` fails the install if it cannot build, and `off`
+  never builds it.
 
 - Errors and docs now call table-owned columns "read-only" instead of
   "frozen", which now means only the permanent state set by `freeze()`.
   Code that matches on the old error text needs updating.
 - A column named `freeze` or `frozen` now collides with the new reserved
   names and gets a suffixed dot-access name, like other reserved names.
+
+### Performance
+
+- Rust runs ahead of NumPy and PyArrow for the operations it covers.
+  Integer arithmetic is faster than the NumPy path, sorts no longer run
+  through Python's own sort, and joins on sparse int keys are faster;
+  dense-key joins match NumPy.
+- Forward division (`/`, `//`, `%`) no longer scans every lane for zero
+  divisors in Python before the accelerators run. Every backend declines
+  a valid zero divisor, so the scan runs only on the pure-Python path,
+  and `ZeroDivisionError` is raised exactly as before.
 
 ## 0.2.3 – 2026-09-02
 
