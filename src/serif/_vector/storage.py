@@ -35,6 +35,7 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from itertools import chain
+from itertools import repeat
 from typing import Any
 from typing import Iterator
 from collections.abc import Iterable
@@ -969,6 +970,45 @@ def storage_from_known_iterable(values, kind):
     if kind is datetime:
         return _temporal_storage_from_known_iterable(values, DatetimeStorage)
     return TupleStorage.from_iterable(values)
+
+
+def storage_from_repeated(value, kind, length):
+    """Storage holding `value` `length` times, built in bulk.
+
+    Same result as storage_from_known_iterable(repeat(value, length), kind):
+    each buffer is one value's lane repeated (bytes/array multiplication, a
+    stepped offsets range), never a per-element loop. Values the bulk forms
+    can't hold exactly (ints past int64, temporals with no exact tick,
+    strings past the uint32 offset limit) take the per-element builder,
+    which degrades or raises as it always has.
+    """
+    if value is None:
+        return TupleStorage((None,) * length)
+    if kind is bool:
+        return BoolStorage(bytearray([1 if value else 0]) * length)
+    if kind is int:
+        if -2**63 <= value < 2**63:
+            return ArrayStorage(array('q', [value]) * length)
+    elif kind is float:
+        return ArrayStorage(array('d', [value]) * length)
+    elif kind is str:
+        encoded = value.encode('utf-8')
+        width = len(encoded)
+        if width * length <= 0xFFFFFFFF:
+            offsets = (
+                array('I', range(0, width * length + 1, width))
+                if width
+                else array('I', [0]) * (length + 1)
+            )
+            return StringStorage(encoded * length, offsets)
+    elif kind is date or kind is datetime:
+        storage_class = DateStorage if kind is date else DatetimeStorage
+        tick = storage_class._unbox(value)
+        if tick is not None:
+            return storage_class(array(storage_class._TYPECODE, [tick]) * length)
+    else:
+        return TupleStorage((value,) * length)
+    return storage_from_known_iterable(repeat(value, length), kind)
 
 
 def storage_has_nulls(storage):
