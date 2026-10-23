@@ -456,11 +456,7 @@ fn probe_buffers<'py, T: Element + Copy + Into<i64>>(
 mod tests {
     use super::*;
 
-    fn run<T: Copy + Into<i64>>(
-        left: &[T],
-        right: &[T],
-        flags: (bool, bool, bool, bool),
-    ) -> Probe {
+    fn run<T: Copy + Into<i64>>(left: &[T], right: &[T], flags: (bool, bool, bool, bool)) -> Probe {
         let left = Keys {
             values: left,
             valid: None,
