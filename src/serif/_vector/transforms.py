@@ -305,22 +305,37 @@ def is_type(vector, types):
 def unique(vector):
     Vector = _vector_class()
 
-    def hashable_values():
+    def hashable_values(source):
         seen = set()
-        for element in vector._storage:
+        for element in source:
             if element not in seen:
                 seen.add(element)
                 yield element
 
+    storage = vector._storage
+    if isinstance(storage, _TemporalStorage):
+        # Date/datetime ticks dedupe as ints; the result is rebuilt from
+        # the first-seen ticks without boxing a single value.
+        lanes = ArrayStorage.from_iterable(
+            hashable_values(storage.tick_view()),
+            storage._TYPECODE,
+            nullable=True,
+        )
+        result = type(storage)(lanes._data, lanes._mask)
+        return Vector._from_storage(
+            result,
+            Schema(vector._dtype.kind, result._mask is not None),
+        )
+
     try:
         if vector._dtype is not None:
             return Vector._from_iterable_known_kind(
-                hashable_values(),
+                hashable_values(vector._storage),
                 vector._dtype.kind,
             )
         # A dtype-less custom Vector still requires inference. Public vectors
         # reach this branch only when empty.
-        output = list(hashable_values())
+        output = list(hashable_values(vector._storage))
         return Vector(output)
     except TypeError:
         pass
