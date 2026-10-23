@@ -7,6 +7,7 @@ from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from . import dispatch as _dispatch
+from . import temporal as _temporal
 from ._python import operators as _python_ops
 from .dtype import Schema
 from .dtype import infer_dtype
@@ -170,6 +171,11 @@ def elementwise_compare(vector, other, op):
 
     if isinstance(other, Vector) and other.ndims() > 1:
         return other._lift_comparison_from(vector, op)
+
+    # Native date/datetime columns compare as their int ticks.
+    fast = _temporal.compare(vector, other, op)
+    if fast is not DECLINED:
+        return fast
 
     # Element-wise: unknown in, unknown out (docs/null-semantics.md).
     if isinstance(other, Vector):

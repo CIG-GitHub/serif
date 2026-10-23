@@ -1,10 +1,12 @@
 from ..vector import Vector
+from . import temporal as _temporal
 from .element_api import _elementwise_method
 from .element_api import _elementwise_property
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from collections.abc import Iterable
+from .._execution import DECLINED
 from ..errors import SerifValueError
 
 
@@ -14,6 +16,12 @@ class _Date(Vector):
         # dates promote to midnight via datetime.min.time() when compared
         # against datetimes.
         other = self._check_duplicate(other)
+
+        # Native storage compares as int ticks, including the str and
+        # datetime promotions below; anything it declines takes them boxed.
+        fast = _temporal.compare(self, other, op)
+        if fast is not DECLINED:
+            return fast
 
         def _wrap(vals):
             return Vector._from_iterable_known_kind(vals, bool)

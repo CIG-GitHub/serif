@@ -11,6 +11,7 @@ from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from . import dispatch as _dispatch
+from . import temporal as _temporal
 from .dtype import Schema
 from .dtype import infer_dtype
 from .selection import take_storage
@@ -250,6 +251,11 @@ def is_in(vector, members):
             lookup = valid
     else:
         lookup = valid  # linear membership: plain Python `in`, plain `==`
+
+    # Native date/datetime columns look their members up as int ticks.
+    fast = _temporal.is_in(vector, valid, match_null)
+    if fast is not DECLINED:
+        return fast
 
     result = []
     saw_null = False

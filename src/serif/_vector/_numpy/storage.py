@@ -3,7 +3,9 @@
 from . import _np
 
 
-NP_DTYPES = {'q': 'int64', 'd': 'float64'}
+# 'i' exists only as the transient int view over DateStorage day ticks
+# (see _vector/temporal.py); no public column holds ArrayStorage('i').
+NP_DTYPES = {'q': 'int64', 'd': 'float64', 'i': 'int32'}
 
 
 def valid_bits(mask, n):
