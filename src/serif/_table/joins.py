@@ -2,6 +2,7 @@
 
 from .._execution import DECLINED
 from .._vector import Schema
+from .._vector import temporal as _temporal
 from .._vector.selection import take_pad_storage
 from .._vector.selection import take_pad_values
 from ..errors import SerifKeyError
@@ -218,18 +219,26 @@ def _join(
         )
     }
 
-    probed = (
-        _dispatch.join_single_key(
-            left_keys[0]._storage,
-            right_keys[0]._storage,
+    probed = DECLINED
+    if len(pairs) == 1:
+        left_storage = left_keys[0]._storage
+        right_storage = right_keys[0]._storage
+        # Date/datetime keys of one kind probe as their int ticks.
+        ticks = _temporal.tick_pair(left_storage, right_storage)
+        probed = _dispatch.join_single_key(
+            *(ticks if ticks is not None else (left_storage, right_storage)),
             expect_left_unique,
             expect_right_unique,
             keep_unmatched_left,
             keep_unmatched_right,
         )
-        if len(pairs) == 1
-        else DECLINED
-    )
+        if ticks is not None and probed is not DECLINED and probed[0] != "ok":
+            # Duplicate-key diagnostics name the key: box it back.
+            probed = (
+                probed[0],
+                (left_storage._box(probed[1][0]),),
+                probed[2],
+            )
     if probed is DECLINED:
         probed = _probe_python(
             table,

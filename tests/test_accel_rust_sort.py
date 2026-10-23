@@ -8,12 +8,16 @@ Rust radix sort runs or Python's own stable sort does — same row order for
 ties, per-key directions, nulls first/last under both directions, and
 float comparisons (-0.0 ties 0.0). NaN makes Python's order depend on the
 algorithm, so the kernel must DECLINE and Python's result must surface.
+Date and datetime columns sort as their int32 / int64 ticks.
 
 Skipped entirely when the extension isn't built.
 """
 
 import math
 import random
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
 
 import pytest
 
@@ -23,6 +27,7 @@ from serif import Table
 from serif import Vector
 from serif._execution import DECLINED
 from serif._vector._rust import sort as rust_sort
+from serif._vector.storage import DateStorage
 
 
 I64_MAX = 2**63 - 1
@@ -93,6 +98,12 @@ def _table(**columns):
 INTS = [3, None, -1, 3, None, I64_MIN, I64_MAX, -1, 0, 3, None, 2**40]
 FLOATS = [0.0, -0.0, 1.5, None, -math.inf, math.inf, 1.5, -2.25, 0.0, None, -0.0]
 BOOLS = [True, None, False, True, False, None, True]
+DATES = [date(2024, 1, 2), None, date(1969, 12, 31), date(2024, 1, 2),
+         date(1, 1, 1), date(9999, 12, 31), None, date(1970, 1, 1)]
+DATETIMES = [datetime(2024, 1, 2, 9, 30), None,
+             datetime(1969, 12, 31, 23, 59, 59, 999999),
+             datetime(2024, 1, 2, 9, 30), datetime(1, 1, 1),
+             datetime(9999, 12, 31, 23, 59, 59, 999999), None]
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +112,11 @@ BOOLS = [True, None, False, True, False, None, True]
 
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("na_last", [True, False])
-@pytest.mark.parametrize("values", [INTS, FLOATS, BOOLS], ids=['int', 'float', 'bool'])
+@pytest.mark.parametrize(
+    "values",
+    [INTS, FLOATS, BOOLS, DATES, DATETIMES],
+    ids=['int', 'float', 'bool', 'date', 'datetime'],
+)
 def test_single_key(values, reverse, na_last, monkeypatch, engaged):
     t = _table(k=values)
     _conform(lambda: t.sort_by('k', reverse=reverse, na_last=na_last), monkeypatch)
@@ -137,6 +152,45 @@ def test_three_mixed_kind_keys(monkeypatch, engaged):
         monkeypatch,
     )
     assert engaged[-1] is True
+
+
+def test_date_key_combines_with_other_kinds(monkeypatch, engaged):
+    # Date ticks travel as an int32 key next to int64 and float keys.
+    rng = random.Random(13)
+    n = 300
+    t = _table(
+        d=[None if rng.random() < 0.1
+           else date(2024, 1, 1) + timedelta(days=rng.randrange(-3, 3))
+           for _ in range(n)],
+        i=[rng.randrange(-3, 3) for _ in range(n)],
+        ts=[None if rng.random() < 0.1
+            else datetime(2024, 1, 1) + timedelta(microseconds=rng.randrange(5))
+            for _ in range(n)],
+    )
+    _conform(
+        lambda: t.sort_by(['d', 'i', 'ts'], reverse=[True, False, True], na_last=False),
+        monkeypatch,
+    )
+    assert engaged[-1] is True
+
+
+def test_python_fallback_sorts_dates_without_boxing(monkeypatch):
+    # With Rust off, both pure sorts order date columns by their ticks.
+    t = _table(d=DATES)
+    expected_column = sorted(
+        (x for x in DATES if x is not None)) + [None] * DATES.count(None)
+
+    def fail(tick):
+        raise AssertionError('sort boxed a tick')
+
+    with monkeypatch.context() as m:
+        m.setattr(rust_sort, '_USE_RUST', False)
+        m.setattr(DateStorage, '_box', staticmethod(fail))
+        by_table = t.sort_by('d')
+        by_vector = t.d.sort_by()
+
+    assert list(by_table.d) == expected_column
+    assert list(by_vector) == expected_column
 
 
 def test_category_keys_follow_category_order(monkeypatch, engaged):
@@ -177,15 +231,14 @@ def test_nan_under_null_lane_still_engages(monkeypatch, engaged):
     assert engaged == [True]
 
 
-def test_string_or_date_keys_decline_whole_sort(monkeypatch, engaged):
-    from datetime import date
+def test_string_keys_decline_whole_sort(monkeypatch, engaged):
     t = _table(
         s=['b', 'a', None, 'a'],
         d=[date(2024, 1, 2), date(2023, 1, 1), None, date(2023, 1, 1)],
         i=[1, 2, 3, 4],
     )
     _conform(lambda: t.sort_by(['i', 's']), monkeypatch)
-    _conform(lambda: t.sort_by('d'), monkeypatch)
+    _conform(lambda: t.sort_by(['d', 's']), monkeypatch)
     assert engaged == [False, False]
 
 

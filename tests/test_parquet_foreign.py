@@ -17,7 +17,7 @@ on top later without changing any of these tests.
 import gzip
 import struct
 from array import array
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -25,11 +25,15 @@ import serif.io.parquet as parquet_mod
 from serif import Table, read_parquet, write_parquet
 from serif.errors import SerifTypeError, SerifValueError
 from serif._vector.storage import ArrayStorage
+from serif._vector.storage import DateStorage
+from serif._vector.storage import DatetimeStorage
 from serif.io.parquet import (
     _MAGIC,
     _CODEC_GZIP,
     _CODEC_SNAPPY,
     _CODEC_UNCOMPRESSED,
+    _CT_DATE,
+    _CT_TIMESTAMP_MICROS,
     _CT_TIMESTAMP_MILLIS,
     _CT_UTF8,
     _ENC_PLAIN,
@@ -187,6 +191,82 @@ def test_timestamp_millis_reads_as_datetime(tmp_path):
                         num_values=1, page_body=array('q', [ms]).tobytes())
     t = read_parquet(str(p))
     assert list(t['x']) == [dt]
+    assert type(t['x']._storage) is DatetimeStorage
+    assert t['x']._storage._ticks.tolist() == [ms * 1000]
+
+
+# ---------------------------------------------------------------------------
+# DATE / TIMESTAMP pages decode straight into epoch-tick storage
+# ---------------------------------------------------------------------------
+
+def _no_unboxing(patcher):
+    """Fail if a read builds date objects and converts them back to ticks."""
+    def fail(value):
+        raise AssertionError('reader went through date objects')
+    patcher.setattr(DateStorage, '_unbox', staticmethod(fail))
+    patcher.setattr(DatetimeStorage, '_unbox', staticmethod(fail))
+
+
+def test_optional_date_page_wraps_ticks_directly(tmp_path, monkeypatch):
+    flags = [False, True, False, False]
+    ticks = [0, -1, 19_000]
+    body = _encode_def_levels(flags) + array('i', ticks).tobytes()
+    p = tmp_path / "date.parquet"
+    _single_column_file(p, phys=_T_INT32, conv=_CT_DATE, optional=True,
+                        num_values=len(flags), page_body=body)
+
+    with monkeypatch.context() as patcher:
+        _no_unboxing(patcher)
+        col = read_parquet(str(p))['x']
+        storage = col._storage
+
+    assert type(storage) is DateStorage
+    assert storage._ticks.tolist() == [0, 0, -1, 19_000]
+    assert bytes(storage._mask._buf) == b'\x0d'
+    assert list(col) == [
+        date(1970, 1, 1),
+        None,
+        date(1969, 12, 31),
+        date(1970, 1, 1) + timedelta(days=19_000),
+    ]
+
+
+def test_required_timestamp_micros_page_wraps_ticks_directly(
+        tmp_path, monkeypatch):
+    ticks = [0, -1, 1_700_000_000_123_456]
+    p = tmp_path / "ts.parquet"
+    _single_column_file(p, phys=_T_INT64, conv=_CT_TIMESTAMP_MICROS,
+                        num_values=len(ticks),
+                        page_body=array('q', ticks).tobytes())
+
+    with monkeypatch.context() as patcher:
+        _no_unboxing(patcher)
+        col = read_parquet(str(p))['x']
+        storage = col._storage
+
+    assert type(storage) is DatetimeStorage
+    assert storage._ticks.tolist() == ticks
+    assert storage._mask is None
+    assert list(col) == [_EPOCH + timedelta(microseconds=t) for t in ticks]
+
+
+@pytest.mark.parametrize(
+    "phys,conv,raw",
+    [
+        (_T_INT32, _CT_DATE, array('i', [0, 3_000_000])),
+        (_T_INT32, _CT_DATE, array('i', [-800_000])),
+        (_T_INT64, _CT_TIMESTAMP_MICROS, array('q', [2**62])),
+        (_T_INT64, _CT_TIMESTAMP_MILLIS, array('q', [-2**60])),
+    ],
+    ids=['date-high', 'date-low', 'micros', 'millis'],
+)
+def test_ticks_outside_python_range_raise_at_load(tmp_path, phys, conv, raw):
+    p = tmp_path / "out_of_range.parquet"
+    _single_column_file(p, phys=phys, conv=conv, num_values=len(raw),
+                        page_body=raw.tobytes())
+
+    with pytest.raises(SerifValueError, match="out of Python's range"):
+        read_parquet(str(p))['x']
 
 
 def test_signed_int_converted_type_reads_as_int(tmp_path):

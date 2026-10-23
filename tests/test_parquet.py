@@ -24,6 +24,8 @@ from serif._vector.dtype import Schema
 from serif._vector.nullable import BitMask
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
+from serif._vector.storage import DateStorage
+from serif._vector.storage import DatetimeStorage
 from serif._vector.storage import DecimalStorage
 from serif._vector.storage import StringStorage
 from serif._vector.storage import TupleStorage
@@ -932,7 +934,7 @@ class TestWriterCharacterization:
         assert col(result, 'b') == [True, None, False]
         assert col(result, 'amount') == decimal_values
 
-    def test_writer_streams_intentional_object_backed_storage(
+    def test_writer_copies_ticks_and_streams_object_backed_storage(
             self, tmp_path, monkeypatch):
         expected = {
             'd': [date(1969, 12, 31), None, date(2024, 6, 15)],
@@ -941,13 +943,24 @@ class TestWriterCharacterization:
                 None,
                 datetime(2200, 6, 15, 12, 34, 56, 123457),
             ],
+            # fold=1 has no exact tick: the column falls back to TupleStorage
+            # and keeps the per-value encoder. The file can't carry fold, and
+            # == ignores it, so the values still read back equal.
+            'ts_fold': [
+                datetime(2024, 11, 3, 1, 30, fold=1),
+                None,
+                datetime(2024, 1, 1),
+            ],
             'amount': [Decimal('1.25'), None, Decimal('-2.50')],
         }
-        table = Table(expected)
-        assert all(
-            type(table[name]._storage) is TupleStorage
-            for name in expected
-        )
+        with pytest.warns(UserWarning, match='fold=1'):
+            table = Table(expected)
+        assert [type(table[name]._storage) for name in expected] == [
+            DateStorage,
+            DatetimeStorage,
+            TupleStorage,
+            TupleStorage,
+        ]
         path = tmp_path / 'object-backed.parquet'
         calls = []
         original = parquet_mod._encode_object_storage_plain
@@ -955,12 +968,17 @@ class TestWriterCharacterization:
         def fail_to_tuple(*args, **kwargs):
             raise AssertionError('writer called TupleStorage.to_tuple()')
 
+        def fail_box(tick):
+            raise AssertionError('writer boxed a temporal tick')
+
         def recording_encoder(storage, kind, col_name, decimal_scale=None):
             calls.append((type(storage), kind, col_name, decimal_scale))
             return original(storage, kind, col_name, decimal_scale)
 
         with monkeypatch.context() as patcher:
             patcher.setattr(TupleStorage, 'to_tuple', fail_to_tuple)
+            patcher.setattr(DateStorage, '_box', staticmethod(fail_box))
+            patcher.setattr(DatetimeStorage, '_box', staticmethod(fail_box))
             patcher.setattr(parquet_mod, '_encode_plain', fail_to_tuple)
             patcher.setattr(
                 parquet_mod,
@@ -970,8 +988,7 @@ class TestWriterCharacterization:
             table.to_parquet(str(path))
 
         assert [(kind, name) for _, kind, name, _ in calls] == [
-            (date, 'd'),
-            (datetime, 'ts'),
+            (datetime, 'ts_fold'),
             (Decimal, 'amount'),
         ]
         result = Table.from_parquet(str(path))

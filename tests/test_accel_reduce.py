@@ -25,13 +25,16 @@ pure path is the spec, so the accelerator steps aside).
 Skipped entirely when numpy isn't installed.
 """
 
+import builtins
 import math
 from datetime import date
+from datetime import datetime
 
 import pytest
 
 np = pytest.importorskip("numpy")
 
+from serif import Schema
 from serif import Vector
 from serif._execution import DECLINED
 from serif._vector._numpy import reductions as reduce_mod
@@ -72,12 +75,40 @@ def test_conformance_exact(vf, op):
         assert type(fast) is type(pure)
 
 
-def test_date_minmax_declines_to_pure():
-    # Dates decline (TupleStorage): min/max still work through the pure
-    # path; sum/mean raise there for dates, which is the pure behavior too.
-    v = Vector([date(2026, 1, 2), date(2026, 1, 1)])
-    assert v.max() == date(2026, 1, 2) == _pure(lambda: v.max())
-    assert v.min() == date(2026, 1, 1) == _pure(lambda: v.min())
+TEMPORAL = [
+    ("date",          lambda: Vector([date(2026, 1, 2), date(1969, 12, 31),
+                                      date(9999, 12, 31), date(1, 1, 1)])),
+    ("date_null",     lambda: Vector([None, date(2026, 1, 2), None,
+                                      date(1969, 12, 31)])),
+    ("date_all_null", lambda: Vector([None, None], dtype=Schema(date, True))),
+    ("date_empty",    lambda: Vector([], dtype=date)),
+    ("datetime_null", lambda: Vector([datetime(2026, 1, 2, 9), None,
+                                      datetime(1969, 12, 31, 23, 59, 59, 999999)])),
+]
+
+
+@pytest.mark.parametrize("vf", [v[1] for v in TEMPORAL], ids=[v[0] for v in TEMPORAL])
+@pytest.mark.parametrize("op", ["min", "max"])
+def test_temporal_minmax_reduces_ticks(vf, op, monkeypatch):
+    # Dates reduce their int ticks and box only the one result, on both
+    # paths; the answer is exactly Python's min/max over the values.
+    values = [x for x in vf() if x is not None]
+    expected = getattr(builtins, op)(values) if values else None
+    boxed = []
+    storage_type = type(vf()._storage)
+    original_box = storage_type._box
+
+    def counting_box(tick):
+        boxed.append(tick)
+        return original_box(tick)
+
+    monkeypatch.setattr(storage_type, '_box', staticmethod(counting_box))
+    fast = getattr(vf(), op)()
+    pure = _pure(lambda: getattr(vf(), op)())
+
+    assert fast == pure == expected
+    assert type(fast) is type(pure)
+    assert len(boxed) == (2 if values else 0)   # one per path
 
 
 @pytest.mark.parametrize("population", [False, True])

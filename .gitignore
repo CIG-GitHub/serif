@@ -18,6 +18,7 @@ htmlcov/
 # Distribution / packaging
 *.egg-info/
 dist/
+dist-*/
 build/
 
 # Virtual environments

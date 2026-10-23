@@ -7,13 +7,15 @@ whether numpy is installed or not. Same values, same nulls in the same
 slots, same schema, same storage type, same name — and every surfaced
 value a concrete Python type, never a numpy scalar.
 
-Declines (date/object columns, non-BoolStorage masks) must be
-invisible: the pure path runs and results agree by construction.
+Declines (object/fallback columns, non-BoolStorage masks) must be
+invisible: the pure path runs and results agree by construction. Native
+date/datetime columns gather as their int ticks.
 
 Skipped entirely when numpy isn't installed.
 """
 
 from datetime import date
+from datetime import datetime
 
 import pytest
 
@@ -75,6 +77,11 @@ VECTORS = [
     ("bool_null",   lambda: Vector([True, None, False, None], name='v')),
     ("str_dense",   lambda: Vector(['alpha', '', 'γδ 🎉', 'd' * 200], name='v')),
     ("str_null",    lambda: Vector(['alpha', None, '', None], name='v')),
+    ("date_null",   lambda: Vector([date(2026, 1, 5), None,
+                                    date(1969, 12, 31), date(1, 1, 1)], name='v')),
+    ("datetime_null", lambda: Vector([datetime(2026, 1, 5, 9, 30), None,
+                                      datetime(1969, 12, 31, 23, 59, 59, 999999),
+                                      None], name='v')),
 ]
 
 MASKS = [
@@ -110,9 +117,15 @@ def test_empty_vector_empty_mask():
 # Declines are invisible
 # ---------------------------------------------------------------------------
 
-def test_date_columns_take_pure_path_identically():
-    _conform(Vector([date(2026, 1, 1), date(2026, 1, 2)], name='d'),
-             Vector([False, True]))
+def test_fallback_date_columns_take_pure_path_identically():
+    # A date subclass has no exact tick: the column is TupleStorage and the
+    # accelerator declines; the pure path must agree.
+    class SubDate(date):
+        pass
+
+    with pytest.warns(UserWarning, match='not a plain date'):
+        v = Vector([date(2026, 1, 1), SubDate(2026, 1, 2)], name='d')
+    _conform(v, Vector([False, True]))
 
 
 def test_string_filter_never_decodes():
@@ -163,8 +176,10 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     Vector([1, 2, 3])[Vector([True, False, True])]
     Vector([True, False])[Vector([True, True])]
     Vector(['a', 'b'])[Vector([True, False])]
-    assert calls == [True, True, True]
+    Vector([date(2026, 1, 1)])[Vector([True])]           # tick view
+    Vector([datetime(2026, 1, 1), None])[Vector([True, True])]  # tick view
+    assert calls == [True, True, True, True, True]
 
     calls.clear()
-    Vector([date(2026, 1, 1)])[Vector([True])]  # TupleStorage → declines
+    Vector([2**80, 1])[Vector([True, False])]  # exact bigints (TupleStorage) → declines
     assert calls == [False]

@@ -46,6 +46,8 @@ from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
     ArrayStorage,
     BoolStorage,
+    DateStorage,
+    DatetimeStorage,
     DecimalStorage,
     StringStorage,
     TupleStorage,
@@ -594,7 +596,7 @@ def _encode_storage_def_levels(storage) -> bytes:
     if mask is not marker:
         return _encode_mask_def_levels(mask, len(storage))
 
-    # Dates, datetimes, and source Decimal columns intentionally use
+    # Fallback date/datetime columns and source Decimal columns use
     # TupleStorage, where None is inline instead of represented by BitMask.
     nrows = len(storage)
     packed = bytearray((nrows + 7) // 8)
@@ -710,6 +712,13 @@ def _encode_bool_storage_plain(storage: BoolStorage) -> bytes:
     return bytes(encoded)
 
 
+def _encode_temporal_storage_plain(storage) -> bytes:
+    """Encode DATE / TIMESTAMP_MICROS straight from the epoch-tick buffer."""
+    raw = memoryview(storage._ticks).cast('B')
+    return _copy_valid_fixed_width(
+        raw, storage._ticks.itemsize, storage._mask, len(storage))
+
+
 def _encode_decimal_storage_plain(storage: DecimalStorage) -> bytes:
     """Encode decimal128 from its Parquet-compatible big-endian buffer."""
     return _copy_valid_fixed_width(
@@ -769,6 +778,9 @@ def _encode_storage_plain(storage, kind: type, col_name: str,
         return _encode_bool_storage_plain(storage)
     if kind is _Decimal and isinstance(storage, DecimalStorage):
         return _encode_decimal_storage_plain(storage)
+    if kind in (_date, _datetime) and isinstance(
+            storage, (DateStorage, DatetimeStorage)):
+        return _encode_temporal_storage_plain(storage)
     if isinstance(storage, TupleStorage) and kind in (
             _date, _datetime, _Decimal):
         return _encode_object_storage_plain(
@@ -1003,15 +1015,15 @@ def _col_parquet_type(col, col_name: str):
         return _T_BYTE_ARRAY, _CT_UTF8, rep, None, None
 
     if kind is _date:
-        if not isinstance(st, TupleStorage):
+        if not isinstance(st, (DateStorage, TupleStorage)):
             _raise_incompatible_parquet_storage(
-                col_name, kind, st, 'TupleStorage')
+                col_name, kind, st, 'DateStorage or TupleStorage')
         return _T_INT32, _CT_DATE, rep, None, None
 
     if kind is _datetime:
-        if not isinstance(st, TupleStorage):
+        if not isinstance(st, (DatetimeStorage, TupleStorage)):
             _raise_incompatible_parquet_storage(
-                col_name, kind, st, 'TupleStorage')
+                col_name, kind, st, 'DatetimeStorage or TupleStorage')
         return _T_INT64, _CT_TIMESTAMP_MICROS, rep, None, None
 
     if kind is _Decimal:
@@ -1752,6 +1764,39 @@ def _decode_array_raw(page_values: _pyarray.array,
     return ArrayStorage(data, validity.finish())
 
 
+def _decode_temporal_raw(page_body: bytes, body_pos: int, null_flags,
+                         non_null_count: int, kind: type, phys_type: int,
+                         conv_type, col_name: str):
+    """Wrap PLAIN DATE / TIMESTAMP page values as epoch ticks without boxing.
+
+    The page's INT32 days / INT64 micros ARE the storage ticks; millisecond
+    timestamps scale by 1000 first. Ticks outside Python's date range raise
+    here, at load, rather than when some later read tries to box them.
+    """
+    storage_class = DateStorage if kind is _date else DatetimeStorage
+    raw = _pyarray.array('i' if phys_type == _T_INT32 else 'q')
+    size = non_null_count * raw.itemsize
+    if len(page_body) - body_pos < size:
+        raise SerifValueError(
+            f"Column '{col_name}': PLAIN page holds fewer values than its "
+            "header describes")
+    raw.frombytes(page_body[body_pos:body_pos + size])
+
+    scale = 1000 if conv_type == _CT_TIMESTAMP_MILLIS else 1
+    if raw and (min(raw) * scale < storage_class._MIN_TICK
+                or max(raw) * scale > storage_class._MAX_TICK):
+        raise SerifValueError(
+            f"Column '{col_name}': {kind.__name__} value out of Python's "
+            "range (years 1-9999); it cannot be read as a "
+            f"{kind.__name__}.")
+
+    if raw.typecode != storage_class._TYPECODE or scale != 1:
+        raw = _pyarray.array(
+            storage_class._TYPECODE, (value * scale for value in raw))
+    storage = _decode_array_raw(raw, null_flags)
+    return storage_class(storage._data, storage._mask)
+
+
 def _decode_str_raw(page_body: bytes, body_pos: int,
                     null_flags, non_null_count: int) -> StringStorage:
     """
@@ -1880,7 +1925,8 @@ def _combine_decoded_parts(parts):
         return parts[0]
 
     for storage_type in (
-            ArrayStorage, BoolStorage, StringStorage, DecimalStorage):
+            ArrayStorage, BoolStorage, StringStorage, DecimalStorage,
+            DateStorage, DatetimeStorage):
         if all(isinstance(part, storage_type) for part in parts):
             return concatenate_storages(parts)
 
@@ -1916,6 +1962,11 @@ def _empty_chunk_result(kind, phys_type, is_optional,
     if kind is _Decimal:
         return DecimalStorage(
             bytearray(), decimal_scale, decimal_precision, None)
+    if kind is _date:
+        return DateStorage(_pyarray.array(DateStorage._TYPECODE), None)
+    if kind is _datetime:
+        return DatetimeStorage(
+            _pyarray.array(DatetimeStorage._TYPECODE), None)
     if kind is int and phys_type == _T_INT64:
         data = _pyarray.array('q')
         return ArrayStorage(data, None) if is_optional else data
@@ -2025,6 +2076,13 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
             page_storage = _decode_bool_raw(page_body, body_pos,
                                             null_flags, non_null_count)
             page_results.append(page_storage)
+        elif kind is _date or kind is _datetime:
+            # Temporal fast path: DATE days / TIMESTAMP micros are already
+            # DateStorage / DatetimeStorage ticks — no date objects built.
+            page_storage = _decode_temporal_raw(
+                page_body, body_pos, null_flags, non_null_count,
+                kind, phys_type, conv_type, col_name)
+            page_results.append(page_storage)
         else:
             page_values, _ = _decode_plain(
                 page_body, body_pos, kind, phys_type, non_null_count, conv_type
@@ -2080,7 +2138,8 @@ def _empty_column(meta):
 def _column_from_raw(meta, raw):
     dtype = _dtype_for(meta)
     if isinstance(raw, (
-            ArrayStorage, StringStorage, DecimalStorage, BoolStorage)):
+            ArrayStorage, StringStorage, DecimalStorage, BoolStorage,
+            DateStorage, DatetimeStorage)):
         return Vector._from_storage(raw, dtype, name=meta['name'])
     if isinstance(raw, _pyarray.array):
         return Vector._from_storage(
@@ -2124,6 +2183,8 @@ def _combine_columns(columns, meta):
         BoolStorage,
         StringStorage,
         DecimalStorage,
+        DateStorage,
+        DatetimeStorage,
         TupleStorage,
     )
     if not any(

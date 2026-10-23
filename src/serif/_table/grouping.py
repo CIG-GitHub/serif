@@ -5,6 +5,7 @@ import warnings
 from .._execution import DECLINED
 from .._vector import Schema
 from .._vector.selection import take_storage
+from .._vector.storage import _TemporalStorage
 from ..errors import SerifEmptyReductionWarning
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
@@ -42,8 +43,18 @@ def make_uniquifier():
 def _bucket_storages(storages, nrows, *, track_row_keys=False):
     """Bucket validated key storage through optional, then Python paths."""
     if len(storages) == 1 and not track_row_keys:
-        result = _dispatch.group_single_key(storages[0])
+        storage = storages[0]
+        # Date/datetime keys bucket as their int ticks.
+        temporal = isinstance(storage, _TemporalStorage)
+        key_storage = storage.tick_view() if temporal else storage
+        result = _dispatch.group_single_key(key_storage)
         if result is not DECLINED:
+            if temporal:
+                # Keys come back as ticks: box one value per group.
+                result = {
+                    (storage._box(tick),): rows
+                    for (tick,), rows in result.items()
+                }
             return result, None
     return _python_grouping.bucket_rows(
         storages,

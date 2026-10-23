@@ -11,6 +11,7 @@ from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
 from . import dispatch as _dispatch
+from . import temporal as _temporal
 from .dtype import Schema
 from .dtype import infer_dtype
 from .selection import take_storage
@@ -19,6 +20,7 @@ from .storage import ArrayStorage
 from .storage import BoolStorage
 from .storage import StringStorage
 from .storage import TupleStorage
+from .storage import _TemporalStorage
 
 
 def _vector_class():
@@ -251,9 +253,15 @@ def is_in(vector, members):
     else:
         lookup = valid  # linear membership: plain Python `in`, plain `==`
 
+    # Native date/datetime columns look their members up as int ticks.
+    values = vector
+    ticks = _temporal.member_ticks(vector._storage, valid)
+    if ticks is not None:
+        values, lookup = vector._storage.tick_view(), ticks
+
     result = []
     saw_null = False
-    for value in vector:
+    for value in values:
         if value is None:
             if match_null:
                 result.append(True)
@@ -321,11 +329,18 @@ def sort_by(vector, reverse=False, na_last=True):
     if order is not DECLINED:
         return vector._clone(take_storage(storage, order))
 
+    # Date/datetime ticks order exactly as the dates do.
+    keys = (
+        storage.tick_view()
+        if isinstance(storage, _TemporalStorage)
+        else storage
+    )
+
     def key(index):
-        is_null = storage.is_null(index)
+        is_null = keys.is_null(index)
         return (
             _null_sort_flag(is_null, reverse, na_last),
-            storage[index] if not is_null else 0,
+            keys[index] if not is_null else 0,
         )
 
     order = _builtins.sorted(

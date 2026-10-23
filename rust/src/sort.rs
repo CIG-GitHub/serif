@@ -22,6 +22,7 @@ use crate::buffers::{mask_bytes, read};
 const INT64: u8 = 0;
 const FLOAT64: u8 = 1;
 const BOOL: u8 = 2;
+const INT32: u8 = 3;
 
 const SIGN: u64 = 1 << 63;
 
@@ -29,6 +30,7 @@ enum Values<'a> {
     Int(&'a [i64]),
     Float(&'a [f64]),
     Bool(&'a [u8]),
+    Int32(&'a [i32]),
 }
 
 struct Key<'a> {
@@ -51,6 +53,9 @@ impl Key<'_> {
     fn code(&self, row: usize) -> Option<u64> {
         let code = match self.values {
             Values::Int(values) => (values[row] as u64) ^ SIGN,
+            // Sign-extended to i64 first; the shift by the smallest code
+            // in sort_by_key then skips the high bytes that never vary.
+            Values::Int32(values) => (values[row] as i64 as u64) ^ SIGN,
             Values::Bool(values) => values[row] as u64,
             Values::Float(values) => {
                 let value = values[row];
@@ -171,8 +176,9 @@ fn checked<T>(values: &[T], n: usize) -> PyResult<&[T]> {
 
 /// Stable argsort over one or more keys, Python's sort semantics.
 ///
-/// `kinds[i]` is 0 int64 (array 'q'), 1 float64 (array 'd') or 2 bool (one
-/// 0/1 byte per lane); `masks[i]` is an Arrow validity bitmap or None.
+/// `kinds[i]` is 0 int64 (array 'q'), 1 float64 (array 'd'), 2 bool (one
+/// 0/1 byte per lane) or 3 int32 (array 'i', e.g. date32 day ticks);
+/// `masks[i]` is an Arrow validity bitmap or None.
 /// Returns the permutation as native int64 bytes, or None to decline.
 #[pyfunction]
 #[pyo3(signature = (n, kinds, values, masks, reverse, na_last))]
@@ -197,21 +203,25 @@ pub fn argsort<'py>(
     let mut ints = Vec::new();
     let mut floats = Vec::new();
     let mut bools = Vec::new();
+    let mut int32s = Vec::new();
     for (&kind, value) in kinds.iter().zip(&values) {
         match kind {
             INT64 => ints.push(PyBuffer::<i64>::get(value)?),
             FLOAT64 => floats.push(PyBuffer::<f64>::get(value)?),
             BOOL => bools.push(PyBuffer::<u8>::get(value)?),
+            INT32 => int32s.push(PyBuffer::<i32>::get(value)?),
             _ => return Err(PyValueError::new_err(format!("unknown sort kind {kind}"))),
         }
     }
-    let (mut ints, mut floats, mut bools) = (ints.iter(), floats.iter(), bools.iter());
+    let (mut ints, mut floats, mut bools, mut int32s) =
+        (ints.iter(), floats.iter(), bools.iter(), int32s.iter());
 
     let mut keys = Vec::with_capacity(kinds.len());
     for ((&kind, mask), &reverse) in kinds.iter().zip(&masks).zip(&reverse) {
         let values = match kind {
             INT64 => Values::Int(checked(read(ints.next().unwrap(), "values")?, n)?),
             FLOAT64 => Values::Float(checked(read(floats.next().unwrap(), "values")?, n)?),
+            INT32 => Values::Int32(checked(read(int32s.next().unwrap(), "values")?, n)?),
             _ => Values::Bool(checked(read(bools.next().unwrap(), "values")?, n)?),
         };
         let valid = match mask {
@@ -362,5 +372,59 @@ mod tests {
         ];
         // group asc, value desc, ties in original order.
         assert_eq!(argsort_keys(&keys, 5, true).unwrap(), vec![1, 3, 2, 0, 4]);
+    }
+
+    #[test]
+    fn int32_matches_python_stable_order() {
+        let rows = [
+            Some(19_723i32),
+            None,
+            Some(-1),
+            Some(19_723),
+            None,
+            Some(i32::MIN),
+            Some(i32::MAX),
+            Some(-719_162),
+            Some(0),
+        ];
+        let wide: Vec<Option<i64>> = rows.iter().map(|r| r.map(i64::from)).collect();
+        // Null lanes hold arbitrary ints (Arrow leaves them unspecified).
+        let values: Vec<i32> = rows.iter().map(|r| r.unwrap_or(i32::MIN)).collect();
+        let mask = mask_of(&wide);
+        for reverse in [false, true] {
+            for na_last in [false, true] {
+                let key = Key {
+                    values: Values::Int32(&values),
+                    valid: Some(&mask),
+                    reverse,
+                };
+                let got = argsort_keys(&[key], rows.len(), na_last).unwrap();
+                assert_eq!(
+                    got,
+                    python_order(&wide, reverse, na_last),
+                    "rev={reverse} na_last={na_last}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn int32_key_combines_with_int64_key() {
+        let day = [2i32, 1, 2, 1, 2];
+        let amount = [5i64, 7, 9, 7, 5];
+        let keys = [
+            Key {
+                values: Values::Int32(&day),
+                valid: None,
+                reverse: true,
+            },
+            Key {
+                values: Values::Int(&amount),
+                valid: None,
+                reverse: false,
+            },
+        ];
+        // day desc, amount asc, ties in original order.
+        assert_eq!(argsort_keys(&keys, 5, true).unwrap(), vec![0, 4, 2, 1, 3]);
     }
 }

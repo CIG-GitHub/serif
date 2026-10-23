@@ -3,7 +3,9 @@
 from . import _np
 
 
-NP_DTYPES = {'q': 'int64', 'd': 'float64'}
+# 'i' is int32, Arrow's width for date32 days (DateStorage ticks travel as
+# ArrayStorage('i') views; see _vector/temporal.py).
+NP_DTYPES = {'q': 'int64', 'd': 'float64', 'i': 'int32'}
 
 
 def valid_bits(mask, n):

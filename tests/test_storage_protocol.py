@@ -14,6 +14,7 @@ per test so mutation tests can't leak between cases.
 
 from array import array
 from datetime import date
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -22,6 +23,8 @@ from serif import Vector
 from serif.errors import SerifValueError
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
+from serif._vector.storage import DateStorage
+from serif._vector.storage import DatetimeStorage
 from serif._vector.storage import DecimalStorage
 from serif._vector.storage import StringStorage
 from serif._vector.storage import TupleStorage
@@ -45,6 +48,14 @@ CASES = [
     ("date_null",
      lambda: Vector([date(2024, 1, 3), None, date(2024, 1, 1)]),
      [date(2024, 1, 3), None, date(2024, 1, 1)]),
+    ("datetime_dense",
+     lambda: Vector([datetime(2024, 1, 3, 9, 30), datetime(1969, 12, 31, 23, 59, 59, 999999),
+                     datetime(2024, 1, 2)]),
+     [datetime(2024, 1, 3, 9, 30), datetime(1969, 12, 31, 23, 59, 59, 999999),
+      datetime(2024, 1, 2)]),
+    ("datetime_null",
+     lambda: Vector([datetime(2024, 1, 3, 9, 30), None, datetime(2024, 1, 1)]),
+     [datetime(2024, 1, 3, 9, 30), None, datetime(2024, 1, 1)]),
     ("cat",
      lambda: Vector(["b", "a", "b"]).categorize(["a", "b"]),
      ["b", "a", "b"]),
@@ -70,6 +81,7 @@ SETITEM_VALUE = {
     "str_dense": "z", "str_null": "z", "str_unicode": "z",
     "bool_dense": False, "bool_null": False,
     "date_dense": date(2020, 1, 1), "date_null": date(2020, 1, 1),
+    "datetime_dense": datetime(2020, 1, 1, 12), "datetime_null": datetime(2020, 1, 1, 12),
     "cat": "a", "cat_null": "a",
 }
 
@@ -88,7 +100,8 @@ EXPECTED_BACKEND = {
     "str_dense": StringStorage, "str_null": StringStorage,
     "str_unicode": StringStorage,
     "bool_dense": BoolStorage, "bool_null": BoolStorage,
-    "date_dense": TupleStorage, "date_null": TupleStorage,
+    "date_dense": DateStorage, "date_null": DateStorage,
+    "datetime_dense": DatetimeStorage, "datetime_null": DatetimeStorage,
     "cat": _CategoryStorage, "cat_null": _CategoryStorage,
 }
 
@@ -273,7 +286,10 @@ def test_dropna_on_untyped_empty_vector():
 def test_fillna_values(factory, values):
     v = factory()
     kind = v.schema().kind
-    fill = {int: 0, float: 0.0, str: "x", bool: False, date: date(1970, 1, 1)}[kind]
+    fill = {
+        int: 0, float: 0.0, str: "x", bool: False,
+        date: date(1970, 1, 1), datetime: datetime(1970, 1, 1),
+    }[kind]
     assert list(v.fillna(fill)) == [fill if x is None else x for x in values]
 
 
@@ -483,6 +499,13 @@ def _storage_signature(storage):
             storage._precision,
             _mask_signature(storage._mask),
         )
+    if isinstance(storage, (DateStorage, DatetimeStorage)):
+        return (
+            type(storage),
+            storage._ticks.typecode,
+            storage._ticks.tobytes(),
+            _mask_signature(storage._mask),
+        )
     return TupleStorage, storage._data
 
 
@@ -509,6 +532,16 @@ DIRECT_TAKE_CASES = [
         lambda values: DecimalStorage.from_iterable(
             values, scale=2, precision=4, nullable=True),
         [Decimal('1.25'), None, Decimal('-2.50')],
+    ),
+    (
+        "date",
+        lambda values: Vector._from_iterable_known_kind(values, date)._storage,
+        [date(2024, 1, 1), None, date(1969, 12, 31)],
+    ),
+    (
+        "datetime",
+        lambda values: Vector._from_iterable_known_kind(values, datetime)._storage,
+        [datetime(2024, 1, 1, 6), None, datetime(1969, 12, 31, 23, 59)],
     ),
 ]
 
@@ -578,6 +611,30 @@ PHYSICAL_CONCAT_CASES = [
             4,
             nullable=True,
         ),
+    ),
+    (
+        "date",
+        lambda: (
+            Vector._from_iterable_known_kind(
+                [date(2024, 1, 1), None], date)._storage,
+            Vector._from_iterable_known_kind(
+                [date(2024, 1, 3)], date)._storage,
+        ),
+        lambda: Vector._from_iterable_known_kind(
+            [date(2024, 1, 1), None, date(2024, 1, 3)], date)._storage,
+    ),
+    (
+        "datetime",
+        lambda: (
+            Vector._from_iterable_known_kind(
+                [datetime(2024, 1, 1, 6)], datetime)._storage,
+            Vector._from_iterable_known_kind(
+                [None, datetime(2024, 1, 3, 18)], datetime)._storage,
+        ),
+        lambda: Vector._from_iterable_known_kind(
+            [datetime(2024, 1, 1, 6), None, datetime(2024, 1, 3, 18)],
+            datetime,
+        )._storage,
     ),
     (
         "tuple",

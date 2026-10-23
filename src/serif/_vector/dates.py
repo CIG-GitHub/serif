@@ -1,59 +1,94 @@
 from ..vector import Vector
+from . import temporal as _temporal
 from .element_api import _elementwise_method
 from .element_api import _elementwise_property
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-from collections.abc import Iterable
+from itertools import repeat
+from .dtype import Schema
 from ..errors import SerifValueError
+
+
+def _day_offsets(other, sign, n):
+    """Per-lane whole-day offsets for `date ± other`, or None.
+
+    `other` is an int or timedelta, scalar or typed column of length n.
+    Python's date arithmetic counts only a timedelta's .days, both ways:
+    `date - td` is `date + timedelta(-td.days)`. So a negative sub-day
+    timedelta still moves the date (its .days is -1), while
+    `date - timedelta(hours=1)` leaves it where it is.
+    """
+    def days(value):
+        if isinstance(value, timedelta):
+            return sign * value.days
+        return sign * value
+
+    if isinstance(other, Vector):
+        schema = other.schema()
+        if (schema is None or schema.kind not in (int, timedelta)
+                or len(other) != n):
+            return None
+        return (None if value is None else days(value)
+                for value in other._storage)
+    if isinstance(other, (int, timedelta)):
+        return repeat(days(other), n)
+    return None
+
+
+def _wrap(storage, kind):
+    """A tick-path result, nullable only where nulls actually landed."""
+    return Vector._from_storage(storage, Schema(kind, storage._mask is not None))
 
 
 class _Date(Vector):
     def _elementwise_compare(self, other, op):
-        # Unknown in, unknown out (docs/null-semantics.md). Also note:
-        # dates promote to midnight via datetime.min.time() when compared
-        # against datetimes.
+        # A date compares as the date an ISO string names, and as midnight
+        # against a datetime. Rewrite whichever side needs it, then compare
+        # like kinds through the base path (docs/null-semantics.md), where
+        # native storage compares as int ticks.
         other = self._check_duplicate(other)
 
-        def _wrap(vals):
-            return Vector._from_iterable_known_kind(vals, bool)
-
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            if other.schema() is not None and other.schema().kind is str:
-                return _wrap(
-                    None if (x is None or y is None) else bool(op(x, date.fromisoformat(y)))
-                    for x, y in zip(self, other, strict=True)
+        if isinstance(other, Vector) and other.ndims() == 1:
+            schema = other.schema()
+            kind = schema.kind if schema is not None else None
+            if kind is str:
+                other = Vector._from_iterable_known_dtype(
+                    (None if y is None else date.fromisoformat(y)
+                     for y in other),
+                    Schema(date, schema.nullable),
                 )
-            if other.schema() is not None and other.schema().kind is datetime:
-                return _wrap(
-                    None if (x is None or y is None) else bool(op(datetime.combine(x, datetime.min.time()), y))
-                    for x, y in zip(self, other, strict=True)
-                )
-        elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return _wrap(
-                None if (x is None or y is None) else bool(op(x, y))
-                for x, y in zip(self, other, strict=True)
-            )
+            elif kind is datetime:
+                return self._at_midnight()._elementwise_compare(other, op)
         elif isinstance(other, str):
-            rhs = date.fromisoformat(other)
-            return _wrap(
-                None if x is None else bool(op(x, rhs))
-                for x in self
-            )
+            other = date.fromisoformat(other)
         elif isinstance(other, datetime):
-            return _wrap(
-                None if x is None else bool(op(datetime.combine(x, datetime.min.time()), other))
-                for x in self
-            )
-        # finally,
+            return self._at_midnight()._elementwise_compare(other, op)
         return super()._elementwise_compare(other, op)
+
+    def _at_midnight(self):
+        """This column as datetimes at midnight, same name and nullability."""
+        dtype = Schema(datetime, self._dtype.nullable)
+        storage = _temporal.at_midnight(self._storage)
+        if storage is not None:
+            return Vector._from_storage(storage, dtype, name=self._name)
+        return Vector._from_iterable_known_dtype(
+            (None if x is None else datetime.combine(x, datetime.min.time())
+             for x in self),
+            dtype,
+            name=self._name,
+        )
 
     def __add__(self, other):
         """ adding integers is adding days """
+        # Native storage moves its day ticks; anything the tick path
+        # declines (or that leaves the date range) takes the boxed path.
+        offsets = _day_offsets(other, 1, len(self))
+        if offsets is not None:
+            storage = _temporal.shift_days(self._storage, offsets)
+            if storage is not None:
+                return _wrap(storage, date)
+
         if isinstance(other, Vector) and other.schema() is not None:
             other_kind = other.schema().kind
             if other_kind in (int, timedelta):
@@ -96,6 +131,10 @@ class _Date(Vector):
 
     def __radd__(self, other):
         if isinstance(other, timedelta):
+            storage = _temporal.shift_days(
+                self._storage, _day_offsets(other, 1, len(self)))
+            if storage is not None:
+                return _wrap(storage, date)
             return Vector._from_iterable_known_kind(
                 (
                     other + s if s is not None else None
@@ -115,6 +154,25 @@ class _Date(Vector):
         datetime vectors are NOT _Date and keep Python's timedelta
         semantics — subsecond precision matters there.
         """
+        # Native storage works on day ticks; anything the tick path
+        # declines (or that leaves the date range) takes the boxed path.
+        if isinstance(other, Vector):
+            schema = other.schema()
+            if (schema is not None and schema.kind is date
+                    and len(other) == len(self)):
+                storage = _temporal.days_between(self._storage, other._storage)
+                if storage is not None:
+                    return _wrap(storage, int)
+        else:
+            storage = _temporal.days_between(self._storage, other)
+            if storage is not None:
+                return _wrap(storage, int)
+        offsets = _day_offsets(other, -1, len(self))
+        if offsets is not None:
+            storage = _temporal.shift_days(self._storage, offsets)
+            if storage is not None:
+                return _wrap(storage, date)
+
         if isinstance(other, Vector) and other.schema() is not None:
             other_kind = other.schema().kind
             if other_kind in (int, timedelta, date):
@@ -178,6 +236,9 @@ class _Date(Vector):
     def __rsub__(self, other):
         """date_scalar - datevec → int days (same whole-day algebra)."""
         if isinstance(other, date) and not isinstance(other, datetime):
+            storage = _temporal.days_between(self._storage, other, reverse=True)
+            if storage is not None:
+                return _wrap(storage, int)
             return Vector._from_iterable_known_kind(
                 (
                     (other - s).days if s is not None else None
@@ -188,6 +249,10 @@ class _Date(Vector):
         return super().__rsub__(other)
 
     def eomonth(self):
+        storage = _temporal.month_ends(self._storage)
+        if storage is not None:
+            return _wrap(storage, date)
+
         def values():
             for d in self._storage:
                 if d is None:

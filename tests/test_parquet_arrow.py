@@ -27,6 +27,7 @@ from serif import Table, Vector
 from serif._execution import DECLINED
 from serif._vector._arrow import storage as arrow_storage
 from serif.errors import SerifTypeError
+from serif.errors import SerifValueError
 import serif.io.parquet as parquet_mod
 from serif.io import _arrow
 
@@ -71,6 +72,10 @@ def _assert_identical(pure_t, arrow_t):
                 f"{name}: scale {as_._scale} != {ps._scale}"
             assert as_._precision == ps._precision, \
                 f"{name}: precision {as_._precision} != {ps._precision}"
+        # Both readers must land temporal columns in the same tick storage,
+        # not merely surface equal values.
+        if pv.schema().kind in (date, datetime):
+            assert type(av._storage) is type(pv._storage), name
         for i, (p, a) in enumerate(zip(pv, av)):
             if p is None:
                 assert a is None, f"{name}[{i}]: expected None, got {a!r}"
@@ -285,6 +290,41 @@ def test_conformance_tz_aware_timestamp():
     }))
 
 
+def test_conformance_millisecond_timestamp():
+    # timestamp[ms] scales to us in C on the arrow path, by 1000 per value
+    # on the pure path: same DatetimeStorage ticks either way.
+    _conform_foreign(pa.table({
+        'ts': pa.array([datetime(2024, 1, 1, 12, 30, 0, 125000), None,
+                        datetime(1969, 12, 31, 23, 59, 59, 999000)],
+                       type=pa.timestamp('ms')),
+    }))
+
+
+def test_arrow_temporal_columns_copy_ticks_without_date_objects(monkeypatch):
+    from serif._vector.storage import DateStorage, DatetimeStorage
+
+    path = _write(Table({
+        'd': [date(2024, 1, 1), None, date(1969, 12, 31)],
+        'ts': [None, datetime(2024, 1, 1, 6), datetime(1, 1, 1)],
+    }))
+
+    def fail(value):
+        raise AssertionError('arrow path went through date objects')
+
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(DateStorage, '_unbox', staticmethod(fail))
+            patcher.setattr(DatetimeStorage, '_unbox', staticmethod(fail))
+            t = _arrow.try_read(path)
+        assert type(t['d']._storage) is DateStorage
+        assert type(t['ts']._storage) is DatetimeStorage
+        assert list(t['d']) == [date(2024, 1, 1), None, date(1969, 12, 31)]
+        assert list(t['ts']) == [None, datetime(2024, 1, 1, 6),
+                                 datetime(1, 1, 1)]
+    finally:
+        os.unlink(path)
+
+
 def test_dictionary_string_column_reads_as_plain_str():
     # Parquet dictionary encoding is compression, not a categorical claim:
     # the column comes back as a plain str Vector with the decoded values.
@@ -413,6 +453,35 @@ def test_nanosecond_timestamps_still_raise():
         assert _arrow.try_read(path) is DECLINED
         with pytest.raises(SerifTypeError, match='NANOS'):
             parquet_mod.read_parquet(path)
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.parametrize(
+    "values,arrow_type",
+    [
+        ([0, None, 3_000_000], 'date32'),
+        ([2**62], 'timestamp[us]'),
+        ([2**60], 'timestamp[ms]'),
+    ],
+    ids=['date', 'micros', 'millis'],
+)
+def test_ticks_outside_python_range_decline_to_pure_error(values, arrow_type):
+    # pyarrow happily holds dates past year 9999; Python can't. The arrow
+    # path declines the whole file, so the pure reader's load-time error is
+    # what users see, with pyarrow installed or not.
+    arrow_types = {
+        'date32': pa.date32(),
+        'timestamp[us]': pa.timestamp('us'),
+        'timestamp[ms]': pa.timestamp('ms'),
+    }
+    path = _write_foreign(pa.table({
+        'x': pa.array(values, type=arrow_types[arrow_type])}))
+    try:
+        assert _arrow.try_read(path) is DECLINED
+        assert _arrow.try_read_column(path, 0, [0]) is DECLINED
+        with pytest.raises(SerifValueError, match="out of Python's range"):
+            parquet_mod.read_parquet(path)['x']
     finally:
         os.unlink(path)
 
