@@ -17,6 +17,7 @@ from .dtype import Schema
 from .dtype import infer_kind
 from .dtype import validate_scalar
 from ._python import reductions as _python_reductions
+from .storage import _TemporalStorage
 
 
 class _ConstantReduction:
@@ -72,22 +73,30 @@ def _check_on_empty(method_name, on_empty):
     )
 
 
+def _extreme(storage, name):
+    """max_/min_ through the accelerators, then Python. A native date or
+    datetime column reduces its int ticks and boxes only the one result."""
+    temporal = storage if isinstance(storage, _TemporalStorage) else None
+    if temporal is not None:
+        storage = temporal.tick_view()
+    result = _dispatch.reduction(name, storage)
+    if result is DECLINED:
+        result = getattr(_python_reductions, name)(storage)
+    if temporal is not None and result is not None:
+        result = temporal._box(result)
+    return result
+
+
 def max(vector):
     if vector.ndims() == 2:
         return vector.copy((c.max() for c in vector.cols()), name=None)
-    fast = _dispatch.reduction('max_', vector._storage)
-    if fast is not DECLINED:
-        return fast
-    return _python_reductions.max_(vector._storage)
+    return _extreme(vector._storage, 'max_')
 
 
 def min(vector):
     if vector.ndims() == 2:
         return vector.copy((c.min() for c in vector.cols()), name=None)
-    fast = _dispatch.reduction('min_', vector._storage)
-    if fast is not DECLINED:
-        return fast
-    return _python_reductions.min_(vector._storage)
+    return _extreme(vector._storage, 'min_')
 
 
 def first(vector):

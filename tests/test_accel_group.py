@@ -174,7 +174,7 @@ def _join_tables():
         'x':  [1.5, None, 2.5, 4.0, 0.5],
         's':  ['a', None, 'c', 'd', 'e'],
         'b':  [True, False, None, True, False],
-        'd':  [date(2026, 1, i) for i in range(1, 6)],  # DateStorage: no accel yet, declines
+        'd':  [date(2026, 1, i) for i in range(1, 6)],  # gathers as int ticks
     })
     right = Table({
         'id':    [2, 3, 5, 2],   # duplicate key 2: fan-out; 5: unmatched

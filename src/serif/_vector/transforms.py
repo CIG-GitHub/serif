@@ -256,7 +256,7 @@ def is_in(vector, members):
     values = vector
     ticks = _temporal.member_ticks(vector._storage, valid)
     if ticks is not None:
-        values, lookup = _temporal.tick_view(vector._storage), ticks
+        values, lookup = vector._storage.tick_view(), ticks
 
     result = []
     saw_null = False

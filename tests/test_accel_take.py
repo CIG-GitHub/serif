@@ -14,6 +14,7 @@ Skipped entirely when numpy isn't installed.
 
 import math
 from datetime import date
+from datetime import datetime
 
 import pytest
 
@@ -73,6 +74,13 @@ VECTORS = [
     ("bool_null",   lambda: Vector([True, None, False, None], name='v')),
     ("str_dense",   lambda: Vector(['alpha', '', 'γδ 🎉', 'd' * 200], name='v')),
     ("str_null",    lambda: Vector(['alpha', None, '', None], name='v')),
+    ("date_dense",  lambda: Vector([date(2026, 1, 5), date(1969, 12, 31),
+                                    date(1, 1, 1), date(9999, 12, 31)], name='v')),
+    ("date_null",   lambda: Vector([date(2026, 1, 5), None,
+                                    date(1969, 12, 31), None], name='v')),
+    ("datetime_null", lambda: Vector([datetime(2026, 1, 5, 9, 30), None,
+                                      datetime(1969, 12, 31, 23, 59, 59, 999999),
+                                      datetime(1, 1, 1)], name='v')),
 ]
 
 INDEX_SETS = [
@@ -161,7 +169,7 @@ def _sortable_table():
         'x': [1.5, None, 2.5, 4.0, 0.5],
         's': ['c', 'a', None, 'b', 'a'],
         'b': [True, None, False, True, False],
-        'd': [date(2026, 1, i) for i in (5, 3, 4, 1, 2)],  # DateStorage: no accel yet, declines
+        'd': [date(2026, 1, i) for i in (5, 3, 4, 1, 2)],  # gathers as int ticks
     })
 
 
@@ -232,10 +240,12 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     Vector([3, 1, 2]).sort_by()
     Vector(['b', 'a']).sort_by()
     Vector([True, None, False]).dropna()
-    assert calls == [True, True, True]
+    Vector([date(2026, 1, 2), date(2026, 1, 1)]).sort_by()   # tick view
+    Vector([datetime(2026, 1, 2), None]).dropna()            # tick view
+    assert calls == [True, True, True, True, True]
 
     calls.clear()
-    Vector([date(2026, 1, 2), date(2026, 1, 1)]).sort_by()  # DateStorage: no accel yet → declines
+    Vector([2**80, 1]).sort_by()  # exact bigints (TupleStorage) → declines
     assert calls == [False]
 
 

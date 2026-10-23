@@ -689,7 +689,8 @@ class _TemporalStorage:
 
     The buffer is named _ticks, not _data, on purpose: accelerators that
     view ArrayStorage._data as plain numbers must never pick temporal
-    columns up by attribute shape. They opt in by isinstance.
+    columns up by attribute shape. They opt in explicitly through
+    tick_view(), wherever an operation means the same thing on the ints.
 
     Subclasses set _KIND, _TYPECODE, the tick bounds of Python's own range
     (_MIN_TICK/_MAX_TICK, which I/O checks before trusting a file's ticks),
@@ -725,6 +726,10 @@ class _TemporalStorage:
 
     def is_null(self, idx: int) -> bool:
         return self._mask is not None and self._mask.is_null(idx)
+
+    def tick_view(self) -> ArrayStorage:
+        """The ticks as int ArrayStorage, sharing buffer and mask (no copy)."""
+        return ArrayStorage(self._ticks, self._mask)
 
     def slice(self, slc: slice) -> _TemporalStorage:
         new_ticks = self._ticks[slc]

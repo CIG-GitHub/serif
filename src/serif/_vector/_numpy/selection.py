@@ -13,6 +13,7 @@ from ..nullable import BitMask
 from ..storage import ArrayStorage
 from ..storage import BoolStorage
 from ..storage import StringStorage
+from ..storage import _TemporalStorage
 
 
 _JOIN_SPAN_BYTES = 32
@@ -42,6 +43,14 @@ def _gathered_mask(mask, indexer, source_length, pad=None):
 
 
 def _gather(storage, indexer, source_length, pad=None):
+    if isinstance(storage, _TemporalStorage):
+        # Date/datetime ticks gather as plain ints, then rewrap as the same
+        # storage; padded lanes get the 0-tick sentinel like ints do.
+        gathered = _gather(storage.tick_view(), indexer, source_length, pad)
+        if gathered is DECLINED:
+            return DECLINED
+        return type(storage)(gathered._data, gathered._mask)
+
     if isinstance(storage, ArrayStorage):
         numpy_dtype = NP_DTYPES.get(storage._data.typecode)
         if numpy_dtype is None:
