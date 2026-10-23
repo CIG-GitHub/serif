@@ -17,6 +17,7 @@ mod sort;
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(int_math::int_binary, m)?)?;
     m.add_function(wrap_pyfunction!(join::join_probe_int64, m)?)?;
+    m.add_function(wrap_pyfunction!(join::join_probe_int32, m)?)?;
     m.add_function(wrap_pyfunction!(sort::argsort, m)?)?;
     Ok(())
 }

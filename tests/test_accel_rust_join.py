@@ -1,6 +1,7 @@
 """
-Conformance tests for the OPTIONAL Rust single-key int64 join probe
-(serif._table._rust.joins.probe_int64).
+Conformance tests for the OPTIONAL Rust single-key int64 / int32 join
+probe (serif._table._rust.joins.probe_int64); date keys exercise the int32
+entry point as day ticks.
 
 The guarantee under test: every join flavor and cardinality setting returns
 an IDENTICAL table (row order, values, schemas, storage types) and raises
@@ -12,6 +13,8 @@ Skipped entirely when the extension isn't built.
 """
 
 import random
+from datetime import date
+from datetime import timedelta
 
 import pytest
 
@@ -83,17 +86,18 @@ def _conform(make, monkeypatch):
         _assert_tables_identical(expected[1], actual[1])
 
 
-def _join(flavor, left_keys, right_keys, expect_left_unique, expect_right_unique):
+def _join(flavor, left_keys, right_keys, expect_left_unique, expect_right_unique,
+          kind=int):
     # Explicit schema: empty or all-null keys would otherwise infer object.
-    int_keys = lambda keys: Vector(keys, dtype=Schema(int, None in keys))
+    typed_keys = lambda keys: Vector(keys, dtype=Schema(kind, None in keys))
 
     def make():
         left = Table({
-            'key': int_keys(left_keys),
+            'key': typed_keys(left_keys),
             'lv': [f'l{i}' for i in range(len(left_keys))],
         })
         right = Table({
-            'key': int_keys(right_keys),
+            'key': typed_keys(right_keys),
             'rv': list(range(len(right_keys))),
         })
         return getattr(left, flavor)(
@@ -147,6 +151,32 @@ def test_conforms(flavor, cardinality, case, monkeypatch):
     _conform(make, monkeypatch)
 
 
+def _as_dates(keys):
+    base = date(2024, 1, 1)
+    return [None if k is None else base + timedelta(days=k) for k in keys]
+
+
+# Date keys reach the probe as int32 day ticks (join_probe_int32).
+DATE_CASES = {
+    name: (_as_dates(left), _as_dates(right))
+    for name, (left, right) in CASES.items()
+    if name != 'sparse_extremes'
+}
+DATE_CASES['extremes'] = (
+    [date.min, date(1970, 1, 1), date.max, None],
+    [date.max, date(1969, 12, 31), date.min],
+)
+
+
+@pytest.mark.parametrize("flavor", FLAVORS)
+@pytest.mark.parametrize("cardinality", CARDINALITY, ids=lambda c: f"lu={c[0]},ru={c[1]}")
+@pytest.mark.parametrize("case", list(DATE_CASES))
+def test_date_keys_conform(flavor, cardinality, case, monkeypatch):
+    left_keys, right_keys = DATE_CASES[case]
+    make = _join(flavor, left_keys, right_keys, *cardinality, kind=date)
+    _conform(make, monkeypatch)
+
+
 @pytest.mark.parametrize("flavor", FLAVORS)
 def test_randomized_against_python(flavor, monkeypatch):
     rng = random.Random(20261015)
@@ -173,6 +203,29 @@ def test_engages_where_numpy_declines(engaged):
     _join('inner_join', [1, 2], [1, 1, 2], False, False)()
     _join('inner_join', [2**60, -2**60], [2**60], False, True)()
     assert engaged == [True, True, True]
+
+
+def test_date_keys_engage_the_int32_probe(engaged):
+    d = _as_dates
+    _join('left_join', d([None, 1, 2]), d([1, None]), False, True, kind=date)()
+    _join('inner_join', d([1, 2]), d([1, 1, 2]), False, False, kind=date)()
+    assert engaged == [True, True]
+
+
+def test_date_duplicate_diagnostic_names_the_date(engaged):
+    make = _join('inner_join', _as_dates([1]), _as_dates([4, 9, 9, 4]),
+                 False, True, kind=date)
+    with pytest.raises(SerifValueError,
+                       match=r"datetime\.date\(2024, 1, 10\).*appears 2 times"):
+        make()
+    assert engaged == [True]
+
+
+def test_mixed_key_widths_decline():
+    ints = Table({'k': [1, 2]}).k._storage
+    ticks = Table({'k': _as_dates([1, 2])}).k._storage.tick_view()
+    args = (False, True, False, False)
+    assert rust_joins.probe_int64(ints, ticks, *args) is DECLINED
 
 
 def test_right_duplicate_diagnostic(engaged):
