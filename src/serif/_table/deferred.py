@@ -140,6 +140,32 @@ class MaskedTable(Table):
         object.__setattr__(self, '_mask_vec', None)
         object.__setattr__(self, '_source_loader', None)
 
+    def _mask_capture(self):
+        """Hand a chained mask this table's snapshot instead of latching.
+
+        `q[m2]` loads a column through q's own program (or q's cached
+        gather) and then applies m2, so untouched columns stay unloaded.
+        The loader closes over the snapshot pieces, never `self`: q may
+        latch and release them later without breaking the chained table.
+        """
+        if self._mat is not None:
+            return tuple(col.copy() for col in self._storage), None
+        captured = tuple(col.copy() for col in self._captured)
+        cached = {idx: col.copy() for idx, col in self._gathered.items()}
+        mask = self._mask_vec
+        source_loader = self._source_loader
+
+        def load(idx, outer):
+            col = cached.get(idx)
+            if col is None:
+                if source_loader is None:
+                    col = captured[idx][mask]
+                else:
+                    col = source_loader(idx, mask)
+            return col[outer]
+
+        return captured, load
+
     # ------------------------------------------------------------------
     # Hot paths: single-column access without materializing
     # ------------------------------------------------------------------

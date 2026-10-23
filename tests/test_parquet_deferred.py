@@ -214,6 +214,30 @@ def test_boolean_mask_reaches_remaining_parquet_columns(tmp_path, monkeypatch):
     assert set(selected._gathered) == {1}
 
 
+def test_chained_masks_load_only_touched_parquet_columns(
+        tmp_path, monkeypatch):
+    path = tmp_path / 'table.parquet'
+    _write_table(path)
+    calls = []
+    original = parquet._ParquetSource.load_column
+
+    def spy(self, idx, mask=None):
+        calls.append(idx)
+        return original(self, idx, mask)
+
+    monkeypatch.setattr(parquet._ParquetSource, 'load_column', spy)
+    source = read_parquet(path)
+    first = source[source.a > 1]
+    second = first[first.b < 40]
+
+    assert type(second) is MaskedTable
+    assert first._mat is None
+    assert list(second.s) == ['x', 'y']
+    assert calls == [0, 1, 2]                # a, b for the masks; s once
+    assert list(second.a) == [2, 3]          # a reused from source's cache
+    assert calls == [0, 1, 2]
+
+
 def test_pure_mask_filter_does_not_require_numpy(tmp_path, monkeypatch):
     from serif._vector._numpy import selection as numpy_selection
 
