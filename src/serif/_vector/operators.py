@@ -129,7 +129,11 @@ def _wrap_storage(storage, schema):
 
 
 def _validate_forward_division(left, right, op_func):
-    """Raise Python's division error before an optional backend runs."""
+    """Raise Python's division error before the pure path runs.
+
+    Every optional backend declines when a valid lane has a zero divisor,
+    so this lane-by-lane scan only runs once they have all declined.
+    """
     if op_func not in _FORWARD_DIVISION_OPS:
         return
     Vector = _vector_class()
@@ -361,7 +365,6 @@ def elementwise_operation(vector, other, op_func, op_symbol):
             )
         result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
         if result_dtype is not None:
-            _validate_forward_division(vector, other, op_func)
             fast = _dispatch.binary(
                 vector._storage,
                 other._storage,
@@ -370,6 +373,7 @@ def elementwise_operation(vector, other, op_func, op_symbol):
             )
             if fast is not DECLINED:
                 return _wrap_storage(fast, result_dtype)
+            _validate_forward_division(vector, other, op_func)
         try:
             result = _python_ops.binary_vector(
                 vector,
@@ -432,7 +436,6 @@ def elementwise_operation(vector, other, op_func, op_symbol):
 
     result_dtype = _pre_compute_op_schema(vector._dtype, other, op_func)
     if result_dtype is not None:
-        _validate_forward_division(vector, other, op_func)
         fast = _dispatch.binary(
             vector._storage,
             other,
@@ -441,6 +444,7 @@ def elementwise_operation(vector, other, op_func, op_symbol):
         )
         if fast is not DECLINED:
             return _wrap_storage(fast, result_dtype)
+        _validate_forward_division(vector, other, op_func)
     try:
         result = _python_ops.binary_scalar(
             vector._storage,

@@ -4,45 +4,82 @@ on: [push, pull_request]
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }} / ${{ matrix.accelerators }}
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python-version }} / ${{ matrix.accelerators }} / ${{ matrix.os || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+
+    defaults:
+      run:
+        shell: bash
 
     strategy:
       fail-fast: false
       matrix:
+        # SERIF_RUST picks whether the compiled kernels are built:
+        # off keeps a job pure Python/NumPy/Arrow even though runners have
+        # cargo; required fails the job if the Rust build fails.
         include:
           - python-version: "3.10"
             accelerators: pure Python
             extras: dev
             pins: ""
+            rust: "off"
           - python-version: "3.10"
             accelerators: NumPy only
             extras: dev,numpy
             pins: numpy==1.24.0
+            rust: "off"
           - python-version: "3.10"
             accelerators: Arrow only
             extras: dev,pyarrow
             pins: pyarrow==25.0.0
+            rust: "off"
           - python-version: "3.10"
             accelerators: NumPy + Arrow
             extras: dev,numpy,pyarrow
             pins: numpy==1.24.0 pyarrow==25.0.0
+            rust: "off"
           - python-version: "3.11"
             accelerators: NumPy + Arrow
             extras: dev,numpy,pyarrow
             pins: ""
+            rust: "off"
           - python-version: "3.12"
             accelerators: NumPy + Arrow
             extras: dev,numpy,pyarrow
             pins: ""
+            rust: "off"
           - python-version: "3.13"
             accelerators: NumPy + Arrow
             extras: dev,numpy,pyarrow
             pins: ""
+            rust: "off"
           - python-version: "3.14"
             accelerators: NumPy + Arrow
             extras: dev,numpy,pyarrow
             pins: ""
+            rust: "off"
+          - python-version: "3.10"
+            accelerators: Rust only
+            extras: dev
+            pins: ""
+            rust: required
+          - python-version: "3.14"
+            accelerators: Rust + NumPy + Arrow
+            extras: dev,numpy,pyarrow
+            pins: ""
+            rust: required
+          - python-version: "3.14"
+            accelerators: Rust + NumPy + Arrow
+            extras: dev,numpy,pyarrow
+            pins: ""
+            rust: required
+            os: windows-latest
+          - python-version: "3.14"
+            accelerators: Rust + NumPy + Arrow
+            extras: dev,numpy,pyarrow
+            pins: ""
+            rust: required
+            os: macos-latest
 
     steps:
     - uses: actions/checkout@v4
@@ -53,6 +90,8 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: Install package and test dependencies
+      env:
+        SERIF_RUST: ${{ matrix.rust }}
       run: |
         python -m pip install --upgrade pip
         python -m pip install ".[${{ matrix.extras }}]" ${{ matrix.pins }}
@@ -67,14 +106,17 @@ jobs:
 
         mode = os.environ['ACCELERATOR_MODE']
         expected = {
-            'pure Python': (False, False),
-            'NumPy only': (True, False),
-            'Arrow only': (False, True),
-            'NumPy + Arrow': (True, True),
+            'pure Python': (False, False, False),
+            'NumPy only': (True, False, False),
+            'Arrow only': (False, True, False),
+            'NumPy + Arrow': (True, True, False),
+            'Rust only': (False, False, True),
+            'Rust + NumPy + Arrow': (True, True, True),
         }[mode]
         actual = (
             importlib.util.find_spec('numpy') is not None,
             importlib.util.find_spec('pyarrow') is not None,
+            importlib.util.find_spec('serif._rust') is not None,
         )
         assert actual == expected, (mode, expected, actual)
         PY
@@ -82,10 +124,37 @@ jobs:
     - name: Run tests
       run: python -m pytest -v
 
+  rust:
+    name: Rust kernels (fmt, clippy, unit tests)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.14"
+
+    - name: Check formatting
+      run: cargo fmt --check
+
+    - name: Lint
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Unit tests
+      env:
+        PYO3_PYTHON: python
+      run: cargo test
+
   package:
     name: Build and inspect package
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [test, rust]
 
     steps:
     - uses: actions/checkout@v4
@@ -95,7 +164,10 @@ jobs:
       with:
         python-version: "3.12"
 
+    # The sdist and pure-Python wheel; compiled wheels come from wheels.yml.
     - name: Build distribution artifacts
+      env:
+        SERIF_RUST: "off"
       run: |
         python -m pip install --upgrade pip
         python -m pip install build twine
@@ -104,5 +176,6 @@ jobs:
 
     - name: Install and inspect wheel
       run: |
+        test -f dist/serif-*-py3-none-any.whl
         python -m pip install --force-reinstall --no-deps dist/*.whl
-        python -c "import importlib.metadata as m, serif; assert serif.__version__ == m.version('serif')"
+        python -c "import importlib.metadata as m, importlib.util, serif; assert serif.__version__ == m.version('serif'); assert importlib.util.find_spec('serif._rust') is None"

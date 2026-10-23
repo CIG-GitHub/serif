@@ -37,6 +37,16 @@ def invert(storage):
 
 def binary(storage, rhs, op_func, result_kind):
     """Run arithmetic accelerators in their explicit priority order."""
+    def rust_integer_binary():
+        from ._rust import operators
+
+        return operators.binop_storage(
+            storage,
+            rhs,
+            op_func,
+            result_kind,
+        )
+
     def arrow_float_division():
         from ._arrow import operators
 
@@ -67,7 +77,7 @@ def binary(storage, rhs, op_func, result_kind):
             result_kind,
         )
 
-    attempts = []
+    attempts = [rust_integer_binary]
     if op_func is operator.truediv:
         attempts.append(arrow_float_division)
     attempts.extend((
@@ -117,6 +127,16 @@ def take_pad_storage(storage, indices):
     from ._numpy import selection
 
     return selection.take_pad_storage(storage, indices)
+
+
+def sort_indices(storages, reverse_flags, na_last):
+    """Return a stable multi-key row order, or DECLINED."""
+    def rust_sort():
+        from ._rust import sort
+
+        return sort.sort_indices(storages, reverse_flags, na_last)
+
+    return first_supported(rust_sort)
 
 
 def popcount(storage):

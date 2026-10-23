@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools-rust>=1.9"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -55,3 +55,35 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The optional Rust extension (serif._rust) is configured in setup.py, which
+# reads SERIF_RUST=optional|required|off to decide whether to build it.
+
+# Compiled wheels (wheels.yml). The pure-Python wheel and sdist are built
+# separately with SERIF_RUST=off, so platforms without a compiled wheel
+# still install serif without needing a Rust toolchain.
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-win32 *-win_arm64 *_i686"
+environment = { SERIF_RUST = "required" }
+test-requires = ["pytest"]
+# Prove the extension loaded, then run the full suite against the wheel.
+test-command = [
+    "python -c \"import serif._rust\"",
+    "pytest {project}/tests -q",
+]
+
+[tool.cibuildwheel.linux]
+before-all = "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+environment = { SERIF_RUST = "required", PATH = "$HOME/.cargo/bin:$PATH" }
+
+[tool.cibuildwheel.macos]
+# Runners are arm64; also cross-compile Intel wheels (tested under Rosetta).
+archs = ["arm64", "x86_64"]
+before-all = "rustup target add aarch64-apple-darwin x86_64-apple-darwin"
+
+# Rust's x86_64 macOS target needs 10.12+, but older CPython installers ask
+# for 10.9, and delocate rejects a binary newer than the declared target.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { SERIF_RUST = "required", MACOSX_DEPLOYMENT_TARGET = "10.13" }

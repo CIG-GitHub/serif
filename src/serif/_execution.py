@@ -27,6 +27,15 @@ def _load_numpy():
     return numpy
 
 
+def _load_rust():
+    """Return Serif's compiled Rust kernels when built, otherwise None."""
+    try:
+        from . import _rust
+    except ImportError:
+        return None
+    return _rust
+
+
 def _load_arrow():
     """Return (pyarrow, pyarrow.compute) when installed, otherwise Nones."""
     try:

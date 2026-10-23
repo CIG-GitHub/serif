@@ -1,7 +1,9 @@
 """Stable Table sorting and coordinated row permutation."""
 
+from .._execution import DECLINED
 from ..errors import SerifTypeError
 from ..errors import SerifValueError
+from .._vector import dispatch as _vector_dispatch
 from .._vector.categorical import _CategoryStorage
 from .._vector.selection import take_storage
 from .._vector.storage import ArrayStorage
@@ -65,6 +67,28 @@ def _sort_value_getter(storage):
     return storage.__getitem__
 
 
+def _python_sort_indices(resolved, rev_flags, na_last, nrows):
+    """Canonical stable multi-key sort: apply keys from last to first."""
+    indices = list(range(nrows))
+    for column, rev in reversed(list(zip(resolved, rev_flags))):
+        get_value = _sort_value_getter(column._storage)
+
+        def key_fn(
+            index,
+            get_value=get_value,
+            rev=rev,
+            na_last=na_last,
+        ):
+            value = get_value(index)
+            # Compare on (flag, value): the shared null-flag rule keeps
+            # nulls last/first under BOTH sort directions; `value` is only
+            # compared among non-None values.
+            return (_null_sort_flag(value is None, rev, na_last), value)
+
+        indices.sort(key=key_fn, reverse=rev)
+    return indices
+
+
 def sort_by(table, by, reverse=False, na_last=True):
     """Return a new Table sorted by one or more keys."""
     Table = _table_class()
@@ -112,25 +136,13 @@ def sort_by(table, by, reverse=False, na_last=True):
         resolved.append(column)
 
     # --- 4. Build sorted row index using stable multi-key sort ---
-    indices = list(range(nrows))
-
-    # Stable sort: apply keys from last to first
-    for column, rev in reversed(list(zip(resolved, rev_flags))):
-        get_value = _sort_value_getter(column._storage)
-
-        def key_fn(
-            index,
-            get_value=get_value,
-            rev=rev,
-            na_last=na_last,
-        ):
-            value = get_value(index)
-            # Compare on (flag, value): the shared null-flag rule keeps
-            # nulls last/first under BOTH sort directions; `value` is only
-            # compared among non-None values.
-            return (_null_sort_flag(value is None, rev, na_last), value)
-
-        indices.sort(key=key_fn, reverse=rev)
+    indices = _vector_dispatch.sort_indices(
+        [column._storage for column in resolved],
+        rev_flags,
+        na_last,
+    )
+    if indices is DECLINED:
+        indices = _python_sort_indices(resolved, rev_flags, na_last, nrows)
 
     # --- 5. Rebuild columns in sorted order ---
     # Permute through the storage protocol: preserves each column's
