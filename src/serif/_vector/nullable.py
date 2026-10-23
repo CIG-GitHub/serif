@@ -107,8 +107,20 @@ class BitMask:
         return not (self._buf[idx >> 3] >> (idx & 7)) & 1
 
     def any_null(self) -> bool:
-        """Return True if at least one element is null."""
-        return any(self.is_null(i) for i in range(self._length))
+        """Return True if at least one element is null.
+
+        Whole bytes must be all-valid (0xFF); the last partial byte is
+        checked under a mask, since its padding bits carry no element and
+        an Arrow-sourced buffer may leave them set to anything.
+        """
+        full, rest = divmod(self._length, 8)
+        buf = self._buf
+        if buf.count(0xFF, 0, full) != full:
+            return True
+        if rest:
+            lanes = (1 << rest) - 1
+            return (buf[full] & lanes) != lanes
+        return False
 
     def __iter__(self) -> Iterator[bool]:
         """Yield True for each null position, False for each valid position."""
@@ -124,11 +136,24 @@ class BitMask:
         """Return a new BitMask covering the slice.
 
         Bits are repacked by element index: a byte-level slice of the packed
-        buffer would misalign every element whose bit position shifts, so the
-        slice is rebuilt one element at a time.
+        buffer would misalign every element whose bit position shifts. A
+        step-1 slice shifts the covering bytes as one Python int (LSB-first,
+        so a right shift by start & 7 realigns them) and masks off the
+        padding; any other step is rebuilt one element at a time.
         """
-        indices = range(*slc.indices(self._length))
-        return BitMask.from_iterable(self.is_null(i) for i in indices)
+        start, stop, step = slc.indices(self._length)
+        if step != 1:
+            indices = range(start, stop, step)
+            return BitMask.from_iterable(self.is_null(i) for i in indices)
+
+        length = max(0, stop - start)
+        nbytes = (length + 7) // 8
+        if not length:
+            return BitMask(bytearray(), 0)
+        covering = self._buf[start >> 3:(stop + 7) >> 3]
+        bits = int.from_bytes(covering, 'little') >> (start & 7)
+        bits &= (1 << length) - 1
+        return BitMask(bytearray(bits.to_bytes(nbytes, 'little')), length)
 
     # ------------------------------------------------------------------
     # Copy-on-write mutation
