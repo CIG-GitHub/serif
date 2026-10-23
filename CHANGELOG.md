@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.3.1 – 2026-10-23
+
+This release stores dates and datetimes as integer ticks, making date work
+fast end to end, and speeds up null tests, fills and membership tests.
+
+### Changed
+
+- `date` and `datetime` columns are now stored as integer ticks: days
+  since 1970-01-01 (int32) and microseconds since 1970-01-01 (int64), the
+  same encodings Arrow and Parquet use. Values still read back as Python
+  `date` and `datetime` objects. Comparisons, `is_in()`, sorting,
+  grouping, joins, `min()`/`max()`, `unique()`, filtering and whole-day
+  date arithmetic (`± int` or `timedelta`, `date - date`, `eomonth()`)
+  work on the integers, and Parquet reads and writes copy the tick
+  buffers directly.
+- A column holding a value that can't be stored exactly as a tick (a
+  timezone-aware datetime, a datetime with `fold=1`, or a `date` or
+  `datetime` subclass such as pandas `Timestamp`) keeps Python-object
+  storage and warns with a `UserWarning`. Values are unchanged.
+- A plain `date` in a column inferred as `datetime` is now stored as
+  midnight of that day, so it reads back as a `datetime`, matching
+  assignment and `fillna()`.
+- Comparing a date column with an ISO date string or a `datetime` now
+  sets the result's nullability from the column schemas, like every
+  other comparison.
+- Reading a Parquet file with a date or timestamp outside Python's range
+  (years 1–9999) now raises `SerifValueError` naming the column, at load,
+  with or without PyArrow installed.
+- `is_na()` reads the null bitmap for every masked column, unpacked by
+  NumPy when it is installed.
+- `fillna()` with a value of the column's own type writes it into the
+  null lanes with NumPy for int, float, bool, date and datetime columns.
+- `is_in()` runs NumPy for numeric and date columns and PyArrow for
+  string columns, with results identical to Python's `==`.
+- `Vector.filled()` builds its storage in bulk, and slicing a nullable
+  column no longer rebuilds its null mask one bit at a time.
+- The optional Rust kernels now sort on date and datetime keys and join
+  on date keys.
+
 ## 0.3.0 – 2026-10-22
 
 This release adds optional compiled Rust kernels with compiled wheels for
