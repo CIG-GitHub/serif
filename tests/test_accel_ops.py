@@ -177,5 +177,5 @@ def test_fast_path_engages_and_declines_where_designed(monkeypatch):
     Vector([1, None]) / Vector([2, 2])               # nullable: engages
     Vector([2**62, 2**62]) + Vector([2**62, 2**62])  # overflow: declines
     with pytest.raises(ZeroDivisionError):
-        Vector([1, 2]) / Vector([1, 0])              # semantic layer raises
-    assert engaged == [True, True, True, False]
+        Vector([1, 2]) / Vector([1, 0])              # declines; Python raises
+    assert engaged == [True, True, True, False, False]

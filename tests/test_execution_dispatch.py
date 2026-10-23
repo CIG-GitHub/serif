@@ -262,16 +262,62 @@ def test_backend_defects_propagate_without_fallback(monkeypatch):
     assert calls == ['numpy']
 
 
-def test_invalid_division_raises_before_backend_dispatch(monkeypatch):
-    def unexpected(*args):
-        raise AssertionError('invalid operation reached a backend')
+def test_invalid_division_raises_after_every_backend_declines(monkeypatch):
+    calls = []
 
-    monkeypatch.setattr(arrow_ops, 'div_floats', unexpected)
-    monkeypatch.setattr(numpy_ops, 'binop_storage', unexpected)
-    monkeypatch.setattr(arrow_ops, 'binop_ints', unexpected)
+    def declining(name):
+        def backend(*args):
+            calls.append(name)
+            return execution.DECLINED
+
+        return backend
+
+    monkeypatch.setattr(rust_ops, 'binop_storage', declining('rust'))
+    monkeypatch.setattr(arrow_ops, 'div_floats', declining('arrow_div'))
+    monkeypatch.setattr(numpy_ops, 'binop_storage', declining('numpy'))
+    monkeypatch.setattr(arrow_ops, 'binop_ints', declining('arrow_int'))
 
     with pytest.raises(ZeroDivisionError):
         Vector([1.0, 2.0]) / 0.0
+    assert calls == ['rust', 'arrow_div', 'numpy', 'arrow_int']
+
+
+_ZERO_DIVISOR_BACKENDS = {
+    'rust': rust_ops.binop_storage,
+    'numpy': numpy_ops.binop_storage,
+    'arrow_int': arrow_ops.binop_ints,
+    'arrow_div': arrow_ops.div_floats,
+}
+
+
+@pytest.mark.parametrize('backend', sorted(_ZERO_DIVISOR_BACKENDS))
+@pytest.mark.parametrize('op_func', [
+    operator.truediv,
+    operator.floordiv,
+    operator.mod,
+])
+@pytest.mark.parametrize('left, right, zero, kind', [
+    ([5, None, -7], [2, 4, 0], 0, int),
+    ([5.0, None, -7.5], [2.0, 4.0, 0.0], 0.0, float),
+    ([5.0, None, -7.5], [2.0, 4.0, -0.0], -0.0, float),
+    ([5, None, -7], [2.0, 4.0, 0.0], 0.0, float),
+])
+@pytest.mark.parametrize('shape', ['column', 'scalar'])
+def test_every_backend_declines_a_valid_zero_divisor(
+    backend, op_func, left, right, zero, kind, shape
+):
+    """The pure path's ZeroDivisionError scan runs only after the backends
+    decline, so none may ever compute a lane Python would refuse."""
+    if op_func is operator.truediv:
+        kind = float
+    rhs = Vector(right)._storage if shape == 'column' else zero
+    result = _ZERO_DIVISOR_BACKENDS[backend](
+        Vector(left)._storage,
+        rhs,
+        op_func,
+        kind,
+    )
+    assert result is execution.DECLINED
 
 
 def test_reduction_none_is_a_completed_backend_result(monkeypatch):
