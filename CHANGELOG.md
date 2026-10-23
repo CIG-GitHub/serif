@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 – 2026-10-22
+
+This release adds optional compiled Rust kernels with compiled wheels for
+every major platform, one-way freezing of Tables and Vectors, and stricter
+null semantics for `None` comparisons and boolean reductions.
+
+### Breaking Changes
+
+- Comparing a Vector against scalar `None` with `==` or `!=` now raises
+  `SerifTypeError` instead of warning and returning a missingness mask.
+  Use `v.is_na()` or `~v.is_na()` to test for missing values.
+- `all()` and `any()` now fold with Kleene logic instead of skipping nulls.
+  A known falsy element settles `all()` to `False` and a known truthy
+  element settles `any()` to `True`; otherwise any null makes the result
+  `None`. A nonempty all-null Vector returns `None` without a warning.
+  Empty input still returns the identity and warns
+  `SerifEmptyReductionWarning`, and `on_empty` now applies only to empty
+  input.
+- Errors and docs now call table-owned columns "read-only" instead of
+  "frozen", which now means only the permanent state set by `freeze()`.
+  Code that matches on the old error text needs updating.
+- A column named `freeze` or `frozen` now collides with the new reserved
+  names and gets a suffixed dot-access name, like other reserved names.
 
 ### Added
 
@@ -30,11 +52,16 @@
   pure Python, `required` fails the install if it cannot build, and `off`
   never builds it.
 
-- Errors and docs now call table-owned columns "read-only" instead of
-  "frozen", which now means only the permanent state set by `freeze()`.
-  Code that matches on the old error text needs updating.
-- A column named `freeze` or `frozen` now collides with the new reserved
-  names and gets a suffixed dot-access name, like other reserved names.
+### Fixed
+
+- `Table.sort_by()` now respects categorical ordering for categorical columns
+  and categorical Vector sort keys, including descending sorts and configurable
+  null placement.
+- `full_join()` on a key with the same name on both sides now fills the
+  de-duplicated key column from the right side on right-only rows, instead
+  of reporting those keys as null. Null keys still never match.
+- `sum()` on an empty Vector with no dtype now returns `0` instead of
+  raising.
 
 ### Performance
 
@@ -46,14 +73,6 @@
   divisors in Python before the accelerators run. Every backend declines
   a valid zero divisor, so the scan runs only on the pure-Python path,
   and `ZeroDivisionError` is raised exactly as before.
-
-## 0.2.3 – 2026-09-02
-
-### Fixed
-
-- `Table.sort_by()` now respects categorical ordering for categorical columns
-  and categorical Vector sort keys, including descending sorts and configurable
-  null placement.
 
 ## 0.2.2 – 2026-08-13
 
