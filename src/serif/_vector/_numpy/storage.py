@@ -3,8 +3,8 @@
 from . import _np
 
 
-# 'i' exists only as the transient int view over DateStorage day ticks
-# (see _vector/temporal.py); no public column holds ArrayStorage('i').
+# 'i' is int32, Arrow's width for date32 days (DateStorage ticks travel as
+# ArrayStorage('i') views; see _vector/temporal.py).
 NP_DTYPES = {'q': 'int64', 'd': 'float64', 'i': 'int32'}
 
 

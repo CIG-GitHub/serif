@@ -1,26 +1,22 @@
 """
-Tick-space fast paths for native date and datetime columns.
+Int-tick operands for native date and datetime columns.
 
 DateStorage and DatetimeStorage hold integer ticks (days / microseconds
-since 1970-01-01). Wherever an operation's meaning on dates is exactly its
-meaning on those ints, the column is viewed as a plain int column, an
-ArrayStorage over the same tick buffer, no copy, and the operation runs
-through the existing int machinery: optional accelerators, the pure loop,
-null handling, result types. Nothing new to keep conformant.
+since 1970-01-01). Where an operation means the same thing on those ints as
+on the dates, callers swap in a tick view, an ArrayStorage over the same
+buffer with no copy, and run their ordinary int code path unchanged.
 
-The fast paths take only operands whose Python semantics the ticks
-reproduce exactly: plain naive date/datetime values (and ISO strings, which
-_Date compares as dates). Everything else (timezone-aware datetimes,
-subclasses such as pandas Timestamp, mixed kinds Python refuses to order)
-DECLINES to the boxed Python path, whose behavior is the specification.
+These helpers only accept operands whose Python semantics the ticks
+reproduce exactly: same-kind native columns, plain dates, naive datetimes.
+They return None for anything else (timezone-aware datetimes, subclasses
+such as pandas Timestamp, mixed kinds), and the caller keeps its boxed
+path, whose behavior is the specification.
 """
 
 from array import array
 from datetime import date
 from datetime import datetime
 
-from .._execution import DECLINED
-from .dtype import Schema
 from .storage import ArrayStorage
 from .storage import DateStorage
 from .storage import DatetimeStorage
@@ -28,36 +24,9 @@ from .storage import _MICROS_PER_DAY
 from .storage import _TemporalStorage
 
 
-def _vector_class():
-    # Local import avoids a cycle while Vector delegates here.
-    from ..vector import Vector
-    return Vector
-
-
-def _tick_view(storage, widen=False):
-    """The column's ticks as int ArrayStorage; widen=True scales days to µs.
-
-    Widening rebuilds the buffer. Null lanes become 0 there: a file's null
-    lanes may hold any int32, which times a day of µs could overflow int64.
-    """
-    ticks = storage._ticks
-    mask = storage._mask
-    if not widen:
-        return ArrayStorage(ticks, mask)
-    if mask is None:
-        widened = array('q', (tick * _MICROS_PER_DAY for tick in ticks))
-    else:
-        widened = array('q', (
-            0 if mask.is_null(i) else tick * _MICROS_PER_DAY
-            for i, tick in enumerate(ticks)
-        ))
-    return ArrayStorage(widened, mask)
-
-
-def _int_vector(vector, view):
-    Vector = _vector_class()
-    nullable = vector._dtype.nullable if vector._dtype is not None else True
-    return Vector._from_storage(view, Schema(int, nullable))
+def tick_view(storage):
+    """The column's ticks as int ArrayStorage, sharing buffer and mask."""
+    return ArrayStorage(storage._ticks, storage._mask)
 
 
 def _naive_micros(value):
@@ -70,92 +39,67 @@ def _naive_micros(value):
     return DatetimeStorage._unbox(value)
 
 
-def _scalar_ticks(storage, value):
-    """Return (tick, widen) for a scalar comparable in tick space, or None.
-
-    widen=True means the tick is in µs and a date column must scale up to
-    meet it: a date compares as midnight against a datetime, as _Date does.
-    """
+def _scalar_tick(storage, value):
     if isinstance(storage, DateStorage):
-        vtype = type(value)
-        if vtype is date:
-            return DateStorage._unbox(value), False
-        if vtype is str:
-            return DateStorage._unbox(date.fromisoformat(value)), False
-        micros = _naive_micros(value)
-        if micros is not None:
-            return micros, True
+        if type(value) is date:
+            return DateStorage._unbox(value)
         return None
-    micros = _naive_micros(value)
-    if micros is not None:
-        return micros, False
+    return _naive_micros(value)
+
+
+def tick_pair(left, right):
+    """Tick views for two same-kind native columns, or None."""
+    if (isinstance(left, _TemporalStorage)
+            and type(left) is type(right)):
+        return tick_view(left), tick_view(right)
     return None
 
 
-def compare(vector, other, op):
-    """Compare a native temporal column in tick space, or DECLINE."""
-    storage = vector._storage
+def tick_scalar(storage, value):
+    """(tick view, int tick) for a native column and a matching scalar."""
     if not isinstance(storage, _TemporalStorage):
-        return DECLINED
-    Vector = _vector_class()
-
-    if isinstance(other, Vector):
-        other_storage = other._storage
-        if (other.ndims() > 1
-                or len(other) != len(vector)
-                or not isinstance(other_storage, _TemporalStorage)):
-            return DECLINED
-        if type(storage) is type(other_storage):
-            left = _tick_view(storage)
-            right = _tick_view(other_storage)
-        elif isinstance(storage, DateStorage):
-            # date vs datetime column: the date side is midnight.
-            left = _tick_view(storage, widen=True)
-            right = _tick_view(other_storage)
-        else:
-            # datetime vs date: Python returns False for == and refuses
-            # to order them; keep the boxed path's exact behavior.
-            return DECLINED
-        return _int_vector(vector, left)._elementwise_compare(
-            _int_vector(other, right), op)
-
-    scalar = _scalar_ticks(storage, other)
-    if scalar is None:
-        return DECLINED
-    tick, widen = scalar
-    left = _tick_view(storage, widen=widen)
-    return _int_vector(vector, left)._elementwise_compare(tick, op)
+        return None
+    tick = _scalar_tick(storage, value)
+    if tick is None:
+        return None
+    return tick_view(storage), tick
 
 
-def is_in(vector, members, match_null):
-    """Membership in tick space, or DECLINE.
+def member_ticks(storage, members):
+    """The set of member ticks for is_in on a native column, or None.
 
-    `members` are the non-None members, already screened for the dead-member
-    warning by the caller. Members Python can never find equal here (a
-    datetime in a date column, a date or aware datetime in a datetime
-    column) drop out. Any member that isn't an exact date/datetime declines,
-    keeping subclass and custom-__eq__ semantics on the boxed path.
+    Members Python never finds equal here (a datetime in a date column, a
+    date or aware datetime in a datetime column) drop out. Any member that
+    isn't an exact date/datetime returns None, keeping subclass and
+    custom-__eq__ semantics on the boxed path.
     """
-    storage = vector._storage
     if not isinstance(storage, _TemporalStorage):
-        return DECLINED
-
-    is_date_column = isinstance(storage, DateStorage)
+        return None
     ticks = set()
     for member in members:
-        mtype = type(member)
-        if mtype is date:
-            if is_date_column:
-                ticks.add(DateStorage._unbox(member))
-        elif mtype is datetime:
-            if not is_date_column:
-                micros = _naive_micros(member)
-                if micros is not None:
-                    ticks.add(micros)
-        else:
-            return DECLINED
+        if type(member) not in (date, datetime):
+            return None
+        tick = _scalar_tick(storage, member)
+        if tick is not None:
+            ticks.add(tick)
+    return ticks
 
-    tick_members = sorted(ticks)
-    if match_null:
-        tick_members.append(None)
-    return _int_vector(vector, _tick_view(storage)).is_in(tick_members)
+
+def at_midnight(storage):
+    """DateStorage days scaled to DatetimeStorage µs, or None.
+
+    Null lanes become 0: a file's null lanes may hold any int32, which times
+    a day of µs could overflow int64.
+    """
+    if not isinstance(storage, DateStorage):
+        return None
+    ticks = storage._ticks
+    mask = storage._mask
+    if mask is None:
+        micros = array('q', (tick * _MICROS_PER_DAY for tick in ticks))
+    else:
+        micros = array('q', (
+            0 if mask.is_null(i) else tick * _MICROS_PER_DAY
+            for i, tick in enumerate(ticks)
+        ))
+    return DatetimeStorage(micros, mask)

@@ -172,11 +172,6 @@ def elementwise_compare(vector, other, op):
     if isinstance(other, Vector) and other.ndims() > 1:
         return other._lift_comparison_from(vector, op)
 
-    # Native date/datetime columns compare as their int ticks.
-    fast = _temporal.compare(vector, other, op)
-    if fast is not DECLINED:
-        return fast
-
     # Element-wise: unknown in, unknown out (docs/null-semantics.md).
     if isinstance(other, Vector):
         if len(vector) != len(other):
@@ -188,11 +183,19 @@ def elementwise_compare(vector, other, op):
             (vector._dtype.nullable if vector._dtype is not None else True)
             or (other_schema.nullable if other_schema is not None else True)
         )
-        fast = _dispatch.compare(vector._storage, other._storage, op)
+        # Native date/datetime columns of one kind compare as int ticks.
+        ticks = _temporal.tick_pair(vector._storage, other._storage)
+        if ticks is not None:
+            left, right = ticks
+        else:
+            left, right = vector._storage, other._storage
+        fast = _dispatch.compare(left, right, op)
         if fast is not DECLINED:
             return _wrap_storage(fast, Schema(bool, nullable))
+        if ticks is None:
+            left, right = vector, other
         return _wrap_storage(
-            _python_ops.compare_vector(vector, other, op),
+            _python_ops.compare_vector(left, right, op),
             Schema(bool, nullable),
         )
 
@@ -217,11 +220,16 @@ def elementwise_compare(vector, other, op):
         (vector._dtype.nullable if vector._dtype is not None else True)
         or other is None
     )
-    fast = _dispatch.compare(vector._storage, other, op)
+    # A native date/datetime column and a matching scalar compare as ticks.
+    storage, rhs = vector._storage, other
+    ticks = _temporal.tick_scalar(storage, other)
+    if ticks is not None:
+        storage, rhs = ticks
+    fast = _dispatch.compare(storage, rhs, op)
     if fast is not DECLINED:
         return _wrap_storage(fast, Schema(bool, nullable))
     return _wrap_storage(
-        _python_ops.compare_scalar(vector._storage, other, op),
+        _python_ops.compare_scalar(storage, rhs, op),
         Schema(bool, nullable),
     )
 

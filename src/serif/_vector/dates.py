@@ -5,60 +5,47 @@ from .element_api import _elementwise_property
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-from collections.abc import Iterable
-from .._execution import DECLINED
+from .dtype import Schema
 from ..errors import SerifValueError
 
 
 class _Date(Vector):
     def _elementwise_compare(self, other, op):
-        # Unknown in, unknown out (docs/null-semantics.md). Also note:
-        # dates promote to midnight via datetime.min.time() when compared
-        # against datetimes.
+        # A date compares as the date an ISO string names, and as midnight
+        # against a datetime. Rewrite whichever side needs it, then compare
+        # like kinds through the base path (docs/null-semantics.md), where
+        # native storage compares as int ticks.
         other = self._check_duplicate(other)
 
-        # Native storage compares as int ticks, including the str and
-        # datetime promotions below; anything it declines takes them boxed.
-        fast = _temporal.compare(self, other, op)
-        if fast is not DECLINED:
-            return fast
-
-        def _wrap(vals):
-            return Vector._from_iterable_known_kind(vals, bool)
-
-        if isinstance(other, Vector):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            if other.schema() is not None and other.schema().kind is str:
-                return _wrap(
-                    None if (x is None or y is None) else bool(op(x, date.fromisoformat(y)))
-                    for x, y in zip(self, other, strict=True)
+        if isinstance(other, Vector) and other.ndims() == 1:
+            schema = other.schema()
+            kind = schema.kind if schema is not None else None
+            if kind is str:
+                other = Vector._from_iterable_known_dtype(
+                    (None if y is None else date.fromisoformat(y)
+                     for y in other),
+                    Schema(date, schema.nullable),
                 )
-            if other.schema() is not None and other.schema().kind is datetime:
-                return _wrap(
-                    None if (x is None or y is None) else bool(op(datetime.combine(x, datetime.min.time()), y))
-                    for x, y in zip(self, other, strict=True)
-                )
-        elif isinstance(other, Iterable) and not isinstance(other, (str, bytes, bytearray)):
-            if len(self) != len(other):
-                raise SerifValueError(f"Length mismatch: {len(self)} != {len(other)}")
-            return _wrap(
-                None if (x is None or y is None) else bool(op(x, y))
-                for x, y in zip(self, other, strict=True)
-            )
+            elif kind is datetime:
+                return self._at_midnight()._elementwise_compare(other, op)
         elif isinstance(other, str):
-            rhs = date.fromisoformat(other)
-            return _wrap(
-                None if x is None else bool(op(x, rhs))
-                for x in self
-            )
+            other = date.fromisoformat(other)
         elif isinstance(other, datetime):
-            return _wrap(
-                None if x is None else bool(op(datetime.combine(x, datetime.min.time()), other))
-                for x in self
-            )
-        # finally,
+            return self._at_midnight()._elementwise_compare(other, op)
         return super()._elementwise_compare(other, op)
+
+    def _at_midnight(self):
+        """This column as datetimes at midnight, same name and nullability."""
+        dtype = Schema(datetime, self._dtype.nullable)
+        storage = _temporal.at_midnight(self._storage)
+        if storage is not None:
+            return Vector._from_storage(storage, dtype, name=self._name)
+        return Vector._from_iterable_known_dtype(
+            (None if x is None else datetime.combine(x, datetime.min.time())
+             for x in self),
+            dtype,
+            name=self._name,
+        )
 
     def __add__(self, other):
         """ adding integers is adding days """

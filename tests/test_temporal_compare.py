@@ -151,6 +151,41 @@ def test_operators_route_through_ticks(backend, no_boxing):
         assert list(v == v) == [True, None, True, True, True]
 
 
+@pytest.mark.parametrize("op", OPS, ids=OP_IDS)
+def test_iso_string_vector_compares_as_dates(backend, no_boxing, op):
+    strings = ['2024-01-02', '2000-01-01', None, '1970-01-01', '2025-01-01']
+    v, s = Vector(DATES), Vector(strings)
+    expected = _expected(DATES, OTHER_DATES, op)
+
+    with no_boxing():
+        result = v._elementwise_compare(s, op)
+
+    assert list(result) == expected
+    assert result.schema() == Schema(bool, True)
+
+
+@pytest.mark.parametrize(
+    "other",
+    ['2024-01-02', datetime(2024, 1, 2), date(2024, 1, 2)],
+    ids=['str', 'datetime', 'date'],
+)
+def test_result_nullability_follows_the_schemas(backend, other):
+    # Declared nullable but holding no nulls: the result is nullable too,
+    # for every operand kind, as with every other comparison.
+    v = Vector([date(2024, 1, 2)], dtype=Schema(date, True))
+
+    assert (v == other).schema() == Schema(bool, True)
+    assert (Vector([date(2024, 1, 2)]) == other).schema() == Schema(bool, False)
+
+
+def test_fallback_date_column_still_compares_at_midnight(backend):
+    with pytest.warns(UserWarning, match='not a plain date'):
+        v = Vector([date(2024, 1, 1), _SubDate(2024, 1, 2)])
+
+    assert list(v == datetime(2024, 1, 2)) == [False, True]
+    assert list(v < datetime(2024, 1, 1, 12)) == [True, False]
+
+
 def test_widening_ignores_garbage_in_null_lanes(backend):
     # A file's null lanes may hold any int32; scaled to µs that overflows
     # int64. Widening must zero them, not multiply them.

@@ -253,13 +253,14 @@ def is_in(vector, members):
         lookup = valid  # linear membership: plain Python `in`, plain `==`
 
     # Native date/datetime columns look their members up as int ticks.
-    fast = _temporal.is_in(vector, valid, match_null)
-    if fast is not DECLINED:
-        return fast
+    values = vector
+    ticks = _temporal.member_ticks(vector._storage, valid)
+    if ticks is not None:
+        values, lookup = _temporal.tick_view(vector._storage), ticks
 
     result = []
     saw_null = False
-    for value in vector:
+    for value in values:
         if value is None:
             if match_null:
                 result.append(True)
