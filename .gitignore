@@ -4,6 +4,10 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+# setuptools-rust stages builds as *.pyd~ / *.so~; a locked extension
+# on Windows leaves the staged copy behind
+*.pyd~
+*.so~
 .Python
 
 # Testing artifacts
