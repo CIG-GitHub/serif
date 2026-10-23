@@ -149,3 +149,9 @@ def null_bytes(mask, n):
     from ._numpy import storage
 
     return storage.null_bytes(mask, n)
+
+
+def fill_nulls(storage, fill):
+    from ._numpy import transforms
+
+    return transforms.fill_nulls(storage, fill)

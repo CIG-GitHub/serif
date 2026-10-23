@@ -107,9 +107,10 @@ def fillna(vector, value):
     dtype = vector.schema()
     Vector = _vector_class()
 
+    fill = None
     if dtype is not None and value is not None:
         try:
-            validate_scalar(value, dtype)
+            fill = validate_scalar(value, dtype)
         except TypeError:
             required_dtype = infer_dtype([value])
             try:
@@ -150,6 +151,16 @@ def fillna(vector, value):
         vector._dtype.nullable if vector._dtype is not None else True
     )
     new_dtype = None if dtype is None else Schema(dtype.kind, new_nullable)
+
+    # A same-kind fill writes the fill lane into the null lanes directly.
+    storage = vector._storage
+    if fill is not None and isinstance(storage, _TemporalStorage):
+        fill = storage._unbox(fill)   # None when it has no exact tick
+    if fill is not None:
+        fast = _dispatch.fill_nulls(storage, fill)
+        if fast is not DECLINED:
+            return Vector._from_storage(fast, new_dtype, name=vector._name)
+
     values = (
         value if item is None else item
         for item in vector._storage
