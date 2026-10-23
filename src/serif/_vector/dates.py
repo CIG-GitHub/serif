@@ -5,8 +5,40 @@ from .element_api import _elementwise_property
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
+from itertools import repeat
 from .dtype import Schema
 from ..errors import SerifValueError
+
+
+def _day_offsets(other, sign, n):
+    """Per-lane whole-day offsets for `date ± other`, or None.
+
+    `other` is an int or timedelta, scalar or typed column of length n.
+    Python's date arithmetic counts only a timedelta's .days, both ways:
+    `date - td` is `date + timedelta(-td.days)`. So a negative sub-day
+    timedelta still moves the date (its .days is -1), while
+    `date - timedelta(hours=1)` leaves it where it is.
+    """
+    def days(value):
+        if isinstance(value, timedelta):
+            return sign * value.days
+        return sign * value
+
+    if isinstance(other, Vector):
+        schema = other.schema()
+        if (schema is None or schema.kind not in (int, timedelta)
+                or len(other) != n):
+            return None
+        return (None if value is None else days(value)
+                for value in other._storage)
+    if isinstance(other, (int, timedelta)):
+        return repeat(days(other), n)
+    return None
+
+
+def _wrap(storage, kind):
+    """A tick-path result, nullable only where nulls actually landed."""
+    return Vector._from_storage(storage, Schema(kind, storage._mask is not None))
 
 
 class _Date(Vector):
@@ -49,6 +81,14 @@ class _Date(Vector):
 
     def __add__(self, other):
         """ adding integers is adding days """
+        # Native storage moves its day ticks; anything the tick path
+        # declines (or that leaves the date range) takes the boxed path.
+        offsets = _day_offsets(other, 1, len(self))
+        if offsets is not None:
+            storage = _temporal.shift_days(self._storage, offsets)
+            if storage is not None:
+                return _wrap(storage, date)
+
         if isinstance(other, Vector) and other.schema() is not None:
             other_kind = other.schema().kind
             if other_kind in (int, timedelta):
@@ -91,6 +131,10 @@ class _Date(Vector):
 
     def __radd__(self, other):
         if isinstance(other, timedelta):
+            storage = _temporal.shift_days(
+                self._storage, _day_offsets(other, 1, len(self)))
+            if storage is not None:
+                return _wrap(storage, date)
             return Vector._from_iterable_known_kind(
                 (
                     other + s if s is not None else None
@@ -110,6 +154,25 @@ class _Date(Vector):
         datetime vectors are NOT _Date and keep Python's timedelta
         semantics — subsecond precision matters there.
         """
+        # Native storage works on day ticks; anything the tick path
+        # declines (or that leaves the date range) takes the boxed path.
+        if isinstance(other, Vector):
+            schema = other.schema()
+            if (schema is not None and schema.kind is date
+                    and len(other) == len(self)):
+                storage = _temporal.days_between(self._storage, other._storage)
+                if storage is not None:
+                    return _wrap(storage, int)
+        else:
+            storage = _temporal.days_between(self._storage, other)
+            if storage is not None:
+                return _wrap(storage, int)
+        offsets = _day_offsets(other, -1, len(self))
+        if offsets is not None:
+            storage = _temporal.shift_days(self._storage, offsets)
+            if storage is not None:
+                return _wrap(storage, date)
+
         if isinstance(other, Vector) and other.schema() is not None:
             other_kind = other.schema().kind
             if other_kind in (int, timedelta, date):
@@ -173,6 +236,9 @@ class _Date(Vector):
     def __rsub__(self, other):
         """date_scalar - datevec → int days (same whole-day algebra)."""
         if isinstance(other, date) and not isinstance(other, datetime):
+            storage = _temporal.days_between(self._storage, other, reverse=True)
+            if storage is not None:
+                return _wrap(storage, int)
             return Vector._from_iterable_known_kind(
                 (
                     (other - s).days if s is not None else None
@@ -183,6 +249,10 @@ class _Date(Vector):
         return super().__rsub__(other)
 
     def eomonth(self):
+        storage = _temporal.month_ends(self._storage)
+        if storage is not None:
+            return _wrap(storage, date)
+
         def values():
             for d in self._storage:
                 if d is None:

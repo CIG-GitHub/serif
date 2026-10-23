@@ -1,5 +1,5 @@
 """
-Int-tick operands for native date and datetime columns.
+Int-tick helpers for native date and datetime columns.
 
 DateStorage and DatetimeStorage hold integer ticks (days / microseconds
 since 1970-01-01). Where an operation means the same thing on those ints as
@@ -16,7 +16,10 @@ path, whose behavior is the specification.
 from array import array
 from datetime import date
 from datetime import datetime
+from itertools import repeat
 
+from .nullable import _BitMaskBuilder
+from .storage import ArrayStorage
 from .storage import DateStorage
 from .storage import DatetimeStorage
 from .storage import _MICROS_PER_DAY
@@ -77,6 +80,96 @@ def member_ticks(storage, members):
         if tick is not None:
             ticks.add(tick)
     return ticks
+
+
+def shift_days(storage, offsets):
+    """DateStorage moved by whole-day `offsets`, or None.
+
+    `offsets` yields one int (or None, giving null) per lane. Returns None
+    for non-native storage, or as soon as a result leaves Python's date
+    range, so the caller's boxed path runs and raises the error it always
+    has. Nullability follows the actual nulls, as the boxed path's does.
+    """
+    if not isinstance(storage, DateStorage):
+        return None
+    low, high = DateStorage._MIN_TICK, DateStorage._MAX_TICK
+    mask = storage._mask
+    ticks = array(DateStorage._TYPECODE)
+    validity = _BitMaskBuilder()
+    for i, (tick, offset) in enumerate(zip(storage._ticks, offsets)):
+        if offset is None or (mask is not None and mask.is_null(i)):
+            ticks.append(0)
+            validity.append(True)
+            continue
+        moved = tick + offset
+        if not low <= moved <= high:
+            return None
+        ticks.append(moved)
+        validity.append(False)
+    return DateStorage(ticks, validity.finish())
+
+
+def days_between(storage, other, reverse=False):
+    """Whole days `storage - other` as int ArrayStorage, or None.
+
+    `other` is a DateStorage of the same length or a plain date scalar;
+    reverse=True gives `other - storage`. None for anything else, leaving
+    subclasses and fallback columns to the boxed path.
+    """
+    if not isinstance(storage, DateStorage):
+        return None
+    if isinstance(other, DateStorage):
+        others, other_mask = other._ticks, other._mask
+    else:
+        tick = _scalar_tick(storage, other)
+        if tick is None:
+            return None
+        others, other_mask = repeat(tick), None
+    mask = storage._mask
+    days = array('q')
+    validity = _BitMaskBuilder()
+    for i, (tick, other_tick) in enumerate(zip(storage._ticks, others)):
+        if ((mask is not None and mask.is_null(i))
+                or (other_mask is not None and other_mask.is_null(i))):
+            days.append(0)
+            validity.append(True)
+            continue
+        days.append(other_tick - tick if reverse else tick - other_tick)
+        validity.append(False)
+    return ArrayStorage(days, validity.finish())
+
+
+def month_ends(storage):
+    """DateStorage of each date's last day of its month, or None.
+
+    Each date boxes once to read its year and month; the month-end tick is
+    computed once per distinct month. December 9999 has no next month to
+    back up from: None, so the boxed path raises as it always has.
+    """
+    if not isinstance(storage, DateStorage):
+        return None
+    ends = {}
+    mask = storage._mask
+    ticks = array(DateStorage._TYPECODE)
+    validity = _BitMaskBuilder()
+    for i, tick in enumerate(storage._ticks):
+        if mask is not None and mask.is_null(i):
+            ticks.append(0)
+            validity.append(True)
+            continue
+        day = DateStorage._box(tick)
+        month = (day.year, day.month)
+        end = ends.get(month)
+        if end is None:
+            year, number = month
+            if year == date.max.year and number == 12:
+                return None
+            first_of_next = date(year + number // 12, number % 12 + 1, 1)
+            end = DateStorage._unbox(first_of_next) - 1
+            ends[month] = end
+        ticks.append(end)
+        validity.append(False)
+    return DateStorage(ticks, validity.finish())
 
 
 def at_midnight(storage):
