@@ -166,5 +166,5 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     assert calls == [True, True, True]
 
     calls.clear()
-    Vector([date(2026, 1, 1)])[Vector([True])]  # TupleStorage → declines
+    Vector([date(2026, 1, 1)])[Vector([True])]  # DateStorage: no accel yet → declines
     assert calls == [False]

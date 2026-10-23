@@ -73,7 +73,7 @@ def test_conformance_exact(vf, op):
 
 
 def test_date_minmax_declines_to_pure():
-    # Dates decline (TupleStorage): min/max still work through the pure
+    # Dates decline (DateStorage, no accel yet): min/max work through the pure
     # path; sum/mean raise there for dates, which is the pure behavior too.
     v = Vector([date(2026, 1, 2), date(2026, 1, 1)])
     assert v.max() == date(2026, 1, 2) == _pure(lambda: v.max())

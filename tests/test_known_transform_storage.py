@@ -11,6 +11,8 @@ from serif import SerifValueError
 from serif import Vector
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
+from serif._vector.storage import DateStorage
+from serif._vector.storage import DatetimeStorage
 from serif._vector.storage import StringStorage
 from serif._vector.storage import TupleStorage
 
@@ -74,10 +76,10 @@ def test_fixed_date_elements_emit_known_storage():
     assert list(formatted) == ['2024-02-10', None]
     assert isinstance(ordinals._storage, ArrayStorage)
     assert list(ordinals) == [date(2024, 2, 10).toordinal(), None]
-    assert isinstance(replaced._storage, TupleStorage)
+    assert isinstance(replaced._storage, DateStorage)
     assert replaced.schema() == Schema(date, True)
     assert list(replaced) == [date(2024, 2, 1), None]
-    assert isinstance(month_ends._storage, TupleStorage)
+    assert isinstance(month_ends._storage, DateStorage)
     assert list(month_ends) == [date(2024, 2, 29), None]
 
 
@@ -88,7 +90,7 @@ def test_known_date_arithmetic_and_special_comparisons_emit_storage():
     days = dates - date(2024, 1, 1)
     compared = dates == '2024-01-02'
 
-    assert isinstance(shifted._storage, TupleStorage)
+    assert isinstance(shifted._storage, DateStorage)
     assert shifted.schema() == Schema(date, True)
     assert list(shifted) == [date(2024, 1, 3), None]
     assert isinstance(days._storage, ArrayStorage)
@@ -142,12 +144,12 @@ def test_fillna_builds_known_storage_for_same_kind_and_promotion():
     assert list(promoted) == [1.0, 2.5, 3.0]
 
 
-def test_fillna_date_to_datetime_promotion_builds_tuple_storage():
+def test_fillna_date_to_datetime_promotion_builds_datetime_storage():
     source = Vector([date(2024, 1, 1), None])
 
     result = source.fillna(datetime(2024, 1, 2, 12))
 
-    assert isinstance(result._storage, TupleStorage)
+    assert isinstance(result._storage, DatetimeStorage)
     assert result.schema() == Schema(datetime, False)
     assert list(result) == [
         datetime(2024, 1, 1),

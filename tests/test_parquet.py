@@ -24,6 +24,8 @@ from serif._vector.dtype import Schema
 from serif._vector.nullable import BitMask
 from serif._vector.storage import ArrayStorage
 from serif._vector.storage import BoolStorage
+from serif._vector.storage import DateStorage
+from serif._vector.storage import DatetimeStorage
 from serif._vector.storage import DecimalStorage
 from serif._vector.storage import StringStorage
 from serif._vector.storage import TupleStorage
@@ -944,10 +946,11 @@ class TestWriterCharacterization:
             'amount': [Decimal('1.25'), None, Decimal('-2.50')],
         }
         table = Table(expected)
-        assert all(
-            type(table[name]._storage) is TupleStorage
-            for name in expected
-        )
+        assert [type(table[name]._storage) for name in expected] == [
+            DateStorage,
+            DatetimeStorage,
+            TupleStorage,
+        ]
         path = tmp_path / 'object-backed.parquet'
         calls = []
         original = parquet_mod._encode_object_storage_plain

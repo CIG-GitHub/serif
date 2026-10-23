@@ -46,6 +46,8 @@ from .._vector.selection import filter_storage as _filter_storage
 from .._vector.storage import (
     ArrayStorage,
     BoolStorage,
+    DateStorage,
+    DatetimeStorage,
     DecimalStorage,
     StringStorage,
     TupleStorage,
@@ -594,7 +596,7 @@ def _encode_storage_def_levels(storage) -> bytes:
     if mask is not marker:
         return _encode_mask_def_levels(mask, len(storage))
 
-    # Dates, datetimes, and source Decimal columns intentionally use
+    # Fallback date/datetime columns and source Decimal columns use
     # TupleStorage, where None is inline instead of represented by BitMask.
     nrows = len(storage)
     packed = bytearray((nrows + 7) // 8)
@@ -769,7 +771,8 @@ def _encode_storage_plain(storage, kind: type, col_name: str,
         return _encode_bool_storage_plain(storage)
     if kind is _Decimal and isinstance(storage, DecimalStorage):
         return _encode_decimal_storage_plain(storage)
-    if isinstance(storage, TupleStorage) and kind in (
+    if isinstance(storage, (
+            TupleStorage, DateStorage, DatetimeStorage)) and kind in (
             _date, _datetime, _Decimal):
         return _encode_object_storage_plain(
             storage, kind, col_name, decimal_scale)
@@ -1003,15 +1006,15 @@ def _col_parquet_type(col, col_name: str):
         return _T_BYTE_ARRAY, _CT_UTF8, rep, None, None
 
     if kind is _date:
-        if not isinstance(st, TupleStorage):
+        if not isinstance(st, (DateStorage, TupleStorage)):
             _raise_incompatible_parquet_storage(
-                col_name, kind, st, 'TupleStorage')
+                col_name, kind, st, 'DateStorage or TupleStorage')
         return _T_INT32, _CT_DATE, rep, None, None
 
     if kind is _datetime:
-        if not isinstance(st, TupleStorage):
+        if not isinstance(st, (DatetimeStorage, TupleStorage)):
             _raise_incompatible_parquet_storage(
-                col_name, kind, st, 'TupleStorage')
+                col_name, kind, st, 'DatetimeStorage or TupleStorage')
         return _T_INT64, _CT_TIMESTAMP_MICROS, rep, None, None
 
     if kind is _Decimal:
@@ -2124,6 +2127,8 @@ def _combine_columns(columns, meta):
         BoolStorage,
         StringStorage,
         DecimalStorage,
+        DateStorage,
+        DatetimeStorage,
         TupleStorage,
     )
     if not any(

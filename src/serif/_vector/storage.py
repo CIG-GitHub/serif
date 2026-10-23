@@ -29,7 +29,11 @@ allowed ONLY behind an isinstance() check of the concrete class — a bare
 """
 
 from __future__ import annotations
+import warnings
 from array import array
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
 from itertools import chain
 from typing import Any
 from typing import Iterator
@@ -662,6 +666,236 @@ class DecimalStorage:
         return tuple(self)
 
 
+# ---------------------------------------------------------------------------
+# DateStorage / DatetimeStorage — integer ticks since the Unix epoch
+# ---------------------------------------------------------------------------
+
+_EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
+_EPOCH_DATETIME = datetime(1970, 1, 1)
+_MICROS_PER_DAY = 86_400_000_000
+
+
+class _TemporalStorage:
+    """
+    Shared body for fixed-width temporal storage: one integer tick per
+    element in an array.array, nulls in a separate BitMask (the ArrayStorage
+    split). Null positions hold a 0 tick as sentinel.
+
+    The ticks are Arrow's and Parquet's own encodings (date32 / DATE,
+    timestamp[us] / TIMESTAMP_MICROS), and every plain Python value fits, so
+    the round trip is lossless. Values with no exact tick (timezone-aware or
+    fold=1 datetimes, date/datetime subclasses) never land here: the builder
+    degrades the whole column to TupleStorage instead.
+
+    The buffer is named _ticks, not _data, on purpose: accelerators that
+    view ArrayStorage._data as plain numbers must never pick temporal
+    columns up by attribute shape. They opt in by isinstance.
+
+    Subclasses set _KIND, _TYPECODE, and the scalar conversions _box
+    (tick -> Python value) and _unbox (Python value -> tick, or None when the
+    value has no exact tick).
+    """
+
+    __slots__ = ('_ticks', '_mask')
+
+    def __init__(self, ticks: array, mask: BitMask | None = None):
+        self._ticks = ticks
+        self._mask = mask
+
+    def __len__(self) -> int:
+        return len(self._ticks)
+
+    def __bool__(self) -> bool:
+        return len(self._ticks) > 0
+
+    def __getitem__(self, idx: int) -> Any:
+        if self._mask is not None and self._mask.is_null(idx):
+            return None
+        return self._box(self._ticks[idx])
+
+    def __iter__(self) -> Iterator[Any]:
+        box = self._box
+        mask = self._mask
+        if mask is None:
+            yield from map(box, self._ticks)
+        else:
+            for i, tick in enumerate(self._ticks):
+                yield None if mask.is_null(i) else box(tick)
+
+    def is_null(self, idx: int) -> bool:
+        return self._mask is not None and self._mask.is_null(idx)
+
+    def slice(self, slc: slice) -> _TemporalStorage:
+        new_ticks = self._ticks[slc]
+        new_mask = self._mask[slc] if self._mask is not None else None
+        return type(self)(new_ticks, new_mask)
+
+    def take(self, indices) -> _TemporalStorage:
+        ticks = self._ticks
+        mask = self._mask
+        new_ticks = array(self._TYPECODE)
+        validity = _BitMaskBuilder()
+        for i in indices:
+            new_ticks.append(ticks[i])
+            validity.append(mask is not None and mask.is_null(i))
+        return type(self)(new_ticks, validity.finish())
+
+    def take_pad(self, indices) -> _TemporalStorage:
+        """Gather positions, treating negative indices as null padding."""
+        ticks = self._ticks
+        mask = self._mask
+        new_ticks = array(self._TYPECODE)
+        validity = _BitMaskBuilder()
+        for i in indices:
+            if i < 0:
+                new_ticks.append(0)
+                validity.append(True)
+            else:
+                new_ticks.append(ticks[i])
+                validity.append(mask is not None and mask.is_null(i))
+        return type(self)(new_ticks, validity.finish())
+
+    def to_tuple(self) -> tuple:
+        return tuple(self)
+
+    def private_copy(self) -> _TemporalStorage:
+        """Same values, freshly-owned buffers (see ArrayStorage.private_copy)."""
+        mask = (BitMask(bytearray(self._mask._buf), len(self._mask))
+                if self._mask is not None else None)
+        return type(self)(array(self._TYPECODE, self._ticks), mask)
+
+    def write_inplace(self, updates) -> bool:
+        """Point writes into the tick buffer (see ArrayStorage.write_inplace).
+
+        DECLINES when any value has no exact tick; the rebuild path then
+        degrades the column to TupleStorage. All-or-nothing: every value is
+        converted before the first write.
+        """
+        unbox = self._unbox
+        tick_updates = []
+        for idx, v in updates:
+            if v is None:
+                tick_updates.append((idx, None))
+                continue
+            tick = unbox(v)
+            if tick is None:
+                return False
+            tick_updates.append((idx, tick))
+
+        mask = self._mask
+        if mask is None and any(t is None for _, t in tick_updates):
+            mask = BitMask.from_size(len(self._ticks))
+            self._mask = mask
+        ticks = self._ticks
+        for idx, tick in tick_updates:
+            if tick is None:
+                ticks[idx] = 0         # sentinel — position is masked
+                mask.set_null(idx)
+            else:
+                ticks[idx] = tick
+                if mask is not None:
+                    mask.set_valid(idx)
+        return True
+
+
+class DateStorage(_TemporalStorage):
+    """date as int32 days since 1970-01-01 (Arrow date32, Parquet DATE)."""
+
+    __slots__ = ()
+
+    _KIND = date
+    _TYPECODE = 'i'
+
+    @staticmethod
+    def _box(tick: int) -> date:
+        return date.fromordinal(tick + _EPOCH_ORDINAL)
+
+    @staticmethod
+    def _unbox(value: Any) -> int | None:
+        if type(value) is date:
+            return value.toordinal() - _EPOCH_ORDINAL
+        return None
+
+
+class DatetimeStorage(_TemporalStorage):
+    """
+    Naive datetime as int64 microseconds since 1970-01-01T00:00 (Arrow
+    timestamp[us], Parquet TIMESTAMP_MICROS).
+
+    A plain date in a datetime column is midnight of that day, the same
+    coercion validate_scalar applies on assignment.
+    """
+
+    __slots__ = ()
+
+    _KIND = datetime
+    _TYPECODE = 'q'
+
+    @staticmethod
+    def _box(tick: int) -> datetime:
+        return _EPOCH_DATETIME + timedelta(microseconds=tick)
+
+    @staticmethod
+    def _unbox(value: Any) -> int | None:
+        vtype = type(value)
+        if vtype is datetime:
+            if value.tzinfo is not None or value.fold:
+                return None
+            # Integer math on the fields: total_seconds() is a float and
+            # loses microsecond exactness far from the epoch.
+            seconds = (
+                (value.toordinal() - _EPOCH_ORDINAL) * 86_400
+                + value.hour * 3_600
+                + value.minute * 60
+                + value.second
+            )
+            return seconds * 1_000_000 + value.microsecond
+        if vtype is date:
+            return (value.toordinal() - _EPOCH_ORDINAL) * _MICROS_PER_DAY
+        return None
+
+
+def _warn_temporal_fallback(kind, value):
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        reason = "is timezone-aware"
+    elif isinstance(value, datetime) and value.fold:
+        reason = "has fold=1"
+    else:
+        reason = f"is a {type(value).__name__}, not a plain {kind.__name__}"
+    warnings.warn(
+        f"{kind.__name__} column: {value!r} {reason}, which native "
+        f"{kind.__name__} storage cannot hold exactly. The column falls back "
+        "to Python-object storage: values stay exact, but operations on it "
+        "run slower.",
+        stacklevel=2,
+    )
+
+
+def _temporal_storage_from_known_iterable(values, storage_class):
+    """Append epoch ticks directly, degrading once when a value has none."""
+    ticks = array(storage_class._TYPECODE)
+    validity = _BitMaskBuilder()
+    unbox = storage_class._unbox
+    iterator = iter(values)
+
+    for value in iterator:
+        if value is None:
+            ticks.append(0)
+            validity.append(True)
+            continue
+        tick = unbox(value)
+        if tick is None:
+            _warn_temporal_fallback(storage_class._KIND, value)
+            prefix = storage_class(ticks, validity.finish())
+            return TupleStorage.from_iterable(
+                chain(prefix, (value,), iterator)
+            )
+        ticks.append(tick)
+        validity.append(False)
+
+    return storage_class(ticks, validity.finish())
+
+
 def _int_storage_from_known_iterable(values):
     """Append ints directly, degrading once when a value exceeds int64."""
     data = array('q')
@@ -718,12 +952,17 @@ def storage_from_known_iterable(values, kind):
         )
     if kind is str:
         return StringStorage.from_iterable(values)
+    if kind is date:
+        return _temporal_storage_from_known_iterable(values, DateStorage)
+    if kind is datetime:
+        return _temporal_storage_from_known_iterable(values, DatetimeStorage)
     return TupleStorage.from_iterable(values)
 
 
 def storage_has_nulls(storage):
     """Return whether physical storage contains at least one null value."""
-    if isinstance(storage, (ArrayStorage, BoolStorage, StringStorage)):
+    if isinstance(storage, (
+            ArrayStorage, BoolStorage, StringStorage, _TemporalStorage)):
         return storage._mask is not None
     return any(value is None for value in storage)
 
@@ -782,6 +1021,13 @@ def concatenate_storages(storages):
             first._precision,
             _concatenate_masks(storages),
         )
+
+    if isinstance(first, _TemporalStorage) and all(
+            type(storage) is type(first) for storage in storages):
+        ticks = array(first._TYPECODE)
+        for storage in storages:
+            ticks.extend(storage._ticks)
+        return type(first)(ticks, _concatenate_masks(storages))
 
     if all(isinstance(storage, TupleStorage) for storage in storages):
         return TupleStorage(tuple(

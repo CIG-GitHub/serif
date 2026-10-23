@@ -161,7 +161,7 @@ def _sortable_table():
         'x': [1.5, None, 2.5, 4.0, 0.5],
         's': ['c', 'a', None, 'b', 'a'],
         'b': [True, None, False, True, False],
-        'd': [date(2026, 1, i) for i in (5, 3, 4, 1, 2)],  # TupleStorage: declines
+        'd': [date(2026, 1, i) for i in (5, 3, 4, 1, 2)],  # DateStorage: no accel yet, declines
     })
 
 
@@ -235,7 +235,7 @@ def test_fast_path_engages_for_supported_storage(monkeypatch):
     assert calls == [True, True, True]
 
     calls.clear()
-    Vector([date(2026, 1, 2), date(2026, 1, 1)]).sort_by()  # TupleStorage → declines
+    Vector([date(2026, 1, 2), date(2026, 1, 1)]).sort_by()  # DateStorage: no accel yet → declines
     assert calls == [False]
 
 
