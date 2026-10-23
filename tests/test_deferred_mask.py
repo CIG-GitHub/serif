@@ -346,14 +346,74 @@ def test_latch_releases_snapshot_and_behaves_plain(tier):
     assert list(q.a) == [4, 5, 6]        # post-latch access still works
 
 
-def test_chained_masks_materialize_the_first(tier):
+def test_chained_masks_stay_deferred(tier):
     t = make_table()
     q1 = t[t.a > 1]
     m2 = q1.a > 3
     q2 = q1[m2]
     assert type(q2) is MaskedTable
-    assert q1._mat is not None           # v1: the second mask latches q1
+    assert q1._mat is None               # chaining does not latch q1
+    assert set(q1._gathered) == {0}      # only the column m2 was built from
+    assert list(q2.b) == [4.0, 5.5, 6.75]
+    assert set(q1._gathered) == {0}      # q2's gathers don't land on q1
     assert_same_table(q2, eager(eager(t, t.a > 1), m2))
+
+
+@pytest.mark.parametrize("mask_name,make_mask", MASKS, ids=[m[0] for m in MASKS])
+def test_chained_masks_match_eager(tier, mask_name, make_mask):
+    t = make_table()
+    m1 = make_mask(t)
+    q1 = t[m1]
+    m2 = q1.a > 2
+    assert_same_table(q1[m2], eager(eager(t, m1), m2))
+
+
+def test_chained_mask_reuses_cached_gather(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    q1.n                                 # cached on q1 before chaining
+    q2 = q1[q1.a > 3]
+    assert list(q2.n) == [None, 50, 60]
+    assert list(q2.s) == ['x', 'y', 'z']
+
+
+def test_triple_chain_matches_eager(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    q2 = q1[q1.a < 6]
+    q3 = q2[q2.f == True]
+    assert type(q3) is MaskedTable
+    assert q1._mat is None and q2._mat is None
+    expected = eager(eager(eager(t, t.a > 1), q1.a < 6), q2.f == True)
+    assert_same_table(q3, expected)
+
+
+def test_chained_mask_survives_parent_latch(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    q2 = q1[q1.a > 3]
+    repr(q1)                             # latch q1: its snapshot is released
+    assert q1._captured is None
+    assert list(q2.s) == ['x', 'y', 'z']
+    assert_same_table(q2, eager(eager(t, t.a > 1), q1.a > 3))
+
+
+def test_chained_mask_on_latched_parent(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    repr(q1)
+    q2 = q1[q1.a > 3]
+    assert type(q2) is MaskedTable
+    assert_same_table(q2, eager(eager(t, t.a > 1), q1.a > 3))
+
+
+def test_chained_mask_ignores_source_writes(tier):
+    t = make_table()
+    q1 = t[t.a > 1]
+    q2 = q1[q1.a > 3]
+    t[0, 'b'] = 99.0
+    t[5, 'b'] = -1.0
+    assert list(q2.b) == [4.0, 5.5, 6.75]
 
 
 def test_derived_results_are_plain_tables(tier):
