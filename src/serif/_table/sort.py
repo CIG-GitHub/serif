@@ -10,6 +10,7 @@ from .._vector.storage import ArrayStorage
 from .._vector.storage import BoolStorage
 from .._vector.storage import StringStorage
 from .._vector.storage import TupleStorage
+from .._vector.storage import _TemporalStorage
 from ..vector import Vector
 from .._vector.transforms import _null_sort_flag
 from . import columns as _columns
@@ -26,6 +27,10 @@ def _sort_value_getter(storage):
     """Return a direct scalar accessor without snapshotting the column."""
     if isinstance(storage, _CategoryStorage):
         return _sort_value_getter(storage._codes)
+
+    if isinstance(storage, _TemporalStorage):
+        # Date/datetime ticks order exactly as the dates do.
+        return _sort_value_getter(storage.tick_view())
 
     if isinstance(storage, ArrayStorage):
         data = storage._data

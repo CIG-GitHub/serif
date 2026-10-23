@@ -1,4 +1,5 @@
-"""Optional Rust stable argsort for int, float, bool and category keys.
+"""Optional Rust stable argsort for int, float, bool, category, date and
+datetime keys.
 
 The compiled radix sort reproduces Python's stable multi-key ordering,
 including per-key direction and null placement, and declines on NaN.
@@ -9,9 +10,10 @@ from . import _rs
 from . import _USE_RUST
 from ..storage import ArrayStorage
 from ..storage import BoolStorage
+from ..storage import _TemporalStorage
 
 
-_ARRAY_KINDS = {'q': 0, 'd': 1}
+_ARRAY_KINDS = {'q': 0, 'd': 1, 'i': 3}
 _BOOL = 2
 
 
@@ -22,6 +24,9 @@ def _key(storage):
     if isinstance(storage, _CategoryStorage):
         # Codes follow category order, which is what sort_by compares.
         storage = storage._codes
+    if isinstance(storage, _TemporalStorage):
+        # Date/datetime ticks order exactly as the dates do.
+        storage = storage.tick_view()
     if isinstance(storage, ArrayStorage):
         kind = _ARRAY_KINDS.get(storage._data.typecode)
         if kind is None:
