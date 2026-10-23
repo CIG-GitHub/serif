@@ -155,3 +155,18 @@ def fill_nulls(storage, fill):
     from ._numpy import transforms
 
     return transforms.fill_nulls(storage, fill)
+
+
+def is_in(storage, members, match_null):
+    """Try numeric membership in numpy, then string membership in Arrow."""
+    def numpy_is_in():
+        from ._numpy import transforms
+
+        return transforms.is_in(storage, members, match_null)
+
+    def arrow_is_in():
+        from ._arrow import transforms
+
+        return transforms.is_in_strings(storage, members, match_null)
+
+    return first_supported(numpy_is_in, arrow_is_in)

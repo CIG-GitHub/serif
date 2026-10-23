@@ -35,6 +35,74 @@ def fill_nulls(storage, fill):
     return _fill_lanes(storage, fill)
 
 
+def _int_lanes(members):
+    """Members as the int64 values an int column can equal exactly.
+
+    A float member equals an int only when it is integral (2.0 matches 2;
+    2.5, nan and inf match nothing); ints past int64 match no lane.
+    """
+    lanes = []
+    for member in members:
+        if type(member) is float:
+            if not member.is_integer():
+                continue
+            member = int(member)
+        member = int(member)                      # bool → 0/1
+        if _I64_MIN <= member <= _I64_MAX:
+            lanes.append(member)
+    return lanes
+
+
+def _float_lanes(members):
+    """Members as the float64 values a float column can equal exactly.
+
+    Python compares int and float exactly, so an int matches only if it is
+    exactly representable as a float; nan never matches a fresh value.
+    """
+    lanes = []
+    for member in members:
+        try:
+            as_float = float(member)
+        except OverflowError:
+            continue
+        if as_float == member:                    # nan != nan drops nan too
+            lanes.append(as_float)
+    return lanes
+
+
+def is_in(storage, members, match_null):
+    """Element-wise membership as BoolStorage, or DECLINED.
+
+    `members` are the non-None members; Python's `==` decides membership,
+    so anything but exact bool/int/float members declines. Null lanes are
+    True when match_null, else null.
+    """
+    if not _USE_NUMPY or not isinstance(storage, ArrayStorage):
+        return DECLINED
+    typecode = storage._data.typecode
+    np_dtype = NP_DTYPES.get(typecode)
+    if np_dtype is None:
+        return DECLINED
+    if any(type(member) not in (bool, int, float) for member in members):
+        return DECLINED
+
+    if typecode == 'd':
+        lanes = _np.array(_float_lanes(members), dtype=_np.float64)
+    else:
+        lanes = _np.array(_int_lanes(members), dtype=_np.int64)
+    values = _np.frombuffer(storage._data, dtype=np_dtype)
+    hits = _np.isin(values, lanes)
+
+    mask = storage._mask
+    if mask is not None and mask.any_null():
+        if match_null:
+            hits |= ~valid_bits(mask, len(values))
+            mask = None
+    else:
+        mask = None
+    return BoolStorage(bytearray(hits.tobytes()), mask)
+
+
 def _fill_lanes(storage, fill):
     """fill_nulls for BoolStorage and numeric ArrayStorage."""
     if isinstance(storage, BoolStorage):

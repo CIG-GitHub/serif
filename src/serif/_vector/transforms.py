@@ -270,9 +270,15 @@ def is_in(vector, members):
 
     # Native date/datetime columns look their members up as int ticks.
     values = vector
+    storage, physical_members = vector._storage, valid
     ticks = _temporal.member_ticks(vector._storage, valid)
     if ticks is not None:
         values, lookup = vector._storage.tick_view(), ticks
+        storage, physical_members = values, sorted(ticks)
+
+    fast = _dispatch.is_in(storage, physical_members, match_null)
+    if fast is not DECLINED:
+        return Vector._from_storage(fast, Schema(bool, fast._mask is not None))
 
     result = []
     saw_null = False
