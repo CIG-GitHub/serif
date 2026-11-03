@@ -37,6 +37,7 @@ from serif.io.parquet import (
     _CT_TIMESTAMP_MILLIS,
     _CT_UTF8,
     _ENC_PLAIN,
+    _PAGE_DICTIONARY,
     _REP_OPTIONAL,
     _REP_REQUIRED,
     _T_BOOLEAN,
@@ -379,6 +380,35 @@ def test_data_page_v2_raises(tmp_path):
     _single_column_file(p, phys=_T_INT64, num_values=2, page_body=raw,
                         page_header=w.stop())
     with pytest.raises(SerifValueError, match='V2'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_negative_page_size_raises_promptly(tmp_path):
+    # A dictionary page whose negative size steps the cursor back onto its
+    # own header. Dictionary pages don't decrement `remaining`, so this used
+    # to re-read the same header forever.
+    def header(size):
+        w = _ThriftWriter()
+        w.i32(1, _PAGE_DICTIONARY)
+        w.i32(2, 0)
+        w.i32(3, size)
+        return w.stop()
+
+    ph = header(-len(header(-1)))
+    assert len(ph) == len(header(-1))
+    p = tmp_path / "negative_size.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=1, page_body=b'',
+                        page_header=ph)
+    with pytest.raises(SerifValueError, match='corrupt page header'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_negative_page_value_count_raises(tmp_path):
+    p = tmp_path / "negative_count.parquet"
+    ph = _enc_page_header(8, 8, _enc_data_page_header(-1))
+    _single_column_file(p, phys=_T_INT64, num_values=1,
+                        page_body=struct.pack('<q', 7), page_header=ph)
+    with pytest.raises(SerifValueError, match='corrupt page header'):
         list(read_parquet(str(p))['x'])
 
 

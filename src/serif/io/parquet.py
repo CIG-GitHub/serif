@@ -2023,6 +2023,15 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
         page_num_values  = dph.get('num_values', remaining)
         encoding         = dph.get('encoding', _ENC_PLAIN)
 
+        # Forward progress comes from `pos`, not `remaining` — dictionary
+        # pages carry no row values. Every header is at least one byte, so
+        # a non-negative body size is what guarantees the loop terminates.
+        if compressed_size < 0 or page_num_values < 0:
+            raise SerifValueError(
+                f"Column '{col_name}': corrupt page header "
+                f"(compressed size {compressed_size}, "
+                f"{page_num_values} values)")
+
         page_body = bytes(file_data[pos:pos + compressed_size])
         pos      += compressed_size
 
