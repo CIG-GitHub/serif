@@ -45,15 +45,20 @@ from serif.io.parquet import (
     _T_FLOAT,
     _T_INT32,
     _T_INT64,
+    _TC_BOOL_TRUE,
+    _TC_LIST,
     _ThriftWriter,
     _enc_column_chunk,
     _enc_column_metadata,
     _enc_data_page_header,
     _enc_file_metadata,
+    _enc_i32,
+    _enc_list_hdr,
     _enc_page_header,
     _enc_row_group,
     _enc_schema_element,
     _encode_def_levels,
+    _varint_encode,
 )
 
 _EPOCH = datetime(1970, 1, 1)
@@ -416,6 +421,62 @@ def test_truncated_footer_raises_serif_error(tmp_path):
     p.write_bytes(_MAGIC + footer + struct.pack('<I', len(footer)) + _MAGIC)
     with pytest.raises(SerifValueError, match='footer'):
         read_parquet(str(p))
+
+
+def test_footer_list_count_past_end_raises_promptly(tmp_path):
+    # An unknown list<bool> field claiming 2**40 elements. The skipper used
+    # to treat bool elements as zero-width, so it looped 2**40 times without
+    # consuming a byte. The count must be checked against the bytes left.
+    footer = bytearray(b'\x09')            # long-form header, type LIST
+    footer += _enc_i32(100)                # field id 100
+    footer.append(0xF0 | _TC_BOOL_TRUE)    # list header, count follows
+    footer += _varint_encode(2 ** 40)
+    footer.append(0)                       # STOP
+    p = tmp_path / "huge_list.parquet"
+    p.write_bytes(_MAGIC + bytes(footer)
+                  + struct.pack('<I', len(footer)) + _MAGIC)
+    with pytest.raises(SerifValueError, match='footer'):
+        read_parquet(str(p))
+
+
+def test_huge_footer_map_count_raises(tmp_path):
+    footer = bytearray(b'\x0b')            # long-form header, type MAP
+    footer += _enc_i32(100)
+    footer += _varint_encode(2 ** 40)
+    footer.append(0)
+    p = tmp_path / "huge_map.parquet"
+    p.write_bytes(_MAGIC + bytes(footer)
+                  + struct.pack('<I', len(footer)) + _MAGIC)
+    with pytest.raises(SerifValueError, match='footer'):
+        read_parquet(str(p))
+
+
+def test_unknown_bool_list_field_is_skipped(tmp_path):
+    """Thrift compact writes bools inside a collection as one byte each;
+    only struct-field bools ride in the header's type nibble. Skipping them
+    as zero-width reads the element bytes as field headers and desyncs."""
+    values = array('q', [1, 2, 3]).tobytes()
+
+    def meta_with_bool_list(offset, page_len):
+        w = _ThriftWriter()
+        w.i32(1, _T_INT64)
+        w.list_i32(2, [_ENC_PLAIN])
+        w.list_str(3, ['x'])
+        w.i32(4, _CODEC_UNCOMPRESSED)
+        w.i64(5, 3)
+        w.i64(6, page_len)
+        w.i64(7, page_len)
+        # fid 8: unknown to the parser as a list → skipped
+        w._buf += w._fhdr(8, _TC_LIST)
+        w._buf += _enc_list_hdr(3, _TC_BOOL_TRUE) + b'\x01\x02\x01'
+        w.i64(9, offset)
+        return w.stop()
+
+    p = tmp_path / "bool_list.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=3, page_body=values,
+                        meta_builder=meta_with_bool_list)
+    t = read_parquet(str(p))
+    assert list(t['x']) == [1, 2, 3]
 
 
 # ---------------------------------------------------------------------------

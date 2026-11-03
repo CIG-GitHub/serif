@@ -353,14 +353,37 @@ def _skip_struct(data, pos: int) -> int:
         pos = _skip_field(data, pos, tc)
 
 
-def _skip_list_or_set(data, pos: int) -> int:
+def _list_header(data, pos: int):
+    """Decode a compact list/set header. Returns (elem_type, count, new_pos).
+
+    Every element occupies at least one byte, so a count beyond the bytes
+    left is corrupt. Rejecting it here keeps a tiny footer from claiming
+    billions of elements and looping on them. IndexError is the parser's
+    truncation signal; callers turn it into SerifValueError.
+    """
     b = data[pos]; pos += 1
-    et = b & 0x0F
     count = (b >> 4) & 0x0F
     if count == 0x0F:
         count, pos = _varint_decode(data, pos)
+    if count > len(data) - pos:
+        raise IndexError(
+            f"Thrift list claims {count} elements; "
+            f"{len(data) - pos} bytes remain")
+    return b & 0x0F, count, pos
+
+
+def _skip_elem(data, pos: int, type_code: int) -> int:
+    """Skip one list/set/map element. Unlike a struct field, a bool element
+    is a full byte — only field headers fold the bool into the type nibble."""
+    if type_code in (_TC_BOOL_TRUE, _TC_BOOL_FALSE):
+        return pos + 1
+    return _skip_field(data, pos, type_code)
+
+
+def _skip_list_or_set(data, pos: int) -> int:
+    et, count, pos = _list_header(data, pos)
     for _ in range(count):
-        pos = _skip_field(data, pos, et)
+        pos = _skip_elem(data, pos, et)
     return pos
 
 
@@ -368,12 +391,16 @@ def _skip_map(data, pos: int) -> int:
     n, pos = _varint_decode(data, pos)
     if n == 0:
         return pos
+    # Each entry is a key and a value, at least one byte apiece.
+    if 2 * n > len(data) - pos:
+        raise IndexError(
+            f"Thrift map claims {n} entries; {len(data) - pos} bytes remain")
     types = data[pos]; pos += 1
     kt = (types >> 4) & 0x0F
     vt = types & 0x0F
     for _ in range(n):
-        pos = _skip_field(data, pos, kt)
-        pos = _skip_field(data, pos, vt)
+        pos = _skip_elem(data, pos, kt)
+        pos = _skip_elem(data, pos, vt)
     return pos
 
 
@@ -1303,10 +1330,7 @@ def _parse_list(data, pos: int, elem_parser):
     Parse a Thrift compact list.
     elem_parser(data, pos) → (item, new_pos)
     """
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     items = []
     for _ in range(count):
         item, pos = elem_parser(data, pos)
@@ -1315,10 +1339,7 @@ def _parse_list(data, pos: int, elem_parser):
 
 
 def _parse_list_i32(data, pos: int):
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     vals = []
     for _ in range(count):
         v, pos = _dec_i32(data, pos)
@@ -1327,10 +1348,7 @@ def _parse_list_i32(data, pos: int):
 
 
 def _parse_list_str(data, pos: int):
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     vals = []
     for _ in range(count):
         s, pos = _dec_str(data, pos)
