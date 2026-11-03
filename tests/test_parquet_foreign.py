@@ -541,6 +541,56 @@ def test_gzip_compressed_column(tmp_path):
     assert list(t['x']) == [1.5, 2.5, -3.25]
 
 
+def test_zlib_wrapped_gzip_page_reads(tmp_path):
+    import zlib
+    raw = array('d', [1.5, 2.5]).tobytes()
+    p = tmp_path / "zlib.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=zlib.compress(raw),
+                        uncompressed_size=len(raw), codec=_CODEC_GZIP)
+    assert list(read_parquet(str(p))['x']) == [1.5, 2.5]
+
+
+def test_gzip_bomb_raises_without_expanding(tmp_path):
+    # 32 MiB of zeros compresses to ~32 KiB; the header declares 8 bytes.
+    # Decompression used to run uncapped and ignore the declared size.
+    import tracemalloc
+    body = gzip.compress(bytes(32 << 20))
+    p = tmp_path / "bomb.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=1, page_body=body,
+                        uncompressed_size=8, codec=_CODEC_GZIP)
+    t = read_parquet(str(p))
+    del body
+    tracemalloc.start()
+    try:
+        with pytest.raises(SerifValueError, match='declared 8 bytes'):
+            list(t['x'])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
+
+
+def test_gzip_page_shorter_than_declared_raises(tmp_path):
+    raw = array('d', [1.5]).tobytes()
+    p = tmp_path / "gz_short.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=gzip.compress(raw),
+                        uncompressed_size=16, codec=_CODEC_GZIP)
+    with pytest.raises(SerifValueError, match='declared 16 bytes'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_truncated_gzip_page_raises_serif_error(tmp_path):
+    raw = array('d', [1.5, 2.5]).tobytes()
+    p = tmp_path / "gz_trunc.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=gzip.compress(raw)[:-10],
+                        uncompressed_size=len(raw), codec=_CODEC_GZIP)
+    with pytest.raises(SerifValueError, match='GZIP'):
+        list(read_parquet(str(p))['x'])
+
+
 def test_snappy_raises_informative_error(tmp_path):
     raw = array('d', [1.0]).tobytes()
     p = tmp_path / "snappy.parquet"

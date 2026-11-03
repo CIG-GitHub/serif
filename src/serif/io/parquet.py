@@ -1719,16 +1719,44 @@ def _elem_to_kind(elem: dict):
 # Page decompression
 # ---------------------------------------------------------------------------
 
-def _decompress(page_bytes: bytes, codec: int, col_name: str) -> bytes:
+def _inflate(page_bytes: bytes, wbits: int, size: int) -> bytes:
+    """Decompress at most size + 1 bytes — one past the declared size is
+    enough to tell an honest page from a decompression bomb, and keeps
+    max_length off 0 (which zlib reads as "unlimited")."""
+    import zlib
+    d = zlib.decompressobj(wbits)
+    out = d.decompress(page_bytes, size + 1)
+    if len(out) <= size and not d.eof:
+        raise zlib.error("incomplete or truncated stream")
+    return out
+
+
+def _decompress(page_bytes: bytes, codec: int, col_name: str,
+                uncompressed_size: int) -> bytes:
     if codec == _CODEC_UNCOMPRESSED:
         return page_bytes
     if codec == _CODEC_GZIP:
         import zlib
+        if uncompressed_size < 0:
+            raise SerifValueError(
+                f"Column '{col_name}': corrupt page header "
+                f"(uncompressed size {uncompressed_size})")
         try:
             # wbits=47 = auto-detect gzip or zlib
-            return zlib.decompress(page_bytes, wbits=47)
+            out = _inflate(page_bytes, 47, uncompressed_size)
         except zlib.error:
-            return zlib.decompress(page_bytes, wbits=15)
+            try:
+                out = _inflate(page_bytes, 15, uncompressed_size)
+            except zlib.error as exc:
+                raise SerifValueError(
+                    f"Column '{col_name}': corrupt GZIP page") from exc
+        # The header's uncompressed size is authoritative (Arrow rejects a
+        # mismatch too); checking it also caps what a small page can expand to.
+        if len(out) != uncompressed_size:
+            raise SerifValueError(
+                f"Column '{col_name}': GZIP page does not decompress to its "
+                f"declared {uncompressed_size} bytes")
+        return out
     if codec == _CODEC_SNAPPY:
         raise SerifValueError(
             f"Column '{col_name}': Snappy-compressed Parquet requires the "
@@ -2072,7 +2100,8 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                 "boolean (RLE=3) pages cannot be read by this module."
             )
 
-        page_body = _decompress(page_body, codec, col_name)
+        page_body = _decompress(page_body, codec, col_name,
+                                ph['uncompressed_page_size'])
 
         body_pos   = 0
         null_flags = None
