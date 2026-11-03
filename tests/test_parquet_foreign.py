@@ -412,6 +412,24 @@ def test_negative_page_value_count_raises(tmp_path):
         list(read_parquet(str(p))['x'])
 
 
+def test_short_bool_page_raises_before_allocating(tmp_path):
+    # One byte of bits claiming 2**25 values. The decoder used to allocate
+    # the 32 MiB output first and only fail when the bits ran out.
+    import tracemalloc
+    n = 2 ** 25
+    p = tmp_path / "short_bool.parquet"
+    _single_column_file(p, phys=_T_BOOLEAN, num_values=n, page_body=b'\x01')
+    t = read_parquet(str(p))
+    tracemalloc.start()
+    try:
+        with pytest.raises(SerifValueError, match='corrupt Parquet data'):
+            list(t['x'])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
+
+
 def test_short_definition_levels_raise(tmp_path):
     p = tmp_path / "short_definition_levels.parquet"
     _single_column_file(

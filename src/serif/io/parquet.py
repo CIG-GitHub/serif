@@ -1913,6 +1913,12 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     from .._vector.nullable import BitMask
 
     bits = page_body[body_pos:body_pos + (non_null_count + 7) // 8]
+    # The value count is a header claim; the packed bits are what the page
+    # holds. Check before allocating so a tiny page can't demand gigabytes.
+    if len(bits) * 8 < non_null_count:
+        raise IndexError(
+            f"BOOLEAN page claims {non_null_count} values; "
+            f"{len(bits)} bytes of bits remain")
 
     if null_flags is None:
         data = bytearray(non_null_count)
