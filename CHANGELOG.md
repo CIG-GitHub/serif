@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2 – Unreleased
+
+### Fixed
+
+- The built-in Parquet reader (used when PyArrow is not installed) now
+  checks the sizes and counts a file declares before trusting them, so a
+  small malformed file raises `SerifValueError` promptly instead of
+  hanging or allocating far more memory than the file holds:
+  - A footer list or map claiming more elements than the bytes left
+    in the file is rejected. This used to loop for as long as the count
+    said.
+  - A page with a negative size or value count is rejected. A negative
+    size used to send the reader back to the same page forever.
+  - A BOOLEAN page whose packed bits are shorter than its value count is
+    rejected before the output is allocated.
+  - GZIP pages decompress only up to their declared uncompressed size
+    and must match it exactly, as Arrow requires. A small compressed page
+    can no longer expand to many megabytes.
+- Parquet files with an unknown `list<bool>` metadata field are now read
+  correctly. Bools inside a Thrift list take one byte each, and the
+  reader used to skip them as zero bytes, which corrupted the rest of
+  the footer.
+- A truncated or corrupt GZIP Parquet page now raises `SerifValueError`
+  instead of a raw `zlib.error`.
+
 ## 0.3.1 – 2026-10-23
 
 This release stores dates and datetimes as integer ticks, making date work
