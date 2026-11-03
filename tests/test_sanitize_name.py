@@ -29,10 +29,37 @@ def test_sanitize_special_chars():
 
 
 def test_sanitize_collapse_underscores():
-	"""Test that user underscores are preserved (not collapsed)"""
-	assert _sanitize_user_name("a__b") == "a__b"
-	assert _sanitize_user_name("a___b") == "a___b"
-	assert _sanitize_user_name("multiple____underscores") == "multiple____underscores"
+	"""Test that underscore runs collapse like any other separator run"""
+	assert _sanitize_user_name("a__b") == "a_b"
+	assert _sanitize_user_name("a___b") == "a_b"
+	assert _sanitize_user_name("multiple____underscores") == "multiple_underscores"
+
+
+def test_sanitize_mixed_separators():
+	"""Test that underscores mixed with other separators collapse to one _"""
+	assert _sanitize_user_name("total   cost") == "total_cost"
+	assert _sanitize_user_name("total _ cost") == "total_cost"
+	assert _sanitize_user_name("total_ cost") == "total_cost"
+	assert _sanitize_user_name("total (()*_***  cost") == "total_cost"
+
+
+def test_sanitize_indexed_shape_squeezes():
+	"""Test that a user name shaped like name__N squeezes instead of escaping"""
+	assert _sanitize_user_name("total_cost__1") == "total_cost_1"
+	assert _sanitize_user_name("x__10") == "x_10"
+
+
+def test_table_duplicates_with_indexed_shape_name():
+	"""Test that a real 'name__N' column can't shadow a duplicate accessor"""
+	with pytest.warns(UserWarning, match="Duplicate column name 'total_cost'"):
+		t = Table({
+			"total cost": [1, 2],
+			"total_cost": [3, 4],
+			"total_cost__1": [5, 6],
+		})
+	assert t.total_cost._name == "total cost"
+	assert t.total_cost__1._name == "total_cost"
+	assert t.total_cost_1._name == "total_cost__1"
 
 
 def test_sanitize_strip_underscores():
@@ -69,7 +96,7 @@ def test_sanitize_mixed_complexity():
 	"""Test complex real-world scenarios"""
 	assert _sanitize_user_name("User ID") == "user_id"
 	assert _sanitize_user_name("2023-Revenue ($)") == "c2023_revenue"
-	assert _sanitize_user_name("__private__var__") == "private__var"
+	assert _sanitize_user_name("__private__var__") == "private_var"
 	assert _sanitize_user_name("column.1.data") == "column_1_data"
 
 

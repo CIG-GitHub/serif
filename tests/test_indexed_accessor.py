@@ -137,10 +137,13 @@ def test_indexed_accessor_non_numeric_suffix():
         'total__abc': [4, 5, 6]  # Column literally named 'total__abc'
     })
     
-    # Should access the column named 'total__abc', not fail as indexed accessor
-    # Note: This would sanitize to 'total__abc' if that's a valid column name
-    col = t.total__abc
-    assert col._name == 'total__abc'
+    # Underscore runs squeeze, so the dot name is 'total_abc'; the exact
+    # original still works in brackets.
+    assert t.total_abc._name == 'total__abc'
+    assert t['total__abc']._name == 'total__abc'
+    # '__' never survives sanitizing, so the unsqueezed spelling is not a dot name
+    with pytest.raises(AttributeError):
+        t.total__abc
 
 
 def test_indexed_accessor_multi_digit():

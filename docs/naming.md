@@ -25,14 +25,13 @@ the owner with `t.rename_columns({'old': 'new'})`; use
 ### Sanitization pipeline (in order)
 
 1. lowercase
-2. runs of characters outside `[a-z0-9_]` become a single `_`
-   (underscore runs are preserved: `a__b` stays `a__b`)
+2. runs of characters outside `[a-z0-9]` become a single `_` — underscore
+   is a separator like any other, so `a__b`, `a _ b` and `a - b` all
+   become `a_b`
 3. leading and trailing `_` stripped
 4. empty after sanitizing → positional accessor `col<idx>_`
 5. leading digit → `c` prefix (`2023 Revenue` → `c2023_revenue`)
-6. names matching `<base>__<digits>` get a trailing `_` — that shape is
-   reserved for duplicate disambiguation
-7. collision with a Vector/Table method or property → trailing `_`
+6. collision with a Vector/Table method or property → trailing `_`
    (for example, a column named `sum` is accessed as `.sum_`; a column named
    `name` remains `.name` because vector/table names live at `.vector_name`
    and `.table_name`)
@@ -42,7 +41,9 @@ the owner with `t.rename_columns({'old': 'new'})`; use
 When two columns sanitize to the same accessor, the later column gets
 `<base>__<idx>` where `idx` is its **column position** (not a running
 counter) — a duplicate at position 5 is `.x__5`, not `.x__2`. Table
-construction warns when this happens.
+construction warns when this happens. Because step 2 squeezes underscore
+runs, no sanitized name contains `__`, so a column literally named
+`x__1` (dot name `.x_1`) can never shadow a duplicate accessor.
 
 Sanitized names do not replace the actual names. `t._` shows every
 column's accessor alongside its original name.

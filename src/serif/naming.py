@@ -48,11 +48,13 @@ def _normalize_name(name) -> str | None:
 
     Rules:
     - Convert to lowercase
-    - Replace runs of non-alphanumeric chars (except _) with single _
+    - Replace runs of non-alphanumeric chars (including _) with single _
     - Strip leading/trailing underscores
     - Prefix with 'c' if starts with digit
-    - Append '_' if it looks like the indexed-accessor pattern (name__digits)
     - Return None if empty after sanitization
+
+    Squeezing _ means a normalized name never contains '__', so that shape
+    belongs to _disambiguate alone.
 
     This is the shared pipeline; _sanitize_user_name adds the reserved-name
     suffix on top, and _reserved_collision checks membership against it — so
@@ -64,8 +66,8 @@ def _normalize_name(name) -> str | None:
     # Lowercase
     name = name.lower()
 
-    # Replace runs of invalid characters with _
-    sanitized = re.sub(r'[^a-z0-9_]+', '_', name)
+    # Replace runs of invalid characters (including _) with a single _
+    sanitized = re.sub(r'[^a-z0-9]+', '_', name)
 
     # Strip leading/trailing _
     sanitized = sanitized.strip('_')
@@ -77,10 +79,6 @@ def _normalize_name(name) -> str | None:
     # Starts with digit → prefix c
     if sanitized[0].isdigit():
         sanitized = "c" + sanitized
-
-    # If name looks like indexed accessor pattern (name__digits), append _ to disambiguate
-    if re.match(r'^.+__\d+$', sanitized):
-        sanitized = sanitized + '_'
 
     return sanitized
 
