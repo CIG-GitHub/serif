@@ -37,6 +37,7 @@ from serif.io.parquet import (
     _CT_TIMESTAMP_MILLIS,
     _CT_UTF8,
     _ENC_PLAIN,
+    _PAGE_DICTIONARY,
     _REP_OPTIONAL,
     _REP_REQUIRED,
     _T_BOOLEAN,
@@ -45,15 +46,20 @@ from serif.io.parquet import (
     _T_FLOAT,
     _T_INT32,
     _T_INT64,
+    _TC_BOOL_TRUE,
+    _TC_LIST,
     _ThriftWriter,
     _enc_column_chunk,
     _enc_column_metadata,
     _enc_data_page_header,
     _enc_file_metadata,
+    _enc_i32,
+    _enc_list_hdr,
     _enc_page_header,
     _enc_row_group,
     _enc_schema_element,
     _encode_def_levels,
+    _varint_encode,
 )
 
 _EPOCH = datetime(1970, 1, 1)
@@ -377,6 +383,53 @@ def test_data_page_v2_raises(tmp_path):
         list(read_parquet(str(p))['x'])
 
 
+def test_negative_page_size_raises_promptly(tmp_path):
+    # A dictionary page whose negative size steps the cursor back onto its
+    # own header. Dictionary pages don't decrement `remaining`, so this used
+    # to re-read the same header forever.
+    def header(size):
+        w = _ThriftWriter()
+        w.i32(1, _PAGE_DICTIONARY)
+        w.i32(2, 0)
+        w.i32(3, size)
+        return w.stop()
+
+    ph = header(-len(header(-1)))
+    assert len(ph) == len(header(-1))
+    p = tmp_path / "negative_size.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=1, page_body=b'',
+                        page_header=ph)
+    with pytest.raises(SerifValueError, match='corrupt page header'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_negative_page_value_count_raises(tmp_path):
+    p = tmp_path / "negative_count.parquet"
+    ph = _enc_page_header(8, 8, _enc_data_page_header(-1))
+    _single_column_file(p, phys=_T_INT64, num_values=1,
+                        page_body=struct.pack('<q', 7), page_header=ph)
+    with pytest.raises(SerifValueError, match='corrupt page header'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_short_bool_page_raises_before_allocating(tmp_path):
+    # One byte of bits claiming 2**25 values. The decoder used to allocate
+    # the 32 MiB output first and only fail when the bits ran out.
+    import tracemalloc
+    n = 2 ** 25
+    p = tmp_path / "short_bool.parquet"
+    _single_column_file(p, phys=_T_BOOLEAN, num_values=n, page_body=b'\x01')
+    t = read_parquet(str(p))
+    tracemalloc.start()
+    try:
+        with pytest.raises(SerifValueError, match='corrupt Parquet data'):
+            list(t['x'])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
+
+
 def test_short_definition_levels_raise(tmp_path):
     p = tmp_path / "short_definition_levels.parquet"
     _single_column_file(
@@ -418,6 +471,62 @@ def test_truncated_footer_raises_serif_error(tmp_path):
         read_parquet(str(p))
 
 
+def test_footer_list_count_past_end_raises_promptly(tmp_path):
+    # An unknown list<bool> field claiming 2**40 elements. The skipper used
+    # to treat bool elements as zero-width, so it looped 2**40 times without
+    # consuming a byte. The count must be checked against the bytes left.
+    footer = bytearray(b'\x09')            # long-form header, type LIST
+    footer += _enc_i32(100)                # field id 100
+    footer.append(0xF0 | _TC_BOOL_TRUE)    # list header, count follows
+    footer += _varint_encode(2 ** 40)
+    footer.append(0)                       # STOP
+    p = tmp_path / "huge_list.parquet"
+    p.write_bytes(_MAGIC + bytes(footer)
+                  + struct.pack('<I', len(footer)) + _MAGIC)
+    with pytest.raises(SerifValueError, match='footer'):
+        read_parquet(str(p))
+
+
+def test_huge_footer_map_count_raises(tmp_path):
+    footer = bytearray(b'\x0b')            # long-form header, type MAP
+    footer += _enc_i32(100)
+    footer += _varint_encode(2 ** 40)
+    footer.append(0)
+    p = tmp_path / "huge_map.parquet"
+    p.write_bytes(_MAGIC + bytes(footer)
+                  + struct.pack('<I', len(footer)) + _MAGIC)
+    with pytest.raises(SerifValueError, match='footer'):
+        read_parquet(str(p))
+
+
+def test_unknown_bool_list_field_is_skipped(tmp_path):
+    """Thrift compact writes bools inside a collection as one byte each;
+    only struct-field bools ride in the header's type nibble. Skipping them
+    as zero-width reads the element bytes as field headers and desyncs."""
+    values = array('q', [1, 2, 3]).tobytes()
+
+    def meta_with_bool_list(offset, page_len):
+        w = _ThriftWriter()
+        w.i32(1, _T_INT64)
+        w.list_i32(2, [_ENC_PLAIN])
+        w.list_str(3, ['x'])
+        w.i32(4, _CODEC_UNCOMPRESSED)
+        w.i64(5, 3)
+        w.i64(6, page_len)
+        w.i64(7, page_len)
+        # fid 8: unknown to the parser as a list → skipped
+        w._buf += w._fhdr(8, _TC_LIST)
+        w._buf += _enc_list_hdr(3, _TC_BOOL_TRUE) + b'\x01\x02\x01'
+        w.i64(9, offset)
+        return w.stop()
+
+    p = tmp_path / "bool_list.parquet"
+    _single_column_file(p, phys=_T_INT64, num_values=3, page_body=values,
+                        meta_builder=meta_with_bool_list)
+    t = read_parquet(str(p))
+    assert list(t['x']) == [1, 2, 3]
+
+
 # ---------------------------------------------------------------------------
 # Compression codecs
 # ---------------------------------------------------------------------------
@@ -430,6 +539,56 @@ def test_gzip_compressed_column(tmp_path):
                         uncompressed_size=len(raw), codec=_CODEC_GZIP)
     t = read_parquet(str(p))
     assert list(t['x']) == [1.5, 2.5, -3.25]
+
+
+def test_zlib_wrapped_gzip_page_reads(tmp_path):
+    import zlib
+    raw = array('d', [1.5, 2.5]).tobytes()
+    p = tmp_path / "zlib.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=zlib.compress(raw),
+                        uncompressed_size=len(raw), codec=_CODEC_GZIP)
+    assert list(read_parquet(str(p))['x']) == [1.5, 2.5]
+
+
+def test_gzip_bomb_raises_without_expanding(tmp_path):
+    # 32 MiB of zeros compresses to ~32 KiB; the header declares 8 bytes.
+    # Decompression used to run uncapped and ignore the declared size.
+    import tracemalloc
+    body = gzip.compress(bytes(32 << 20))
+    p = tmp_path / "bomb.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=1, page_body=body,
+                        uncompressed_size=8, codec=_CODEC_GZIP)
+    t = read_parquet(str(p))
+    del body
+    tracemalloc.start()
+    try:
+        with pytest.raises(SerifValueError, match='declared 8 bytes'):
+            list(t['x'])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
+
+
+def test_gzip_page_shorter_than_declared_raises(tmp_path):
+    raw = array('d', [1.5]).tobytes()
+    p = tmp_path / "gz_short.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=gzip.compress(raw),
+                        uncompressed_size=16, codec=_CODEC_GZIP)
+    with pytest.raises(SerifValueError, match='declared 16 bytes'):
+        list(read_parquet(str(p))['x'])
+
+
+def test_truncated_gzip_page_raises_serif_error(tmp_path):
+    raw = array('d', [1.5, 2.5]).tobytes()
+    p = tmp_path / "gz_trunc.parquet"
+    _single_column_file(p, phys=_T_DOUBLE, num_values=2,
+                        page_body=gzip.compress(raw)[:-10],
+                        uncompressed_size=len(raw), codec=_CODEC_GZIP)
+    with pytest.raises(SerifValueError, match='GZIP'):
+        list(read_parquet(str(p))['x'])
 
 
 def test_snappy_raises_informative_error(tmp_path):

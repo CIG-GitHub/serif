@@ -353,14 +353,37 @@ def _skip_struct(data, pos: int) -> int:
         pos = _skip_field(data, pos, tc)
 
 
-def _skip_list_or_set(data, pos: int) -> int:
+def _list_header(data, pos: int):
+    """Decode a compact list/set header. Returns (elem_type, count, new_pos).
+
+    Every element occupies at least one byte, so a count beyond the bytes
+    left is corrupt. Rejecting it here keeps a tiny footer from claiming
+    billions of elements and looping on them. IndexError is the parser's
+    truncation signal; callers turn it into SerifValueError.
+    """
     b = data[pos]; pos += 1
-    et = b & 0x0F
     count = (b >> 4) & 0x0F
     if count == 0x0F:
         count, pos = _varint_decode(data, pos)
+    if count > len(data) - pos:
+        raise IndexError(
+            f"Thrift list claims {count} elements; "
+            f"{len(data) - pos} bytes remain")
+    return b & 0x0F, count, pos
+
+
+def _skip_elem(data, pos: int, type_code: int) -> int:
+    """Skip one list/set/map element. Unlike a struct field, a bool element
+    is a full byte — only field headers fold the bool into the type nibble."""
+    if type_code in (_TC_BOOL_TRUE, _TC_BOOL_FALSE):
+        return pos + 1
+    return _skip_field(data, pos, type_code)
+
+
+def _skip_list_or_set(data, pos: int) -> int:
+    et, count, pos = _list_header(data, pos)
     for _ in range(count):
-        pos = _skip_field(data, pos, et)
+        pos = _skip_elem(data, pos, et)
     return pos
 
 
@@ -368,12 +391,16 @@ def _skip_map(data, pos: int) -> int:
     n, pos = _varint_decode(data, pos)
     if n == 0:
         return pos
+    # Each entry is a key and a value, at least one byte apiece.
+    if 2 * n > len(data) - pos:
+        raise IndexError(
+            f"Thrift map claims {n} entries; {len(data) - pos} bytes remain")
     types = data[pos]; pos += 1
     kt = (types >> 4) & 0x0F
     vt = types & 0x0F
     for _ in range(n):
-        pos = _skip_field(data, pos, kt)
-        pos = _skip_field(data, pos, vt)
+        pos = _skip_elem(data, pos, kt)
+        pos = _skip_elem(data, pos, vt)
     return pos
 
 
@@ -1303,10 +1330,7 @@ def _parse_list(data, pos: int, elem_parser):
     Parse a Thrift compact list.
     elem_parser(data, pos) → (item, new_pos)
     """
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     items = []
     for _ in range(count):
         item, pos = elem_parser(data, pos)
@@ -1315,10 +1339,7 @@ def _parse_list(data, pos: int, elem_parser):
 
 
 def _parse_list_i32(data, pos: int):
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     vals = []
     for _ in range(count):
         v, pos = _dec_i32(data, pos)
@@ -1327,10 +1348,7 @@ def _parse_list_i32(data, pos: int):
 
 
 def _parse_list_str(data, pos: int):
-    b     = data[pos]; pos += 1
-    count = (b >> 4) & 0x0F
-    if count == 0x0F:
-        count, pos = _varint_decode(data, pos)
+    _, count, pos = _list_header(data, pos)
     vals = []
     for _ in range(count):
         s, pos = _dec_str(data, pos)
@@ -1701,16 +1719,44 @@ def _elem_to_kind(elem: dict):
 # Page decompression
 # ---------------------------------------------------------------------------
 
-def _decompress(page_bytes: bytes, codec: int, col_name: str) -> bytes:
+def _inflate(page_bytes: bytes, wbits: int, size: int) -> bytes:
+    """Decompress at most size + 1 bytes — one past the declared size is
+    enough to tell an honest page from a decompression bomb, and keeps
+    max_length off 0 (which zlib reads as "unlimited")."""
+    import zlib
+    d = zlib.decompressobj(wbits)
+    out = d.decompress(page_bytes, size + 1)
+    if len(out) <= size and not d.eof:
+        raise zlib.error("incomplete or truncated stream")
+    return out
+
+
+def _decompress(page_bytes: bytes, codec: int, col_name: str,
+                uncompressed_size: int) -> bytes:
     if codec == _CODEC_UNCOMPRESSED:
         return page_bytes
     if codec == _CODEC_GZIP:
         import zlib
+        if uncompressed_size < 0:
+            raise SerifValueError(
+                f"Column '{col_name}': corrupt page header "
+                f"(uncompressed size {uncompressed_size})")
         try:
             # wbits=47 = auto-detect gzip or zlib
-            return zlib.decompress(page_bytes, wbits=47)
+            out = _inflate(page_bytes, 47, uncompressed_size)
         except zlib.error:
-            return zlib.decompress(page_bytes, wbits=15)
+            try:
+                out = _inflate(page_bytes, 15, uncompressed_size)
+            except zlib.error as exc:
+                raise SerifValueError(
+                    f"Column '{col_name}': corrupt GZIP page") from exc
+        # The header's uncompressed size is authoritative (Arrow rejects a
+        # mismatch too); checking it also caps what a small page can expand to.
+        if len(out) != uncompressed_size:
+            raise SerifValueError(
+                f"Column '{col_name}': GZIP page does not decompress to its "
+                f"declared {uncompressed_size} bytes")
+        return out
     if codec == _CODEC_SNAPPY:
         raise SerifValueError(
             f"Column '{col_name}': Snappy-compressed Parquet requires the "
@@ -1895,6 +1941,12 @@ def _decode_bool_raw(page_body: bytes, body_pos: int,
     from .._vector.nullable import BitMask
 
     bits = page_body[body_pos:body_pos + (non_null_count + 7) // 8]
+    # The value count is a header claim; the packed bits are what the page
+    # holds. Check before allocating so a tiny page can't demand gigabytes.
+    if len(bits) * 8 < non_null_count:
+        raise IndexError(
+            f"BOOLEAN page claims {non_null_count} values; "
+            f"{len(bits)} bytes of bits remain")
 
     if null_flags is None:
         data = bytearray(non_null_count)
@@ -2005,6 +2057,15 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
         page_num_values  = dph.get('num_values', remaining)
         encoding         = dph.get('encoding', _ENC_PLAIN)
 
+        # Forward progress comes from `pos`, not `remaining` — dictionary
+        # pages carry no row values. Every header is at least one byte, so
+        # a non-negative body size is what guarantees the loop terminates.
+        if compressed_size < 0 or page_num_values < 0:
+            raise SerifValueError(
+                f"Column '{col_name}': corrupt page header "
+                f"(compressed size {compressed_size}, "
+                f"{page_num_values} values)")
+
         page_body = bytes(file_data[pos:pos + compressed_size])
         pos      += compressed_size
 
@@ -2039,7 +2100,8 @@ def _read_column_chunk(file_data, cm: dict, kind: type, phys_type: int,
                 "boolean (RLE=3) pages cannot be read by this module."
             )
 
-        page_body = _decompress(page_body, codec, col_name)
+        page_body = _decompress(page_body, codec, col_name,
+                                ph['uncompressed_page_size'])
 
         body_pos   = 0
         null_flags = None
